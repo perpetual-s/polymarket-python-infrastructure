@@ -1,0 +1,20 @@
+# Core dependencies (Python 3.13+ compatible)
+web3>=7.14.0  # Latest stable with Python 3.13 support
+eth-account>=0.13.7  # Latest stable
+eth-utils>=5.3.1  # Latest stable
+pydantic>=2.12.3  # Latest stable with Python 3.13 support
+pydantic-settings>=2.7.0  # Latest stable
+requests>=2.32.3  # Latest stable
+orjson>=3.10.0  # Fast JSON parser (30-50% faster than stdlib, releases GIL)
+
+# Polymarket official dependencies
+poly_eip712_structs==0.0.1  # Polymarket's EIP-712 fork (pinned)
+py_order_utils==0.3.2  # Order building and signing (pinned)
+
+# Operational (recommended for production)
+websocket-client>=1.8.0  # Latest stable
+prometheus-client>=0.23.1  # Latest stable with Python 3.13 support
+
+# Testing
+pytest>=8.3.4  # Latest stable
+pytest-asyncio>=0.24.0  # Latest stable
