@@ -178,11 +178,32 @@ class PublicCLOBAPI(BaseAPIClient):
             )
 
             # Parse response into dict
+            # API returns either:
+            # - List of dicts: [{"token_id": "...", "mid": "..."}]
+            # - Empty dict: {} (when no orderbooks exist for any token)
             result = {}
-            for item in response:
-                token_id = item.get("token_id")
-                mid = item.get("mid")
-                result[token_id] = to_decimal(mid) if mid is not None else None
+
+            if isinstance(response, list):
+                # Normal response: list of dicts
+                for item in response:
+                    if isinstance(item, dict):
+                        token_id = item.get("token_id")
+                        mid = item.get("mid")
+                        result[token_id] = to_decimal(mid) if mid is not None else None
+            elif isinstance(response, dict):
+                # Empty response or different format
+                # Could also be {token_id: mid, ...} format
+                if response:
+                    # Try parsing as {token_id: mid} format
+                    for token_id, mid in response.items():
+                        if token_id in token_ids:
+                            result[token_id] = to_decimal(mid) if mid is not None else None
+                # If empty dict {}, result stays empty
+
+            # Fill in None for tokens that weren't in response
+            for tid in token_ids:
+                if tid not in result:
+                    result[tid] = None
 
             return result
 
@@ -345,19 +366,37 @@ class PublicCLOBAPI(BaseAPIClient):
             )
 
             # Parse bids and asks - MUST be tuples (price, size) per OrderBookType model
+            # CRITICAL: Polymarket API returns bids LOW→HIGH and asks HIGH→LOW
+            # We need: bids HIGH→LOW (best bid first), asks LOW→HIGH (best ask first)
             bids = []
             for level in response.get("bids", []):
-                price = to_decimal(level.get("price", 0))
-                size = to_decimal(level.get("size", 0))
+                price_raw = level.get("price")
+                size_raw = level.get("size")
+                # Skip levels with missing price or size (don't silently convert to 0)
+                if price_raw is None or size_raw is None:
+                    logger.debug(f"Skipping bid level with missing data: {level}")
+                    continue
+                price = to_decimal(price_raw)
+                size = to_decimal(size_raw)
                 if price and price > 0 and size and size > 0:
                     bids.append((price, size))
 
             asks = []
             for level in response.get("asks", []):
-                price = to_decimal(level.get("price", 0))
-                size = to_decimal(level.get("size", 0))
+                price_raw = level.get("price")
+                size_raw = level.get("size")
+                # Skip levels with missing price or size (don't silently convert to 0)
+                if price_raw is None or size_raw is None:
+                    logger.debug(f"Skipping ask level with missing data: {level}")
+                    continue
+                price = to_decimal(price_raw)
+                size = to_decimal(size_raw)
                 if price and price > 0 and size and size > 0:
                     asks.append((price, size))
+
+            # Sort: bids descending (best=highest first), asks ascending (best=lowest first)
+            bids.sort(key=lambda x: x[0], reverse=True)
+            asks.sort(key=lambda x: x[0])
 
             return OrderBookType(
                 token_id=token_id,
@@ -403,19 +442,33 @@ class PublicCLOBAPI(BaseAPIClient):
             for book_data in response:
                 try:
                     # Parse bids and asks - MUST be tuples (price, size)
+                    # CRITICAL: Polymarket API returns bids LOW→HIGH and asks HIGH→LOW
+                    # We need: bids HIGH→LOW (best bid first), asks LOW→HIGH (best ask first)
                     bids = []
                     for level in book_data.get("bids", []):
-                        price = to_decimal(level.get("price", 0))
-                        size = to_decimal(level.get("size", 0))
+                        price_raw = level.get("price")
+                        size_raw = level.get("size")
+                        if price_raw is None or size_raw is None:
+                            continue
+                        price = to_decimal(price_raw)
+                        size = to_decimal(size_raw)
                         if price and price > 0 and size and size > 0:
                             bids.append((price, size))
 
                     asks = []
                     for level in book_data.get("asks", []):
-                        price = to_decimal(level.get("price", 0))
-                        size = to_decimal(level.get("size", 0))
+                        price_raw = level.get("price")
+                        size_raw = level.get("size")
+                        if price_raw is None or size_raw is None:
+                            continue
+                        price = to_decimal(price_raw)
+                        size = to_decimal(size_raw)
                         if price and price > 0 and size and size > 0:
                             asks.append((price, size))
+
+                    # Sort: bids descending (best=highest first), asks ascending (best=lowest first)
+                    bids.sort(key=lambda x: x[0], reverse=True)
+                    asks.sort(key=lambda x: x[0])
 
                     # Get token_id from book_data (should be in response)
                     token_id = book_data.get("asset_id", "")

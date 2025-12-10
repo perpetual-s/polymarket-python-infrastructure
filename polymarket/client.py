@@ -2805,6 +2805,7 @@ class PolymarketClient:
             self.gamma.close()
             self.clob.close()
             self.data.close()
+            self.public_clob.close()  # Fix: was missing, causing session leak
 
             logger.info("Polymarket client closed gracefully")
         except Exception as e:
