@@ -172,10 +172,12 @@ RATE_LIMITS = {
     "GET:/search": {"limit": 300, "window": 10},   # Official: 300 req/10s
     "GET:/events": {"limit": 100, "window": 10},   # Official: 100 req/10s
     "GET:/tags": {"limit": 100, "window": 10},     # Official: 100 req/10s (Tags endpoint)
+    "GET:/public-profile": {"limit": 100, "window": 10},
     "GAMMA:default": {"limit": 750, "window": 10}, # Official: 750 req/10s (general)
 
     # === Data API ===
     # Data API: 200 req/10s general
+    "GET:/v1/leaderboard": {"limit": 200, "window": 10},
     "DATA:default": {"limit": 200, "window": 10},
 
     # === Default fallback ===

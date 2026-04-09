@@ -494,7 +494,7 @@ logger.info("order_placed", "Order successful", order_id="abc123", price=Decimal
 - `Side` - BUY, SELL
 - `OrderType` - GTC, GTD, FOK, FAK
 - `OrderStatus` - LIVE, MATCHED, DELAYED, UNMATCHED, CANCELLED
-- `ActivityType` - TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION
+- `ActivityType` - TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION, MAKER_REBATE, YIELD
 - `SignatureType` - EOA (0), MAGIC (1), PROXY (2)
 
 ---

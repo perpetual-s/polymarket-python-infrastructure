@@ -4,13 +4,13 @@ Gamma API client for market data.
 Read-only API for markets, events, and metadata.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 
 from .base import BaseAPIClient
 from ..config import PolymarketSettings
 from ..models import Market, Event, MarketFilters
-from ..exceptions import MarketDataError
+from ..exceptions import APIError, MarketDataError
 from ..utils.rate_limiter import RateLimiter
 from ..utils.retry import CircuitBreaker
 
@@ -494,3 +494,53 @@ class GammaAPI(BaseAPIClient):
         logger.info("Fetching all tradeable events")
         all_events = self.get_events(limit=limit)
         return self.filter_events_for_trading(all_events)
+
+    def get_public_profile(self, address: str) -> Optional[Dict[str, Any]]:
+        """
+        Get public profile for a wallet address.
+
+        Returns profile metadata including name, bio, profile image,
+        account creation date, and verification status.
+
+        Args:
+            address: Wallet address (proxy wallet)
+
+        Returns:
+            Profile dict or None if not found
+
+        Raises:
+            MarketDataError: If request fails with non-404 error
+        """
+        if not address:
+            return None
+
+        try:
+            response = self.get(
+                "/public-profile",
+                params={"address": address.lower()},
+                rate_limit_key="GET:/public-profile",
+                retry=False
+            )
+
+            return self._parse_public_profile_response(response)
+
+        except APIError as e:
+            if e.status_code == 404:
+                return None
+            raise MarketDataError(f"Failed to fetch public profile: {e}")
+        except MarketDataError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to fetch public profile for {address}: {e}")
+            raise MarketDataError(f"Failed to fetch public profile: {e}")
+
+    @staticmethod
+    def _parse_public_profile_response(response: Any) -> Optional[Dict[str, Any]]:
+        """Normalize Gamma public-profile response into a single dict."""
+        if isinstance(response, dict):
+            return response
+        if isinstance(response, list):
+            for item in response:
+                if isinstance(item, dict):
+                    return item
+        return None

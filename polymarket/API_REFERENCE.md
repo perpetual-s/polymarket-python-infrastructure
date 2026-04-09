@@ -1563,7 +1563,7 @@ activity = client.get_activity(
 **Returns:** `List[Activity]`
 
 **Activity fields:**
-- `type` (ActivityType) - TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION
+- `type` (ActivityType) - TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION, MAKER_REBATE, YIELD
 - `timestamp` (datetime) - Event time
 - `usd_value` (Decimal) - USD value of activity
 - `transaction_hash` (str) - Transaction hash
@@ -1576,6 +1576,8 @@ activity = client.get_activity(
 - `REDEEM` - Redeem resolved market
 - `REWARD` - Trading rewards
 - `CONVERSION` - Token conversion
+- `MAKER_REBATE` - Maker fee rebate
+- `YIELD` - Yield distribution
 
 **Example:**
 ```python

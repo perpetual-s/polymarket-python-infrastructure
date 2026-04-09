@@ -521,9 +521,9 @@ class DataAPI(BaseAPIClient):
         """
         try:
             response = self.get(
-                "/leaderboard",
+                "/v1/leaderboard",
                 params={},
-                rate_limit_key="GET:/leaderboard",
+                rate_limit_key="GET:/v1/leaderboard",
                 retry=True
             )
 

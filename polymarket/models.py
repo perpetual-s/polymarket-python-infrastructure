@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Optional, Any, Union
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from pydantic import BaseModel, Field, field_validator, ConfigDict, field_serializer
+from pydantic import BaseModel, Field, field_validator, ConfigDict, field_serializer, AliasChoices
 
 
 class Side(str, Enum):
@@ -269,6 +269,8 @@ class ActivityType(str, Enum):
     REDEEM = "REDEEM"
     REWARD = "REWARD"
     CONVERSION = "CONVERSION"
+    MAKER_REBATE = "MAKER_REBATE"
+    YIELD = "YIELD"
 
 
 class Activity(BaseModel):
@@ -289,7 +291,7 @@ class Activity(BaseModel):
     title: str
     outcome: str
 
-    # Trade-specific (optional)
+    # Trade-specific (optional — non-TRADE events return side="" from the API)
     side: Optional[Side] = None
 
     # Amounts
@@ -297,6 +299,15 @@ class Activity(BaseModel):
     usd_value: Decimal = Field(..., alias="usdValue")
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def coerce_empty_side(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("size", "usd_value", mode="before")
     @classmethod
@@ -369,11 +380,16 @@ class Holder(BaseModel):
 class LeaderboardTrader(BaseModel):
     """Leaderboard trader entry."""
     rank: str
-    user_id: str = Field(..., alias="user_id")
-    user_name: str = Field(..., alias="user_name")
+    user_id: str = Field(..., validation_alias=AliasChoices("user_id", "proxyWallet"))
+    user_name: str = Field(..., validation_alias=AliasChoices("user_name", "userName"))
     vol: Decimal
     pnl: Decimal
-    profile_image: Optional[str] = Field(None, alias="profile_image")
+    profile_image: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("profile_image", "profileImage")
+    )
+    x_username: Optional[str] = Field(None, alias="xUsername")
+    verified_badge: Optional[bool] = Field(None, alias="verifiedBadge")
 
     model_config = ConfigDict(populate_by_name=True)
 
