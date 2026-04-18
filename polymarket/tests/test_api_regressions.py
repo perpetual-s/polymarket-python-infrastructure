@@ -1,6 +1,8 @@
 """Regression tests for public API payload changes."""
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock
+
+import pytest
 
 from ..api.gamma import GammaAPI
 from ..config import PolymarketSettings
@@ -48,44 +50,38 @@ def test_activity_accepts_new_type_and_blank_side():
         timestamp=1,
         type="MAKER_REBATE",
         transactionHash="0xabc",
-        market="market",
-        conditionId="0xcondition",
-        asset="asset",
-        title="title",
-        outcome="Yes",
-        side="   ",
         size="1.0",
-        usdValue="0.5",
+        usdcSize="0.5",
+        side="   ",
     )
 
     assert activity.type == "MAKER_REBATE"
     assert activity.side is None
 
 
-def test_get_public_profile_returns_none_on_404():
+@pytest.mark.asyncio
+async def test_get_public_profile_returns_none_on_404():
     """Profile misses should return None without retrying."""
     api = GammaAPI(PolymarketSettings())
-    api.get = Mock(side_effect=APIError("profile not found", status_code=404))
+    api.get = AsyncMock(side_effect=APIError("profile not found", status_code=404))
 
     try:
-        assert api.get_public_profile("0x1111111111111111111111111111111111111111") is None
-        api.get.assert_called_once()
-        assert api.get.call_args.kwargs["retry"] is False
+        assert await api.get_public_profile("0x1111111111111111111111111111111111111111") is None
+        api.get.assert_awaited_once()
+        assert api.get.await_args.kwargs["retry"] is False
     finally:
-        api.close()
+        await api.close()
 
 
-def test_get_public_profile_raises_marketdataerror_on_non_404():
+@pytest.mark.asyncio
+async def test_get_public_profile_raises_marketdataerror_on_non_404():
     """Non-404 API failures should still raise MarketDataError."""
     api = GammaAPI(PolymarketSettings())
-    api.get = Mock(side_effect=APIError("server error", status_code=500))
+    api.get = AsyncMock(side_effect=APIError("server error", status_code=500))
 
     try:
-        try:
-            api.get_public_profile("0x1111111111111111111111111111111111111111")
-            raise AssertionError("Expected MarketDataError")
-        except MarketDataError as exc:
-            assert "server error" in str(exc)
-        api.get.assert_called_once()
+        with pytest.raises(MarketDataError, match="server error"):
+            await api.get_public_profile("0x1111111111111111111111111111111111111111")
+        api.get.assert_awaited_once()
     finally:
-        api.close()
+        await api.close()

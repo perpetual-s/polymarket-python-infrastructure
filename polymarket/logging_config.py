@@ -6,7 +6,6 @@ Provides structured logging for production use.
 
 import logging
 import logging.config
-import sys
 from typing import Optional
 
 
@@ -55,7 +54,7 @@ DEFAULT_LOGGING_CONFIG = {
         }
     },
     "loggers": {
-        "shared.polymarket": {
+        "polymarket": {
             "level": "INFO",
             "handlers": ["console", "file", "error_file"],
             "propagate": False
@@ -85,7 +84,7 @@ def setup_logging(
 
     # Override level
     if level:
-        config["loggers"]["shared.polymarket"]["level"] = level.upper()
+        config["loggers"]["polymarket"]["level"] = level.upper()
 
     # Override log file
     if log_file:
@@ -112,4 +111,4 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger instance
     """
-    return logging.getLogger(f"shared.polymarket.{name}")
+    return logging.getLogger(f"polymarket.{name}")

@@ -40,8 +40,8 @@ TESTNET_RPC_URL=https://rpc-amoy.polygon.technology
 
 Before trading on testnet:
 ```python
-from shared.polymarket.utils.allowances import AllowanceManager
-from shared.polymarket import WalletConfig
+from polymarket.utils.allowances import AllowanceManager
+from polymarket import WalletConfig
 
 manager = AllowanceManager(chain_id=80002)  # Amoy testnet
 wallet = WalletConfig(private_key=os.getenv("TESTNET_PRIVATE_KEY"))

@@ -2,18 +2,19 @@
 Order builder with EIP-712 signing.
 
 Implements order construction and signing for Polymarket CLOB.
-Adapted from py-clob-client and python-order-utils (MIT License).
+Uses py_order_utils for EIP-712 signing (official Polymarket library).
+Adapted from py-clob-client (MIT License).
 """
 
 import time
-import secrets
+import hashlib
 from typing import Optional, Dict, Any
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import logging
 
 from ..models import OrderRequest, Side, OrderType
 from ..exceptions import ValidationError, TradingError
-from ..utils.validators import validate_order, validate_price
+from ..utils.validators import validate_order
 from ..utils.cache import MarketMetadataCache
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,9 @@ logger = logging.getLogger(__name__)
 BUY = 0
 SELL = 1
 
-# Exchange addresses (Polymarket production)
-EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # Polygon mainnet
+# Exchange addresses (Polymarket production - Polygon mainnet)
+EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # Standard exchange
+NEG_RISK_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a"  # Negative risk exchange
 COLLATERAL_TOKEN = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC on Polygon
 
 # Default values
@@ -72,10 +74,12 @@ class OrderBuilder:
         tick_size: Optional[Decimal] = None,
         fee_rate_bps: Optional[int] = None,
         neg_risk: bool = False,
-        idempotency_key: Optional[str] = None
+        idempotency_key: Optional[str] = None,
+        signature_type: int = 0,
+        funder: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Build and sign order.
+        Build and sign order using py_order_utils.
 
         Args:
             order: Order request
@@ -89,13 +93,17 @@ class OrderBuilder:
                            (prevents duplicate orders on retry)
 
         Returns:
-            Signed order dict ready for submission
+            Signed order dict ready for submission (via .dict() method)
 
         Raises:
             ValidationError: If order parameters invalid
             TradingError: If signing fails
         """
         try:
+            from py_order_utils.builders import OrderBuilder as UtilsOrderBuilder
+            from py_order_utils.signer import Signer as UtilsSigner
+            from py_order_utils.model import OrderData, BUY as UtilsBuy, SELL as UtilsSell
+
             # Validate order
             validate_order(
                 order.token_id,
@@ -119,10 +127,6 @@ class OrderBuilder:
             if fee_rate_bps is None:
                 fee_rate_bps = self._resolve_fee_rate(order.token_id)
 
-            # Generate salt (unique order ID)
-            # If idempotency_key provided, use deterministic salt for retry safety
-            salt = self.generate_salt_from_key(idempotency_key)
-
             # CRITICAL: Explicit zero-price validation before division
             if order.price == 0 or order.price <= 0:
                 raise ValidationError(
@@ -131,53 +135,117 @@ class OrderBuilder:
                 )
 
             # Calculate amounts (using Decimal for precision)
-            side_int = BUY if order.side == Side.BUY else SELL
+            # CRITICAL: Per official py-clob-client, size = number of tokens (NOT USD)
+            side_utils = UtilsBuy if order.side == Side.BUY else UtilsSell
 
-            if side_int == BUY:
-                # Buying: maker amount is USDC, taker amount is tokens
-                # size = USD value to spend
-                maker_amount = self._to_wei(order.size)  # USDC to pay
-                taker_amount = self._to_amount(order.size / order.price, neg_risk)  # Tokens received (division safe)
+            if side_utils == UtilsBuy:
+                # BUY: size = tokens to buy
+                # taker_amount = tokens to receive (what we get)
+                # maker_amount = USDC to pay (what we give)
+                taker_amount = self._to_amount(order.size, neg_risk)
+
+                # Round taker amount first (BUY: taker=2 decimals)
+                # Tokens have 6 decimals, 2 decimal precision = divisible by 10,000
+                taker_amount = self._round_to_precision(taker_amount, 10000)
+
+                # Recalculate maker amount from rounded taker amount for consistency
+                # maker_amount = taker_amount × price (in USDC atomic units)
+                taker_amount_decimal = Decimal(str(taker_amount)) / Decimal("1e6")  # Convert to decimal tokens
+                maker_amount_decimal = taker_amount_decimal * order.price  # Calculate USDC value
+                maker_amount = self._to_wei(maker_amount_decimal)  # Convert to USDC atomic units
+
+                # Round maker amount (BUY: maker=4 decimals)
+                # USDC has 6 decimals, 4 decimal precision = divisible by 100
+                maker_amount = self._round_to_precision(maker_amount, 100)
             else:
-                # Selling: maker amount is tokens, taker amount is USDC
-                # CRITICAL FIX: size = USD value to sell, so convert to token quantity first
-                # Example: size=$10, price=$0.50 → sell 20 tokens for $10
-                tokens_to_sell = order.size / order.price  # USD / price = token quantity (division safe)
-                maker_amount = self._to_amount(tokens_to_sell, neg_risk)  # Tokens to give
-                taker_amount = self._to_wei(order.size)  # USDC to receive (≈ tokens * price)
+                # SELL: size = tokens to sell
+                # maker_amount = tokens to give (what we sell)
+                # taker_amount = USDC to receive (what we get)
+                maker_amount = self._to_amount(order.size, neg_risk)
 
-            # Calculate expiration (default 30 days)
-            expiration = int(time.time()) + (30 * 24 * 60 * 60)
-            if order.order_type == OrderType.GTD and order.expiration:
-                expiration = order.expiration
+                # Round maker amount first (SELL: maker=2 decimals)
+                # Tokens have 6 decimals, 2 decimal precision = divisible by 10,000
+                maker_amount = self._round_to_precision(maker_amount, 10000)
 
-            # Build order structure
-            order_data = {
-                "salt": salt,
-                "maker": address,
-                "signer": address,
-                "taker": "0x0000000000000000000000000000000000000000",  # Anyone
-                "tokenId": order.token_id,
-                "makerAmount": str(maker_amount),
-                "takerAmount": str(taker_amount),
-                "expiration": str(expiration),
-                "nonce": str(nonce),
-                "feeRateBps": str(fee_rate_bps),
-                "side": str(side_int),
-                "signatureType": str(0),  # EOA signature
-            }
+                # Recalculate taker amount from rounded maker amount for consistency
+                # taker_amount = maker_amount × price (in USDC atomic units)
+                maker_amount_decimal = Decimal(str(maker_amount)) / Decimal("1e6")  # Convert to decimal tokens
+                taker_amount_decimal = maker_amount_decimal * order.price  # Calculate USDC value
+                taker_amount = self._to_wei(taker_amount_decimal)  # Convert to USDC atomic units
 
-            # Sign order
-            signature = self._sign_order(order_data, private_key)
-            order_data["signature"] = signature
+                # Round taker amount (SELL: taker=4 decimals)
+                # USDC has 6 decimals, 4 decimal precision = divisible by 100
+                taker_amount = self._round_to_precision(taker_amount, 100)
+
+            # Calculate expiration based on order type
+            # GTC (Good Till Canceled) → expiration = 0
+            # GTD (Good Till Date) → expiration = Unix timestamp
+            if order.order_type == OrderType.GTD:
+                # GTD orders use provided expiration or default to 30 days
+                expiration = order.expiration if order.expiration else int(time.time()) + (30 * 24 * 60 * 60)
+            else:
+                # GTC, FOK, FAK orders must have expiration = 0
+                expiration = 0
+
+            # Build OrderData structure (per py_order_utils)
+            # For PROXY wallets: maker = proxy address, signer = EOA address
+            # For EOA wallets: maker = signer = EOA address
+            maker_address = funder if funder else address
+
+            order_data = OrderData(
+                maker=maker_address,
+                taker="0x0000000000000000000000000000000000000000",
+                tokenId=str(order.token_id),
+                makerAmount=str(int(maker_amount)),
+                takerAmount=str(int(taker_amount)),
+                side=side_utils,
+                feeRateBps=str(int(fee_rate_bps)),
+                nonce=str(int(nonce)),
+                signer=address,
+                expiration=str(int(expiration)),
+                signatureType=signature_type,
+            )
+
+            # Create salt generator (deterministic if idempotency_key provided)
+            if idempotency_key:
+                # Deterministic salt for retry safety
+                salt_value = self.generate_salt_from_key(idempotency_key)
+                salt_generator = lambda: salt_value
+            else:
+                # Random salt (default)
+                salt_generator = lambda: self.generate_salt_from_key(None)
+
+            # Select exchange based on neg_risk flag
+            # CRITICAL: neg_risk markets use a different exchange contract
+            exchange = NEG_RISK_EXCHANGE_ADDRESS if neg_risk else self.exchange
+
+            # Build and sign order using py_order_utils
+            builder = UtilsOrderBuilder(
+                exchange,
+                self.chain_id,
+                UtilsSigner(key=private_key),
+                salt_generator=salt_generator
+            )
+
+            signed_order = builder.build_signed_order(order_data)
+
+            # Convert to dict for API submission
+            # Uses SignedOrder.dict() method which handles type transformations
+            order_dict = signed_order.dict()
 
             logger.info(
                 f"Built order: {order.side.value} {order.size} @ {order.price} "
                 f"(token={order.token_id}, nonce={nonce})"
             )
 
-            return order_data
+            return order_dict
 
+        except ImportError as e:
+            logger.error(f"py_order_utils not installed: {e}")
+            raise TradingError(
+                "py_order_utils required for order signing. "
+                "Install with: pip install py_order_utils"
+            )
         except ValidationError:
             raise
         except Exception as e:
@@ -261,23 +329,22 @@ class OrderBuilder:
             from ..exceptions import ValidationError
             raise ValidationError(f"Invalid price or tick size: price={price}, tick_size={tick_size}, error={e}")
 
-    def _generate_salt(self) -> int:
-        """Generate random salt for order uniqueness."""
-        return secrets.randbits(256)
-
     def generate_salt_from_key(self, idempotency_key: Optional[str]) -> int:
         """
         Generate deterministic salt from idempotency key.
 
         If idempotency_key is None, generates random salt (backward compatible).
-        If provided, uses SHA-256 hash of key to generate deterministic 256-bit salt.
+        If provided, uses SHA-256 hash of key to generate deterministic 32-bit salt.
+
+        CRITICAL: Polymarket API (TypeScript/JavaScript-based) cannot handle integers larger
+        than 2^53 - 1 (Number.MAX_SAFE_INTEGER). We use 32-bit salts to ensure compatibility.
 
         Args:
             idempotency_key: Unique identifier (e.g., database UUID)
                            None for random salt
 
         Returns:
-            256-bit integer salt
+            32-bit integer salt (0 to 4,294,967,295)
 
         Example:
             >>> builder = OrderBuilder()
@@ -292,19 +359,40 @@ class OrderBuilder:
             >>> assert salt3 != salt4  # Random
         """
         if idempotency_key is None:
-            # Backward compatible: random salt
-            return self._generate_salt()
+            # Random 32-bit salt (JavaScript-safe)
+            import secrets
+            return secrets.randbits(32)
 
-        # Deterministic: hash the key to get 256-bit salt
-        import hashlib
-
-        # SHA-256 produces 256 bits = 32 bytes
+        # Deterministic: hash the key to get 32-bit salt
+        # SHA-256 produces 256 bits, we take first 4 bytes = 32 bits
         hash_bytes = hashlib.sha256(idempotency_key.encode("utf-8")).digest()
 
-        # Convert bytes to 256-bit integer
-        salt = int.from_bytes(hash_bytes, byteorder="big")
+        # Convert first 4 bytes to 32-bit integer
+        salt = int.from_bytes(hash_bytes[:4], byteorder="big")
 
         return salt
+
+    def _round_to_precision(self, amount: int, divisor: int) -> int:
+        """
+        Round amount to nearest multiple of divisor.
+
+        Polymarket requires specific decimal precision for order amounts:
+        - BUY: maker (USDC) divisible by 100, taker (tokens) divisible by 10,000
+        - SELL: maker (tokens) divisible by 10,000, taker (USDC) divisible by 100
+
+        Args:
+            amount: Amount in smallest unit (int)
+            divisor: Rounding precision (e.g., 100 for 4 decimals, 10000 for 2 decimals)
+
+        Returns:
+            Rounded amount (int)
+
+        Example:
+            >>> self._round_to_precision(1020202, 10000)  # Round to nearest 10,000
+            1020000  # 1.02 tokens → 1.02 tokens (rounded down)
+        """
+        # Round to nearest multiple of divisor
+        return (amount // divisor) * divisor
 
     def _to_wei(self, amount: Decimal) -> int:
         """
@@ -336,97 +424,6 @@ class OrderBuilder:
         amount = size * Decimal("1e6")
         # Round to nearest integer
         return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
-    def _sign_order(self, order_data: Dict[str, Any], private_key: str) -> str:
-        """
-        Sign order using EIP-712.
-
-        Args:
-            order_data: Order data
-            private_key: Private key
-
-        Returns:
-            Hex signature
-
-        Raises:
-            TradingError: If signing fails
-        """
-        try:
-            from web3 import Web3
-            from eth_account.messages import encode_typed_data
-
-            # EIP-712 domain
-            domain = {
-                "name": "Polymarket CTF Exchange",
-                "version": "1",
-                "chainId": self.chain_id,
-                "verifyingContract": self.exchange
-            }
-
-            # Order type
-            order_type = [
-                {"name": "salt", "type": "uint256"},
-                {"name": "maker", "type": "address"},
-                {"name": "signer", "type": "address"},
-                {"name": "taker", "type": "address"},
-                {"name": "tokenId", "type": "uint256"},
-                {"name": "makerAmount", "type": "uint256"},
-                {"name": "takerAmount", "type": "uint256"},
-                {"name": "expiration", "type": "uint256"},
-                {"name": "nonce", "type": "uint256"},
-                {"name": "feeRateBps", "type": "uint256"},
-                {"name": "side", "type": "uint8"},
-                {"name": "signatureType", "type": "uint8"},
-            ]
-
-            # Convert to int types for signing
-            message = {
-                "salt": int(order_data["salt"]),
-                "maker": order_data["maker"],
-                "signer": order_data["signer"],
-                "taker": order_data["taker"],
-                "tokenId": int(order_data["tokenId"]),
-                "makerAmount": int(order_data["makerAmount"]),
-                "takerAmount": int(order_data["takerAmount"]),
-                "expiration": int(order_data["expiration"]),
-                "nonce": int(order_data["nonce"]),
-                "feeRateBps": int(order_data["feeRateBps"]),
-                "side": int(order_data["side"]),
-                "signatureType": int(order_data["signatureType"]),
-            }
-
-            # Build typed data
-            typed_data = {
-                "types": {
-                    "EIP712Domain": [
-                        {"name": "name", "type": "string"},
-                        {"name": "version", "type": "string"},
-                        {"name": "chainId", "type": "uint256"},
-                        {"name": "verifyingContract", "type": "address"},
-                    ],
-                    "Order": order_type,
-                },
-                "primaryType": "Order",
-                "domain": domain,
-                "message": message,
-            }
-
-            # Sign
-            w3 = Web3()
-            account = w3.eth.account.from_key(private_key)
-            encoded = encode_typed_data(full_message=typed_data)
-            signature = account.sign_message(encoded)
-
-            return signature.signature.hex()
-
-        except ImportError:
-            raise TradingError(
-                "web3 and eth-account required for order signing. "
-                "Install with: pip install web3 eth-account"
-            )
-        except Exception as e:
-            logger.error(f"Order signing failed: {e}")
-            raise TradingError(f"Order signing failed: {e}")
 
     def set_tick_size(self, token_id: str, tick_size: Decimal) -> None:
         """

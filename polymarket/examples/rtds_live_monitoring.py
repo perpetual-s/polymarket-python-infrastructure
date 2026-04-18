@@ -13,7 +13,7 @@ ZERO ASSUMPTIONS:
 - Clean shutdown on Ctrl+C
 """
 
-import time
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -21,8 +21,8 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from shared.polymarket import PolymarketClient
-from shared.polymarket.api.real_time_data import Message
+from polymarket import PolymarketClient
+from polymarket.api.real_time_data import Message
 
 # Configure logging
 logging.basicConfig(
@@ -65,7 +65,7 @@ def on_rfq_request(msg: Message):
     logger.info(f"RFQ REQUEST: {msg.payload}")
 
 
-def main():
+async def main():
     """
     Main execution.
 
@@ -103,7 +103,7 @@ def main():
 
         # Keep running
         while True:
-            time.sleep(1)
+            await asyncio.sleep(1)
 
     except KeyboardInterrupt:
         logger.info("\nShutting down gracefully...")
@@ -115,11 +115,11 @@ def main():
         # Cleanup
         try:
             client.unsubscribe_rtds_all()
-            client.close()
+            await client.close()
             logger.info("Cleanup complete")
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

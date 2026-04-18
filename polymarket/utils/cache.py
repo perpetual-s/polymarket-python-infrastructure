@@ -6,9 +6,10 @@ Critical for performance and reducing API calls.
 
 import time
 import threading
+import secrets
 from typing import Optional, Any, Dict, Callable
 from dataclasses import dataclass
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -227,7 +228,13 @@ class AtomicNonceManager:
 
     BUG FIX (P1-4): Replaced defaultdict with regular dict to allow lock cleanup.
     Prevents memory leak from accumulating locks for ephemeral addresses.
+
+    FIX (Issue #4): Added MAX_NONCE check to prevent overflow in 64-bit signed integer space.
     """
+
+    # Maximum nonce value (64-bit signed integer max)
+    # Polymarket API likely uses 64-bit signed int for nonces
+    MAX_NONCE = 2**63 - 1  # 9,223,372,036,854,775,807
 
     def __init__(self):
         self._nonces: Dict[str, int] = {}
@@ -263,8 +270,21 @@ class AtomicNonceManager:
         with self._locks[address]:
             current = self._nonces.get(address)
             if current is not None:
-                self._nonces[address] = current + 1
-                logger.debug(f"[ATOMIC] Nonce for {address}: {current} -> {current + 1}")
+                # FIX (Issue #4): Check for nonce overflow before incrementing
+                if current >= self.MAX_NONCE:
+                    logger.critical(
+                        f"[ATOMIC] Nonce overflow detected for {address}! "
+                        f"Current nonce {current} >= MAX_NONCE {self.MAX_NONCE}. "
+                        f"Resetting nonce to prevent API rejection."
+                    )
+                    # Reset to a safe value (current timestamp in milliseconds + random)
+                    new_nonce = int(time.time() * 1000) + secrets.randbelow(1000)
+                    self._nonces[address] = new_nonce + 1  # Store incremented for next call
+                    logger.warning(f"[ATOMIC] Nonce reset for {address}: {current} -> {new_nonce}")
+                    current = new_nonce  # Return this value for current use
+                else:
+                    self._nonces[address] = current + 1
+                logger.debug(f"[ATOMIC] Nonce for {address}: {current} -> {self._nonces[address]}")
             # Track access time for cleanup
             self._last_access[address] = time.time()
             return current

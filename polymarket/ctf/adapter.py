@@ -20,12 +20,10 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 from web3 import Web3
-from web3.contract import Contract
 from eth_account import Account
 
 from .addresses import (
     NEG_RISK_ADAPTER,
-    NEG_RISK_WRAPPED_COLLATERAL,
     CTF_ADDRESS,
     USDC_ADDRESS,
 )
@@ -394,7 +392,7 @@ class NegRiskAdapter:
         if not skip_balance_check:
             # Note: Full balance check requires knowing token IDs from index_set
             # This is a simplified check - implement full validation if needed
-            logger.info(f"Skipping detailed balance check (implement if needed)")
+            logger.info("Skipping detailed balance check (implement if needed)")
 
         logger.info(f"Converting positions: {amount} for market {market_id.hex()}")
 

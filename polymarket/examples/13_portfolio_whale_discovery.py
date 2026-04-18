@@ -14,7 +14,7 @@ Web research findings: https://docs.polymarket.com/
 
 import os
 import asyncio
-from shared.polymarket import PolymarketClient, WalletConfig
+from polymarket import PolymarketClient, WalletConfig
 
 
 async def main():
@@ -45,9 +45,9 @@ async def main():
         )
 
         # Get portfolio value with breakdown
-        portfolio = client.get_portfolio_value(wallet_id="demo")
+        portfolio = await client.get_portfolio_value(wallet_id="demo")
 
-        print(f"\nPortfolio Analysis:")
+        print("\nPortfolio Analysis:")
         print(f"  Total Value:    ${portfolio.equity_total or portfolio.value:.2f}")
         print(f"  Active Bets:    ${portfolio.bets or 0:.2f}")
         print(f"  Available Cash: ${portfolio.cash or 0:.2f}")
@@ -65,7 +65,7 @@ async def main():
     print("=" * 80)
 
     # Get a popular market from gamma API
-    markets = client.gamma.get_markets(limit=5, active=True)
+    markets = await client.gamma.get_markets(limit=5, active=True)
 
     if markets:
         market = markets[0]
@@ -74,7 +74,7 @@ async def main():
 
         # Find whales with significant positions (>$1000)
         print("\n--- Top Whales (>$1000 positions) ---")
-        whales = client.get_market_holders(
+        whales = await client.get_market_holders(
             market=market.condition_id,
             limit=10,
             min_balance=1000
@@ -100,7 +100,7 @@ async def main():
 
         # Compare with smaller holders
         print("\n--- All Holders (>$10 positions) ---")
-        all_holders = client.get_market_holders(
+        all_holders = await client.get_market_holders(
             market=market.condition_id,
             limit=20,
             min_balance=10
@@ -123,7 +123,7 @@ async def main():
 
     if private_key:
         # Get recent activity for our wallet
-        activities = client.get_activity(
+        activities = await client.get_activity(
             wallet_id="demo",
             limit=10
         )
@@ -149,7 +149,7 @@ async def main():
             print("\nNo recent activity found")
 
         # Get trade-only activity
-        trade_activities = client.get_activity(
+        trade_activities = await client.get_activity(
             wallet_id="demo",
             activity_type="TRADE",
             limit=5
@@ -174,11 +174,11 @@ async def main():
 
             # Get whale's portfolio value
             try:
-                whale_portfolio = client.data.get_portfolio_value(user=whale_address)
+                whale_portfolio = await client.data.get_portfolio_value(user=whale_address)
                 print(f"Total portfolio: ${whale_portfolio.equity_total or whale_portfolio.value:.2f}")
 
                 # Get whale's recent activity
-                whale_activities = client.data.get_activity(
+                whale_activities = await client.data.get_activity(
                     user=whale_address,
                     limit=5
                 )

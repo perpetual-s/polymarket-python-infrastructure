@@ -7,7 +7,7 @@ Critical test to verify no race conditions under concurrent load.
 import pytest
 import threading
 from unittest.mock import Mock, patch
-from shared.polymarket.utils.cache import AtomicNonceManager
+from polymarket.utils.cache import AtomicNonceManager
 
 
 class TestAtomicNonceManager:
@@ -113,7 +113,7 @@ class TestMarketMetadataCache:
 
     def test_nonce_increment_atomic(self):
         """Test nonce increment is atomic via cache."""
-        from shared.polymarket.utils.cache import MarketMetadataCache
+        from polymarket.utils.cache import MarketMetadataCache
 
         cache = MarketMetadataCache()
         cache.set_nonce("0x123", 100)
@@ -127,7 +127,7 @@ class TestMarketMetadataCache:
 
     def test_concurrent_nonce_increment(self):
         """Test concurrent nonce increments via cache."""
-        from shared.polymarket.utils.cache import MarketMetadataCache
+        from polymarket.utils.cache import MarketMetadataCache
 
         cache = MarketMetadataCache()
         cache.set_nonce("0x123", 0)

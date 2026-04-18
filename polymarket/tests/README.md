@@ -30,7 +30,7 @@ tests/
 
 ### All Tests
 ```bash
-# From shared/polymarket directory
+# From polymarket directory
 pytest tests/ -v
 ```
 
@@ -54,7 +54,7 @@ pytest tests/testnet/ -v -s
 
 ### Coverage Report
 ```bash
-pytest tests/ --cov=shared.polymarket --cov-report=html
+pytest tests/ --cov=polymarket --cov-report=html
 ```
 
 ## Critical Tests
@@ -123,7 +123,7 @@ fi
 ```python
 import pytest
 from unittest.mock import Mock, patch
-from shared.polymarket import PolymarketClient
+from polymarket import PolymarketClient
 
 class TestNewFeature:
     \"\"\"Test description.\"\"\"
@@ -190,7 +190,7 @@ Run tests automatically:
 ptw tests/
 
 # On file change
-while inotifywait -e modify -r shared/polymarket; do
+while inotifywait -e modify -r polymarket; do
     pytest tests/ -v
 done
 ```
@@ -206,7 +206,7 @@ pip install -e .
 ### Mock Issues
 ```bash
 # Check patch path
-# Use: 'shared.polymarket.client.ClassName'
+# Use: 'polymarket.client.ClassName'
 # Not: 'ClassName' (won't work)
 ```
 

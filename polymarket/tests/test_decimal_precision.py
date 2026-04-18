@@ -8,8 +8,8 @@ to prevent cumulative rounding errors.
 import pytest
 from decimal import Decimal
 
-from shared.polymarket.client import PolymarketClient
-from shared.polymarket.exceptions import BalanceTrackingError
+from polymarket.client import PolymarketClient
+from polymarket.exceptions import BalanceTrackingError
 
 
 class TestDecimalPrecisionInBalanceTracking:

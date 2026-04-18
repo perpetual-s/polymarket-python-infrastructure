@@ -8,10 +8,9 @@ This module provides utilities to check and set required allowances.
 import logging
 from typing import Dict, List
 from web3 import Web3
-from web3.contract import Contract
 from eth_account import Account
 
-from ..exceptions import InsufficientAllowanceError, ValidationError
+from ..exceptions import ValidationError
 from ..ctf.addresses import (
     USDC_ADDRESS,
     CTF_ADDRESS,
@@ -231,7 +230,7 @@ class AllowanceManager:
                         private_key=private_key
                     )
                     tx_hash = self.web3.eth.send_raw_transaction(
-                        signed_tx.rawTransaction
+                        signed_tx.raw_transaction
                     )
 
                     tx_hashes.append(tx_hash.hex())
@@ -261,7 +260,7 @@ class AllowanceManager:
                         private_key=private_key
                     )
                     tx_hash = self.web3.eth.send_raw_transaction(
-                        signed_tx.rawTransaction
+                        signed_tx.raw_transaction
                     )
 
                     tx_hashes.append(tx_hash.hex())

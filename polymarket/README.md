@@ -1,15 +1,16 @@
 # Polymarket Client Library
 
-**Version:** 3.1 (Security & Performance Hardening)
-**Status:** Production Ready - All Implementations Validated
+**Version:** 3.7 (MarketManager - Real-Time Market Data)
+**Status:** Production Ready - Verified with Live Trading
 **Optimized For:** Claude AI consumption (token-efficient)
-**Latest:** Critical security patches + 100x cache performance boost (v3.1)
+**Latest:** MarketManager for in-memory market cache with CLOB API + WebSocket (v3.7)
+**v3.7 NEW:** MarketManager replaces stale database queries (<10ms vs ~200ms)
 
 ---
 
 ## Core Purpose
 
-Thread-safe, production-grade Polymarket trading library. Supports single-wallet trading and multi-wallet tracking (100+ wallets).
+Thread-safe, production-grade Polymarket trading library for single-wallet execution and multi-wallet analytics. This public package is the externalized Polymarket infrastructure used in Pelion.
 
 ---
 
@@ -18,29 +19,61 @@ Thread-safe, production-grade Polymarket trading library. Supports single-wallet
 **CRITICAL:** Use correct endpoint for your use case to avoid 10-30x slowdowns.
 
 ### Gamma API `/markets` - Analytics & Historical Data
-- **Use for:** Market intelligence, historical tracking, backtesting
-- **Data:** Full market metadata (20+ fields)
-- **Storage:** PostgreSQL for analytics (update every 1-6 hours)
-- **Don't use for:** Real-time bot operations (30-60s latency)
+- ✅ **Use for:** Market intelligence, historical tracking, backtesting
+- ✅ **Data:** Full market metadata (20+ fields)
+- ✅ **Storage:** PostgreSQL for analytics (update every 1-6 hours)
+- ❌ **Don't use for:** Real-time bot operations (30-60s latency)
 
 ### CLOB API `/simplified-markets` - Real-Time Trading
-- **Use for:** Bot creation, market discovery, trading decisions
-- **Data:** Essential fields only (condition_id, tokens, active, closed)
-- **Speed:** 2-5 seconds (10-20x faster than Gamma)
-- **Cache:** 30-60 seconds in Redis/memory
-- **Don't use for:** Analytics (missing historical data)
+- ✅ **Use for:** Bot creation, market discovery, trading decisions
+- ✅ **Data:** Essential fields only (condition_id, tokens, active, closed)
+- ✅ **Speed:** 2-5 seconds (10-20x faster than Gamma)
+- ✅ **Cache:** 30-60 seconds in Redis/memory
+- ❌ **Don't use for:** Analytics (missing historical data)
+
+### Gamma API `/events/pagination` - Market Discovery (RECOMMENDED) 🆕
+- ✅ **Use for:** Finding tradeable markets (what the website uses!)
+- ✅ **Data:** Real-time best_bid/best_ask, volume_24h, spreads
+- ✅ **Speed:** Fast pagination with cursor-based iteration
+- ✅ **Filters:** By tag (sports, politics, crypto), volume, activity
+- ❌ **Don't use:** `/markets` for bot operations (returns polarized 0%/100% markets)
+
+**Why `/events/pagination` over `/markets`:**
+| Aspect | `/markets` | `/events/pagination` |
+|--------|-----------|---------------------|
+| bid/ask | ❌ None | ✅ Real-time |
+| Volume | Total only | ✅ 24h volume |
+| Results | Polarized (0%/100%) | ✅ Active mid-range |
+| Use case | Analytics | **Trading** |
+
+```python
+# CORRECT: Find tradeable markets
+from polymarket.api.gamma import GammaAPI
+
+gamma = GammaAPI(settings)
+events = await gamma.get_high_volume_events(min_volume_24h=10000)
+markets = gamma.extract_tradeable_markets(events, min_spread=0.01, max_spread=0.10)
+# Result: 30+ markets with 1-10 cent spreads, mid-range prices
+
+# WRONG: Old approach returns 0 tradeable opportunities
+markets = await gamma.get_markets(active=True)  # Returns polarized markets
+```
 
 ### Example Architecture
 
 ```python
-# ANALYTICS LAYER (Background job, runs hourly)
-markets = client.get_markets(active=True, limit=1000)  # Gamma API
-db.store_market_snapshots(markets)  # PostgreSQL
+import asyncio
 
-# TRADING LAYER (Bot operations, real-time)
-condition_id = db.get_top_market()  # From local DB (100ms)
-market = client.get_simplified_markets(limit=100)  # CLOB API (2-5s)
-client.place_order(order, wallet_id="strategy1")
+async def analytics_layer():
+    # ANALYTICS LAYER (Background job, runs hourly)
+    markets = await client.get_markets(active=True, limit=1000)  # Gamma API
+    db.store_market_snapshots(markets)  # PostgreSQL
+
+async def trading_layer():
+    # TRADING LAYER (Bot operations, real-time)
+    condition_id = db.get_top_market()  # From local DB (100ms)
+    market = await client.get_simplified_markets(next_cursor="MA==")  # CLOB API (2-5s)
+    await client.place_order(order, wallet_id="strategy1")
 ```
 
 **Performance Impact:**
@@ -50,29 +83,29 @@ client.place_order(order, wallet_id="strategy1")
 
 ---
 
-## Public CLOB API (No Authentication Required)
+## Public CLOB API (No Authentication Required) 🆕
 
 **Purpose:** Market data queries without consuming trading rate limits.
 
 ### Why Use Public Endpoints?
-- **No wallet needed** - No private keys or API credentials required
-- **Faster** - No authentication signing overhead (~50-100ms saved)
-- **Higher throughput** - Doesn't consume trading rate limits (2,400 req/10s)
-- **Batch operations** - 10x more efficient with batch endpoints (80 req/10s)
+- ✅ **No wallet needed** - No private keys or API credentials required
+- ✅ **Faster** - No authentication signing overhead (~50-100ms saved)
+- ✅ **Higher throughput** - Doesn't consume trading rate limits (2,400 req/10s)
+- ✅ **Batch operations** - 10x more efficient with batch endpoints (80 req/10s)
 
 ### Available Methods
 
 **Pricing & Spreads:**
 ```python
 # Single queries (200 req/10s per endpoint)
-midpoint = client.get_midpoint(token_id)
-spread = client.get_spread(token_id)
-bid, ask = client.get_best_bid_ask(token_id)
+midpoint = await client.get_midpoint(token_id)
+spread = await client.get_spread(token_id)
+bid, ask = await client.get_best_bid_ask(token_id)
 
 # Batch queries (80 req/10s - 10x more efficient!)
-midpoints = client.get_midpoints([token_id1, token_id2, token_id3])
-spreads = client.get_spreads([token_id1, token_id2, token_id3])
-prices = client.get_prices([
+midpoints = await client.get_midpoints([token_id1, token_id2, token_id3])
+spreads = await client.get_spreads([token_id1, token_id2, token_id3])
+prices = await client.get_prices([
     {"token_id": token_id1, "side": "BUY"},
     {"token_id": token_id2, "side": "SELL"}
 ])
@@ -81,20 +114,20 @@ prices = client.get_prices([
 **Liquidity Analysis:**
 ```python
 # Orderbook depth within price range
-depth = client.get_liquidity_depth(token_id, price_range=0.05)  # ±5%
+depth = await client.get_liquidity_depth(token_id, price_range=0.05)  # ±5%
 # Returns: bid_depth, ask_depth, bid_levels, ask_levels, total_depth
 ```
 
 **Market Discovery:**
 ```python
 # Fast market listing
-markets = client.get_simplified_markets(next_cursor="MA==")  # 100 req/10s
+markets = await client.get_simplified_markets(next_cursor="MA==")  # 100 req/10s
 
 # Complete market data (slower)
-full_markets = client.get_markets_full(next_cursor="MA==")  # 250 req/10s
+full_markets = await client.get_markets_full(next_cursor="MA==")  # 250 req/10s
 
 # Individual market details
-market = client.get_market_by_condition(condition_id)  # 50 req/10s
+market = await client.get_market_by_condition(condition_id)  # 50 req/10s
 ```
 
 **Rate Limits (Official Documentation):**
@@ -124,12 +157,13 @@ market = client.get_market_by_condition(condition_id)  # 50 req/10s
 ### Trading Operations
 - **Order Placement:** GTC, GTD, FOK limit orders with EIP-712 signing
 - **Batch Orders:** 10x faster with POST /orders endpoint (Strategy-3 critical)
-- **Order Management:** Cancel, cancel-all, query status
+- **Order Management:** Cancel (v3.6 fix), cancel-all, query status (async)
 - **Balance Checks:** Pre-flight USDC validation (BUY: size*price, SELL: position)
 - **Token Allowances:** Automated USDC/CTF approval for EOA wallets
 - **Multi-Wallet:** Thread-safe credential management, unlimited wallets
+- **v3.6 Fixes:** Cancel order body param, get_orders pagination, timestamp parsing
 
-### CTF & Neg-Risk Utilities (v1.0.3)
+### CTF & Neg-Risk Utilities (v1.0.3) 🆕
 - **Fee Calculations:** 6 utilities for accurate fee estimation before trading
 - **Order Validation:** 9 utilities preventing order rejections
 - **Neg-Risk Adapter:** Production-hardened smart contract wrapper
@@ -140,8 +174,8 @@ market = client.get_market_by_condition(condition_id)  # 50 req/10s
 - **Positions:** Real-time P&L tracking (cash_pnl, percent_pnl, realized_pnl)
 - **Trades:** Complete history with execution prices, fees, timestamps
 - **Activity:** Onchain monitoring (TRADE, REDEEM, REWARD, SPLIT, MERGE)
-- **Portfolio:** Detailed value breakdown (bets, cash, equity_total)
-- **Holders:** Whale discovery with minimum balance filtering
+- **Portfolio:** Detailed value breakdown (bets, cash, equity_total) 🆕
+- **Holders:** Whale discovery with minimum balance filtering 🆕
 
 ### Multi-Wallet Analytics (Strategy-3)
 - **Batch Operations:** Fetch 100+ wallets efficiently
@@ -153,6 +187,18 @@ market = client.get_market_by_condition(condition_id)  # 50 req/10s
 - **WebSocket:** Live orderbook updates (~100ms vs 1s polling)
 - **Order Fills:** Instant fill notifications via WebSocket
 - **Auto-reconnect:** Built-in reconnection logic
+- **Compression:** 50-70% bandwidth reduction (permessage-deflate) 🆕
+- **Deduplication:** Prevents duplicate processing on reconnects 🆕
+- **Multi-subscription:** Single message for multiple markets 🆕
+- **Failure callbacks:** Graceful shutdown notification 🆕
+
+### MarketManager (Real-Time Market Data) 🆕
+- **Bootstrap:** Fetch all tradeable markets from CLOB API in ~1s
+- **In-Memory Cache:** O(1) lookups by condition_id or token_id
+- **WebSocket Updates:** Auto-subscribe to market_created/market_resolved events
+- **Periodic Sync:** Configurable refresh interval (default 5 min)
+- **Query Performance:** <10ms for complex filters (vs ~200ms from database)
+- **Memory Efficient:** ~20 bytes per market, max configurable
 
 ### Production Safety
 - **Rate Limiting:** Per-endpoint limits (lock-free, 60% faster)
@@ -171,8 +217,9 @@ market = client.get_market_by_condition(condition_id)  # 50 req/10s
 ## Architecture
 
 ```
-shared/polymarket/
+polymarket/
 ├── client.py                      # Main client (1,612 lines, 40+ methods)
+├── market_manager.py              # Real-time market data cache (WebSocket + CLOB) 🆕
 ├── config.py                      # Settings management (RTDS, rate limits, timeouts)
 ├── models.py                      # Type definitions (Pydantic models)
 ├── exceptions.py                  # Custom exceptions (17 typed errors)
@@ -187,7 +234,7 @@ shared/polymarket/
 ├── api/                           # API clients
 │   ├── base.py                    # HTTP base client (request deduplication, thread safety)
 │   ├── clob.py                    # CLOB trading API (authenticated endpoints)
-│   ├── clob_public.py             # Public CLOB API (no auth, market data)
+│   ├── clob_public.py             # Public CLOB API (no auth, market data) 🆕
 │   ├── gamma.py                   # Gamma market data API (read-only)
 │   ├── data_api.py                # Dashboard API (positions, trades, activity)
 │   ├── websocket.py               # CLOB WebSocket client (orderbook updates)
@@ -219,10 +266,10 @@ shared/polymarket/
 │   └── archives/                  # Completed phase docs
 │
 ├── examples/                      # Usage examples (13 files)
-│   ├── 10_production_safe_trading.py  # PRODUCTION PATTERN
+│   ├── 10_production_safe_trading.py  # ⭐ PRODUCTION PATTERN
 │   ├── 11_ctf_neg_risk_features.py    # CTF utilities demo
-│   ├── 12_public_clob_api.py          # Public API comprehensive guide
-│   ├── 13_portfolio_whale_discovery.py # Portfolio & whale discovery
+│   ├── 12_public_clob_api.py          # Public API comprehensive guide 🆕
+│   ├── 13_portfolio_whale_discovery.py # Portfolio & whale discovery 🆕
 │   └── ...                        # 9 more examples
 │
 └── tests/                         # Test suites
@@ -248,70 +295,79 @@ shared/polymarket/
 
 ### Installation
 ```bash
-cd shared/polymarket
+cd polymarket
 pip install -r requirements.txt
 ```
 
-**Dependencies:** web3>=7.0.0, eth-account>=0.11.0, pydantic>=2.0.0, requests>=2.31.0
+**Dependencies:** web3>=7.0.0, eth-account>=0.11.0, pydantic>=2.0.0, aiohttp>=3.11.0
 
 ### Single Wallet (Strategy-1)
 ```python
+import asyncio
 from decimal import Decimal
 from polymarket import PolymarketClient
-from polymarket.types import WalletConfig, OrderRequest, Side, OrderType
+from polymarket import WalletConfig, OrderRequest, Side, OrderType
 
-client = PolymarketClient()
+async def main():
+    client = PolymarketClient()
 
-# Add wallet
-wallet = WalletConfig(private_key="0x...")
-client.add_wallet(wallet, wallet_id="strategy1", set_default=True)
+    # Add wallet
+    wallet = WalletConfig(private_key="0x...")
+    await client.add_wallet(wallet, wallet_id="strategy1", set_default=True)
 
-# Check/set allowances (one-time setup for EOA wallets)
-from polymarket.utils.allowances import AllowanceManager
-manager = AllowanceManager()
-if not manager.has_sufficient_allowances(wallet.address)["ready"]:
-    tx_hashes = manager.set_allowances(wallet.private_key)
-    manager.wait_for_approvals(tx_hashes)
+    # Check/set allowances (one-time setup for EOA wallets)
+    from polymarket.utils.allowances import AllowanceManager
+    manager = AllowanceManager()
+    if not manager.has_sufficient_allowances(wallet.address)["ready"]:
+        tx_hashes = manager.set_allowances(wallet.private_key)
+        manager.wait_for_approvals(tx_hashes)
 
-# Place order
-order = OrderRequest(
-    token_id="71321045679252212594626385532706912750332728571942532289631379312455583992833",
-    price=Decimal("0.55"),  # Use Decimal for exact precision
-    size=Decimal("100.0"),  # Use Decimal for exact precision
-    side=Side.BUY,
-    order_type=OrderType.GTC
-)
-response = client.place_order(order, wallet_id="strategy1")
+    # Place order
+    order = OrderRequest(
+        token_id="71321045679252212594626385532706912750332728571942532289631379312455583992833",
+        price=Decimal("0.55"),  # Use Decimal for exact precision
+        size=Decimal("100.0"),  # Use Decimal for exact precision
+        side=Side.BUY,
+        order_type=OrderType.GTC
+    )
+    response = await client.place_order(order, wallet_id="strategy1")
 
-# Get positions with P&L
-positions = client.get_positions("strategy1", sortBy="CASHPNL")
+    # Get positions with P&L
+    positions = await client.get_positions("strategy1", sortBy="CASHPNL")
 
-# Get portfolio breakdown (bets, cash, equity_total)
-portfolio = client.get_portfolio_value("strategy1")
-print(f"Total: ${portfolio.equity_total}, Bets: ${portfolio.bets}, Cash: ${portfolio.cash}")
+    # Get portfolio breakdown (bets, cash, equity_total) 🆕
+    portfolio = await client.get_portfolio_value("strategy1")
+    print(f"Total: ${portfolio.equity_total}, Bets: ${portfolio.bets}, Cash: ${portfolio.cash}")
+
+asyncio.run(main())
 ```
 
 ### Multi-Wallet Tracking (Strategy-3)
 ```python
-# Track 100+ external wallets
-tracked_wallets = ["0xabc...", "0xdef...", ...]  # 100+ addresses
+import asyncio
 
-# Batch fetch positions
-wallet_positions = client.get_positions_batch(tracked_wallets)
+async def main():
+    # Track 100+ external wallets
+    tracked_wallets = ["0xabc...", "0xdef...", ...]  # 100+ addresses
 
-# Aggregate metrics
-metrics = client.aggregate_multi_wallet_metrics(tracked_wallets)
-print(f"Total P&L: ${metrics['total_pnl']:.2f}")
-print(f"Top performer: {metrics['top_performers'][0]}")
+    # Batch fetch positions
+    wallet_positions = await client.get_positions_batch(tracked_wallets)
 
-# Detect consensus signals
-signals = client.detect_signals(
-    tracked_wallets,
-    min_wallets=5,
-    min_agreement=0.6
-)
-for signal in signals[:5]:
-    print(f"{signal['title']}: {signal['wallet_count']} wallets agree on {signal['outcome']}")
+    # Aggregate metrics
+    metrics = await client.aggregate_multi_wallet_metrics(tracked_wallets)
+    print(f"Total P&L: ${metrics['total_pnl']:.2f}")
+    print(f"Top performer: {metrics['top_performers'][0]}")
+
+    # Detect consensus signals
+    signals = await client.detect_signals(
+        tracked_wallets,
+        min_wallets=5,
+        min_agreement=0.6
+    )
+    for signal in signals[:5]:
+        print(f"{signal['title']}: {signal['wallet_count']} wallets agree on {signal['outcome']}")
+
+asyncio.run(main())
 ```
 
 ---
@@ -319,36 +375,45 @@ for signal in signals[:5]:
 ## API Endpoints Coverage
 
 ### CLOB API (Trading)
-- POST /order - Place order
-- POST /orders - Place batch orders (Strategy-3 critical)
-- DELETE /order/:id - Cancel order
-- DELETE /orders - Cancel all
-- GET /orders - Query orders
-- GET /balances - Get balances
-- GET /midpoint - Get price
-- GET /orderbook - Get orderbook
-- GET /tick-size - Get tick size
-- GET /neg-risk - Get neg risk status
-- GET /auth/derive-api-key - Derive credentials
-- POST /auth/api-key - Create credentials
+- ✅ POST /order - Place order
+- ✅ POST /orders - Place batch orders (Strategy-3 critical)
+- ✅ DELETE /order/:id - Cancel order
+- ✅ DELETE /orders - Cancel all
+- ✅ GET /orders - Query orders
+- ✅ GET /balances - Get balances
+- ✅ GET /midpoint - Get price
+- ✅ GET /orderbook - Get orderbook
+- ✅ GET /tick-size - Get tick size
+- ✅ GET /neg-risk - Get neg risk status
+- ✅ GET /auth/derive-api-key - Derive credentials
+- ✅ POST /auth/api-key - Create credentials
 
 ### Gamma API (Market Data)
-- GET /markets - List markets
-- GET /markets/:slug - Get market by slug
-- GET /markets/:id - Get market by ID
-- GET /search - Search markets
+- ✅ GET /markets - List markets
+- ✅ GET /markets/:slug - Get market by slug
+- ✅ GET /markets/:id - Get market by ID
+- ✅ GET /search - Search markets
 
 ### Data API (Dashboard)
-- GET /positions - User positions with P&L
-- GET /trades - Trade history
-- GET /activity - Onchain activity log
-- GET /value - Portfolio value
-- GET /holders - Market holders
+- ✅ GET /positions - User positions with P&L
+- ✅ GET /trades - Trade history
+- ✅ GET /activity - Onchain activity log
+- ✅ GET /value - Portfolio value
+- ✅ GET /holders - Market holders
 
 ### WebSocket API (Real-Time)
-- Subscribe to orderbook updates (market channel)
-- Subscribe to user order fills (user channel)
-- Auto-reconnect with exponential backoff
+- ✅ Subscribe to orderbook updates (market channel) - Typed messages
+- ✅ Subscribe to user order fills (user channel) - Typed messages
+- ✅ Auto-reconnect with exponential backoff
+- ✅ Health monitoring (stats, health_check)
+- ✅ Prometheus metrics integration
+- ✅ Message queue/buffer for async processing (v3.3)
+- ✅ Unified WebSocket Manager (coordinated CLOB + RTDS) (v3.3)
+- ✅ Batch subscriptions with transaction semantics (v3.3)
+- ✅ Compression - permessage-deflate (50-70% bandwidth reduction) (v3.5) 🆕
+- ✅ Deduplication - hash tracking with 5-min TTL (v3.5) 🆕
+- ✅ Multi-token single subscription (reduces message overhead) (v3.5) 🆕
+- ✅ Graceful shutdown callbacks (permanent failure handling) (v3.5) 🆕
 
 **Total:** 24 endpoints + WebSocket implemented
 
@@ -359,47 +424,52 @@ for signal in signals[:5]:
 ### Trading
 ```python
 # Order placement
-place_order(order, wallet_id, skip_balance_check=False) -> OrderResponse
-place_orders_batch(orders, wallet_id) -> List[OrderResponse]  # 10x faster
-cancel_order(order_id, wallet_id) -> bool
-cancel_all_orders(wallet_id, market_id=None) -> int
+async def place_order(order, wallet_id, skip_balance_check=False) -> OrderResponse
+async def place_orders_batch(orders, wallet_id) -> List[OrderResponse]  # 10x faster
+async def cancel_order(order_id, wallet_id) -> bool
+async def cancel_all_orders(wallet_id, market_id=None) -> int
 
 # Queries
-get_orders(wallet_id, market=None) -> List[Order]
-get_balances(wallet_id) -> Balance
-get_orderbook(token_id) -> OrderBook
-get_orderbooks_batch(token_ids) -> Dict[str, OrderBook]  # Strategy-3
-get_midpoint(token_id) -> Optional[Decimal]
-get_price(token_id, side) -> Optional[Decimal]
-get_tick_size(token_id) -> Decimal
-get_neg_risk(token_id) -> bool
+async def get_orders(wallet_id, market=None) -> List[Order]
+async def get_balances(wallet_id) -> Balance
+async def get_orderbook(token_id) -> OrderBook
+async def get_orderbooks_batch(token_ids) -> Dict[str, OrderBook]  # Strategy-3
+async def get_midpoint(token_id) -> Optional[Decimal]
+async def get_price(token_id, side) -> Optional[Decimal]
+async def get_tick_size(token_id) -> Decimal
+async def get_neg_risk(token_id) -> bool
 ```
 
 ### Dashboard (Single Wallet)
 ```python
-get_positions(wallet_id, **filters) -> List[Position]
-get_trades(wallet_id, **filters) -> List[Trade]
-get_activity(wallet_id, **filters) -> List[Activity]
-get_portfolio_value(wallet_id, market=None) -> PortfolioValue  # Returns breakdown
+async def get_positions(wallet_id, **filters) -> List[Position]
+async def get_trades(wallet_id, **filters) -> List[Trade]
+async def get_activity(wallet_id, **filters) -> List[Activity]
+async def get_portfolio_value(wallet_id, market=None) -> PortfolioValue  # 🆕 Returns breakdown
 ```
 
 ### Multi-Wallet Batch Operations
 ```python
 # Strategy-3 optimized
-get_positions_batch(wallet_addresses, **filters) -> Dict[str, List[Position]]
-get_trades_batch(wallet_addresses, **filters) -> Dict[str, List[Trade]]
-get_activity_batch(wallet_addresses, **filters) -> Dict[str, List[Activity]]
-aggregate_multi_wallet_metrics(wallet_addresses) -> Dict[str, Any]
-detect_signals(wallet_addresses, min_wallets=5, min_agreement=0.6) -> List[Dict]
+async def get_positions_batch(wallet_addresses, **filters) -> Dict[str, List[Position]]
+async def get_trades_batch(wallet_addresses, **filters) -> Dict[str, List[Trade]]
+async def get_activity_batch(wallet_addresses, **filters) -> Dict[str, List[Activity]]
+async def aggregate_multi_wallet_metrics(wallet_addresses) -> Dict[str, Any]
+async def detect_signals(wallet_addresses, min_wallets=5, min_agreement=0.6) -> List[Dict]
 ```
 
 ### Market Data
 ```python
-get_markets(limit=100, active=True, **filters) -> List[Market]
-get_market_by_slug(slug) -> Market
-get_market_by_id(market_id) -> Market
-search_markets(query, limit=20) -> List[Market]
-get_market_holders(market, limit=100, min_balance=1) -> List[Holder]  # Whale filtering
+# All Gamma API methods are async (await required)
+async def get_markets(limit=100, active=True, **filters) -> List[Market]
+async def get_market_by_slug(slug) -> Market
+async def get_market_by_id(market_id) -> Market
+async def search_markets(query, limit=20) -> List[Market]
+async def get_events(limit=100, active=True, **filters) -> List[Event]
+async def get_all_current_markets(limit=100) -> List[Market]  # Auto-pagination
+async def get_clob_tradable_markets(limit=100) -> List[Market]  # Only tradable markets
+async def get_all_tradeable_events(limit=100) -> List[Event]  # Only tradable events
+async def get_market_holders(market, limit=100, min_balance=1) -> List[Holder]  # 🆕 Whale filtering
 ```
 
 ### Wallet Management
@@ -410,18 +480,140 @@ list_wallets() -> List[str]
 get_default_wallet() -> str
 ```
 
+### Proxy Wallet Balance Queries (CRITICAL)
+
+**⚠️ Proxy wallets require TWO addresses for balance queries:**
+
+1. **EOA Address:** Used for authentication/signing (from private key)
+2. **Proxy Address (Funder):** Smart contract holding USDC/positions
+
+**Signature Types:**
+- `signature_type=0` (EOA) - Standard wallet, USDC in same address as private key
+- `signature_type=1` (MAGIC) - Magic wallet (rarely used)
+- `signature_type=2` (PROXY) - Proxy wallet, USDC in separate contract address
+
+**WalletConfig for Proxy Wallets:**
+```python
+from polymarket import WalletConfig, SignatureType
+
+# ❌ WRONG - will only see EOA balance (usually $0)
+wallet = WalletConfig(
+    private_key=eoa_private_key,
+    signature_type=SignatureType.EOA  # Wrong signature type
+)
+
+# ✅ CORRECT - proxy address goes in address field
+wallet = WalletConfig(
+    private_key=eoa_private_key,  # EOA private key for signing
+    address=proxy_address,        # PROXY address (where USDC is held)
+    signature_type=SignatureType.PROXY  # Must be PROXY type
+)
+```
+
+**API Credentials vs Private Keys:**
+
+Balance queries require **API credentials** separate from wallet private keys:
+- `api_key`: UUID (e.g., "550e8400-e29b-41d4-a716-446655440000")
+- `api_secret`: Secret string
+- `api_passphrase`: Passphrase string
+
+**How to Generate API Credentials:**
+
+CLOB API credentials are generated **programmatically**, not through the website UI.
+
+**⚠️ Builder Keys ≠ CLOB Credentials:**
+- Website "Builder Keys" = Order attribution for platforms (not for trading)
+- CLOB Credentials = Trading operations (generated from code)
+
+**Generate CLOB credentials:**
+```python
+from py_clob_client.client import ClobClient
+from py_clob_client.constants import POLYGON
+
+client = ClobClient(
+    host="https://clob.polymarket.com",
+    key="0x...",  # Your private key
+    chain_id=POLYGON
+)
+
+# Server derives credentials from your private key signature
+api_creds = client.create_or_derive_api_creds()
+
+print(f"CLOB_API_KEY={api_creds.api_key}")
+print(f"CLOB_SECRET={api_creds.api_secret}")
+print(f"CLOB_PASS_PHRASE={api_creds.api_passphrase}")
+```
+
+Save to `.env`:
+```bash
+WALLET_X_CLOB_API_KEY=6cc93234-8308-...
+WALLET_X_CLOB_SECRET=rVjVG3ftDIBMI...
+WALLET_X_CLOB_PASS_PHRASE=32eab022a1132...
+```
+
+**Note:** Credentials are deterministic - same private key always generates same credentials.
+
+**Balance Response Format:**
+
+API returns balances in **smallest units** (6 decimals for USDC):
+```python
+# API response
+{"balance": "13060149"}  # = $13.06 USD (divide by 1,000,000)
+
+# Our client auto-converts to Decimal
+balance = await client.get_balances(wallet_id="wallet1")
+print(balance.collateral)  # Decimal('13.06')
+```
+
+**Why $0.00 Balance Despite On-Chain Funds:**
+
+If `get_balances()` returns $0.00 but on-chain balance exists:
+- ✅ Code is correct
+- ❌ Missing API credentials in `.env`
+- ❌ Wrong `address` field (for proxy wallets: use proxy address, not EOA)
+- ❌ Wrong `signature_type` (for proxy wallets: must be SignatureType.PROXY)
+
+**Verify On-Chain Balance:**
+```python
+from web3 import Web3
+
+# Connect to Polygon RPC
+w3 = Web3(Web3.HTTPProvider("https://polygon-rpc.com"))
+
+# USDC contract (6 decimals)
+usdc_contract = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+usdc_abi = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
+contract = w3.eth.contract(address=usdc_contract, abi=usdc_abi)
+
+# For proxy wallets, check PROXY address, not EOA
+balance_raw = contract.functions.balanceOf(proxy_address).call()
+balance_usdc = balance_raw / 1_000_000  # Convert to USDC (6 decimals)
+print(f"On-chain: ${balance_usdc:.2f} USDC")
+```
+
 ### Real-Time WebSocket (CLOB)
 ```python
 # CLOB WebSocket subscriptions (100ms updates vs 1s polling)
-subscribe_orderbook(token_id, callback, wallet_id=None) -> None
-subscribe_user_orders(callback, wallet_id) -> None
+# Callbacks receive typed messages: OrderbookMessage, TradeMessage, OrderMessage
+subscribe_orderbook(token_id, callback: Callable[[OrderBook], None], wallet_id=None) -> None
+subscribe_user_orders(callback: Callable[[WebSocketMessage], None], wallet_id) -> None
+subscribe_markets_batch(token_ids: list[str], callback) -> Dict[str, Any]  # v3.3: Transaction semantics
+subscribe_markets_multi(token_ids: list[str], callback) -> None  # v3.5: Single subscription message (more efficient)
 unsubscribe_all() -> None
 
-# Health
-health_check() -> Dict[str, str]  # {"status": "healthy"|"degraded"}
+# Health monitoring (v3.2+)
+stats() -> Dict[str, Any]  # {"status": "connected", "uptime_seconds": 120, "queue_size": 5, "duplicates_blocked": 12, ...}
+health_check() -> Dict[str, str]  # {"status": "healthy"|"degraded"|"disconnected"}
+
+# Unified manager (v3.3)
+from polymarket.api.unified_websocket import UnifiedWebSocketManager
+manager = UnifiedWebSocketManager(clob_ws, rtds)
+manager.start_all(event_loop)  # Atomic start
+manager.stop_all()  # Atomic stop
+manager.health_status()  # Combined health
 ```
 
-### Real-Time Data Service (RTDS)
+### Real-Time Data Service (RTDS) 🆕
 ```python
 # Activity streams
 subscribe_activity_trades(callback, market_slug=None, event_slug=None) -> None
@@ -454,7 +646,7 @@ unsubscribe_rtds_all() -> None
 ### Structured Logging
 ```python
 # Import and configure
-from shared.polymarket.utils.structured_logging import (
+from polymarket.utils.structured_logging import (
     configure_structured_logging,
     get_logger,
     set_correlation_id
@@ -468,6 +660,98 @@ correlation_id = set_correlation_id()  # Generate unique ID for request tracing
 logger.info("order_placed", "Order successful", order_id="abc123", price=Decimal("0.55"))
 # Output: {"timestamp":"...", "level":"INFO", "event":"order_placed",
 #          "correlation_id":"...", "order_id":"abc123", "price":"0.55"}
+```
+
+### MarketManager (Real-Time Market Data)
+
+In-memory market cache with CLOB API bootstrap + database sync.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MarketManager                               │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────┐    ┌──────────────────┐                   │
+│  │ CLOB API /markets│    │ WebSocket RTDS   │                   │
+│  │ (bootstrap, sync)│    │ (real-time)      │                   │
+│  └────────┬─────────┘    └────────┬─────────┘                   │
+│           └───────────┬───────────┘                             │
+│                       ▼                                         │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              In-Memory Cache                            │    │
+│  │              - All ~17k+ markets                        │    │
+│  │              - Query: <10ms                             │    │
+│  │              - Updated via WebSocket                    │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                       │                                         │
+│                       │ Periodic sync (every 5 min)             │
+│                       ▼                                         │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              PostgreSQL Database                        │    │
+│  │              - Persistence, analytics, fallback         │    │
+│  │              - Auto-synced, never >5 min stale          │    │
+│  └─────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Usage:**
+```python
+from polymarket import MarketManager, MarketManagerConfig
+
+config = MarketManagerConfig(
+    use_sampling_markets=False,   # False = ALL markets, True = rewards only
+    enable_websocket=True,
+    enable_periodic_sync=True,
+    max_markets=50000,            # Cover all ~17k+ open markets
+    enable_database_sync=True,    # Sync to PostgreSQL
+    database_sync_batch_size=100,
+)
+manager = MarketManager(clob_api, config, db=db)
+
+await manager.initialize()        # Bootstrap + initial DB sync
+await manager.start_streaming()   # WebSocket + periodic sync + DB sync
+
+# Query (<10ms)
+markets = manager.get_tradeable_markets(min_volume=Decimal("10000"), limit=20)
+
+await manager.shutdown()
+```
+
+**Config Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `use_sampling_markets` | True | False = all markets, True = rewards only |
+| `max_markets` | 50000 | Memory limit (17k+ needed for all open) |
+| `enable_database_sync` | False | Sync in-memory → PostgreSQL |
+| `database_sync_batch_size` | 100 | Batch size for DB writes |
+| `enable_websocket` | True | Real-time updates |
+| `enable_periodic_sync` | True | Refresh every 5 min |
+| `periodic_sync_interval` | 300 | Seconds between syncs |
+
+**Database Sync:**
+- Writes all in-memory markets to PostgreSQL
+- Called after bootstrap + after each periodic sync
+- Upserts all fields including Migration 088 (group_item_title, accepting_orders, etc.)
+- Database always <5 min stale when bot running
+
+**Performance:**
+- Bootstrap: ~3s for ~17k markets
+- Queries: <10ms
+- DB sync: ~30s for ~17k markets
+
+**Data Freshness Verification:**
+```python
+# Check if data is fresh before trading
+if manager.is_data_fresh(max_staleness_seconds=300.0):  # 5 min
+    markets = manager.get_tradeable_markets()
+else:
+    age = manager.get_data_age_seconds()
+    logger.warning(f"Data stale: {age:.0f}s old")
+
+# is_data_fresh() checks:
+# 1. is_initialized (bootstrap completed)
+# 2. websocket_connected (real-time updates working)
+# 3. last_sync_at within threshold (data age)
 ```
 
 ---
@@ -485,16 +769,24 @@ logger.info("order_placed", "Order successful", order_id="abc123", price=Decimal
 - `Trade` - Trade execution (price, size, fee_rate_bps, timestamp, participants)
 - `Activity` - Onchain activity (type, timestamp, usd_value, transaction_hash)
 - `Balance` - Wallet balance (collateral, tokens)
-- `PortfolioValue` - Portfolio breakdown (value, bets, cash, equity_total)
+- `PortfolioValue` - Portfolio breakdown (value, bets, cash, equity_total) 🆕
 - `Market` - Market info (id, slug, question, outcomes, prices)
 - `OrderBook` - Orderbook (bids, asks, midpoint, spread)
 - `Holder` - Wallet holder (proxy_wallet, amount, pseudonym)
+
+### WebSocket Message Types (v3.2) 🆕
+- `OrderbookMessage` - Orderbook updates (best_bid, best_ask, spread properties)
+- `TradeMessage` - Trade executions (status, side, price, size, maker_orders)
+- `OrderMessage` - Order events (type, original_size, size_matched, associate_trades)
+- `PriceChangeMessage` - Price changes (price_changes list)
+- `TickSizeChangeMessage` - Tick size changes (old_tick_size, new_tick_size)
+- `LastTradePriceMessage` - Last trade price (price, side, size)
 
 ### Enums
 - `Side` - BUY, SELL
 - `OrderType` - GTC, GTD, FOK, FAK
 - `OrderStatus` - LIVE, MATCHED, DELAYED, UNMATCHED, CANCELLED
-- `ActivityType` - TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION, MAKER_REBATE, YIELD
+- `ActivityType` - TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION
 - `SignatureType` - EOA (0), MAGIC (1), PROXY (2)
 
 ---
@@ -517,18 +809,20 @@ from polymarket.exceptions import (
 
 # Example usage
 from decimal import Decimal, ROUND_HALF_UP
+import asyncio
 
-try:
-    client.place_order(order, wallet_id="strategy1")
-except TickSizeError as e:
-    # Adjust price to valid tick size (e.g., 0.01)
-    order.price = order.price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-except InsufficientAllowanceError:
-    # Set token allowances
-    manager.set_allowances(private_key)
-except InsufficientBalanceError as e:
-    # Log and skip
-    print(f"Insufficient funds: {e.message}")
+async def main():
+    try:
+        await client.place_order(order, wallet_id="strategy1")
+    except TickSizeError as e:
+        # Adjust price to valid tick size (e.g., 0.01)
+        order.price = order.price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InsufficientAllowanceError:
+        # Set token allowances
+        manager.set_allowances(private_key)
+    except InsufficientBalanceError as e:
+        # Log and skip
+        print(f"Insufficient funds: {e.message}")
 ```
 
 ---
@@ -566,7 +860,7 @@ WEB3_PROVIDER_URL=https://polygon-rpc.com
 
 ### Python Config
 ```python
-from shared.polymarket import PolymarketClient
+from polymarket import PolymarketClient
 
 # Strategy-1 (single wallet)
 client = PolymarketClient()
@@ -587,86 +881,96 @@ client = PolymarketClient(
 
 ### Strategy-1 Integration (Single Wallet)
 ```python
-# Portfolio overview page with detailed breakdown
-portfolio = client.get_portfolio_value("strategy1")
-print(f"Total Value: ${portfolio.equity_total}")
-print(f"Active Bets: ${portfolio.bets}")
-print(f"Available Cash: ${portfolio.cash}")
-allocation_pct = (portfolio.bets / portfolio.equity_total) * 100
-print(f"Deployed: {allocation_pct:.1f}%")
+import asyncio
 
-# Positions with P&L
-positions = client.get_positions("strategy1", sortBy="CASHPNL", sortDirection="DESC")
+async def main():
+    # Portfolio overview page with detailed breakdown 🆕
+    portfolio = await client.get_portfolio_value("strategy1")
+    print(f"Total Value: ${portfolio.equity_total}")
+    print(f"Active Bets: ${portfolio.bets}")
+    print(f"Available Cash: ${portfolio.cash}")
+    allocation_pct = (portfolio.bets / portfolio.equity_total) * 100
+    print(f"Deployed: {allocation_pct:.1f}%")
 
-from polymarket.utils.dashboard_helpers import (
-    calculate_wallet_pnl,
-    calculate_win_rate,
-    calculate_market_exposure
-)
+    # Positions with P&L
+    positions = await client.get_positions("strategy1", sortBy="CASHPNL", sortDirection="DESC")
 
-pnl_metrics = calculate_wallet_pnl(positions)
-# Returns: {total_pnl, unrealized_pnl, realized_pnl, total_value, position_count}
+    from polymarket.utils.dashboard_helpers import (
+        calculate_wallet_pnl,
+        calculate_win_rate,
+        calculate_market_exposure
+    )
 
-# Whale discovery in active markets
-whales = client.get_market_holders(
-    market="0x123...",
-    limit=100,
-    min_balance=5000  # Find holders with >$5000
-)
+    pnl_metrics = calculate_wallet_pnl(positions)
+    # Returns: {total_pnl, unrealized_pnl, realized_pnl, total_value, position_count}
 
-# Trade history page
-trades = client.get_trades("strategy1", limit=50)
+    # Whale discovery in active markets 🆕
+    whales = await client.get_market_holders(
+        market="0x123...",
+        limit=100,
+        min_balance=5000  # Find holders with >$5000
+    )
 
-# Activity feed
-activity = client.get_activity("strategy1", limit=100)
+    # Trade history page
+    trades = await client.get_trades("strategy1", limit=50)
+
+    # Activity feed
+    activity = await client.get_activity("strategy1", limit=100)
+
+asyncio.run(main())
 ```
 
 ### Strategy-3 Integration (Multi-Wallet)
 ```python
-# Fetch all tracked wallets from database
-tracked_wallets = db.query("SELECT address FROM tracked_wallets WHERE active = true")
-wallet_addresses = [w.address for w in tracked_wallets]
+import asyncio
 
-# Get aggregated metrics
-metrics = client.aggregate_multi_wallet_metrics(wallet_addresses)
-"""
-Returns:
-{
-    'total_wallets': 150,
-    'total_positions': 2847,
-    'total_pnl': 125430.50,
-    'total_value': 1200000.00,
-    'avg_pnl_per_wallet': 836.20,
-    'top_performers': [...],
-    'wallet_summaries': {...}
-}
-"""
+async def main():
+    # Fetch all tracked wallets from database
+    tracked_wallets = db.query("SELECT address FROM tracked_wallets WHERE active = true")
+    wallet_addresses = [w.address for w in tracked_wallets]
 
-# Detect consensus signals
-signals = client.detect_signals(
-    wallet_addresses,
-    min_wallets=5,      # Minimum 5 wallets
-    min_agreement=0.6   # 60% agreement
-)
-"""
-Returns signals like:
-{
-    'market': 'trump-2024',
-    'title': 'Will Trump win 2024?',
-    'outcome': 'Yes',
-    'wallet_count': 23,
-    'agreement_ratio': 0.87,
-    'total_value': 45000.00,
-    'wallets': ['0xabc...', '0xdef...', ...]
-}
-"""
+    # Get aggregated metrics
+    metrics = await client.aggregate_multi_wallet_metrics(wallet_addresses)
+    """
+    Returns:
+    {
+        'total_wallets': 150,
+        'total_positions': 2847,
+        'total_pnl': 125430.50,
+        'total_value': 1200000.00,
+        'avg_pnl_per_wallet': 836.20,
+        'top_performers': [...],
+        'wallet_summaries': {...}
+    }
+    """
 
-# Save to database for signal execution
-for signal in signals:
-    db.execute("""
-        INSERT INTO group_signals (market, outcome, wallet_count, strength)
-        VALUES (?, ?, ?, ?)
-    """, [signal['market'], signal['outcome'], signal['wallet_count'], signal['agreement_ratio']])
+    # Detect consensus signals
+    signals = await client.detect_signals(
+        wallet_addresses,
+        min_wallets=5,      # Minimum 5 wallets
+        min_agreement=0.6   # 60% agreement
+    )
+    """
+    Returns signals like:
+    {
+        'market': 'trump-2024',
+        'title': 'Will Trump win 2024?',
+        'outcome': 'Yes',
+        'wallet_count': 23,
+        'agreement_ratio': 0.87,
+        'total_value': 45000.00,
+        'wallets': ['0xabc...', '0xdef...', ...]
+    }
+    """
+
+    # Save to database for signal execution
+    for signal in signals:
+        db.execute("""
+            INSERT INTO group_signals (market, outcome, wallet_count, strength)
+            VALUES (?, ?, ?, ?)
+        """, [signal['market'], signal['outcome'], signal['wallet_count'], signal['agreement_ratio']])
+
+asyncio.run(main())
 ```
 
 ---
@@ -683,7 +987,7 @@ Orderbook Operations:
 
 Nonce Manager (Thread-Safe):
   Sequential (100):    0.04ms avg, 2,376,477 ops/sec
-  Concurrent (10):     0.33ms avg, no race conditions
+  Concurrent (10):     0.33ms avg, no race conditions ✓
 
 Memory Footprint:
   Base client:         ~50 MB
@@ -771,6 +1075,12 @@ Batch Operations (100 wallets):
 **ImportError for web3**
 → `pip install web3>=7.0.0` (required for allowance management)
 
+**CRITICAL: Polymarket API Field Naming (Bug #55)**
+→ API returns `orderID` (capital ID), not `orderId` (camelCase)
+→ Always use `response.get("orderID")` when extracting order IDs
+→ Incorrect field name returns None, breaking 2-phase commit pattern
+→ Fixed in polymarket v3.5+
+
 ---
 
 ## Related Documentation
@@ -795,22 +1105,22 @@ Batch Operations (100 wallets):
 **Complete usage examples in `examples/` directory:**
 
 ```python
-# examples/10_production_safe_trading.py - PRODUCTION PATTERN
+# ⭐ examples/10_production_safe_trading.py - PRODUCTION PATTERN
 # Fee calculation, validation, profitability checks
 # ALL production bots MUST follow this pattern
 
-# examples/11_ctf_neg_risk_features.py - CTF UTILITIES
+# ⭐ examples/11_ctf_neg_risk_features.py - CTF UTILITIES
 # Fee calculations, validation utilities, NegRiskAdapter
 # Complete demonstration of all CTF features
 
-# examples/12_public_clob_api.py - PUBLIC API GUIDE
+# ⭐ examples/12_public_clob_api.py - PUBLIC API GUIDE 🆕
 # Market data without authentication, batch operations, rate limit optimization
 
-# examples/13_portfolio_whale_discovery.py - PORTFOLIO & WHALE DISCOVERY
+# ⭐ examples/13_portfolio_whale_discovery.py - PORTFOLIO & WHALE DISCOVERY 🆕
 # Portfolio breakdown (bets/cash/equity), whale filtering, activity tracking
 
 # examples/01_simple_trading.py - Strategy-1 basic pattern
-# Basic order placement (simplified - use example 10 for production)
+# Basic order placement (⚠️ simplified - use example 10 for production)
 
 # examples/02_multi_wallet.py - Strategy-3 pattern
 # Track 100+ wallets, batch operations, consensus detection
@@ -854,7 +1164,7 @@ pytest tests/benchmarks/ -v -s
 pytest tests/testnet/ -v -s
 
 # Coverage report
-pytest tests/unit tests/integration --cov=shared.polymarket --cov-report=html
+pytest tests/unit tests/integration --cov=polymarket --cov-report=html
 ```
 
 **Test Suites:**
@@ -874,23 +1184,56 @@ pytest tests/unit tests/integration --cov=shared.polymarket --cov-report=html
 
 ## License
 
-MIT License
+MIT. See the repository `LICENSE`.
 
-**Referenced Projects:**
-- py-clob-client: https://github.com/Polymarket/py-clob-client (MIT License)
-- python-order-utils: https://github.com/Polymarket/python-order-utils (MIT License)
+**Referenced Projects (MIT License):**
+- py-clob-client: https://github.com/Polymarket/py-clob-client
+- python-order-utils: https://github.com/Polymarket/python-order-utils
 
 ---
 
 ## Version History
 
-**v3.1 (Current)** - SECURITY & PERFORMANCE HARDENING: Critical patches for production
-  - Credential redaction filter (prevents key leakage in logs)
-  - Cryptographic nonce randomization (prevents front-running attacks)
-  - 100x faster cache eviction (OrderedDict O(1) LRU vs O(n) min scan)
-  - Memory leak fixes (AtomicNonceManager cleanup)
-  - Price validation error handling (raise instead of silent failure)
-  - All improvements backward compatible
+**v3.7 (Current)** - MARKETMANAGER: Real-time market data cache
+  - 🆕 MarketManager: In-memory market cache with CLOB API bootstrap (~1s)
+  - 🔄 WebSocket streaming: market_created/market_resolved event subscriptions
+  - ⚡ Query performance: <10ms vs ~200ms from database
+  - 🔗 Scanner integration: Optional market_manager parameter for real-time data
+  - 📊 Stats tracking: total_markets, reward_markets, bootstrap_time, sync_count
+  - See: market_manager.py and tests/integration/test_market_manager.py
+**v3.6** - PRODUCTION TRADING FIXES: Cancel order API, order parsing
+  - Fixed cancel order endpoint (body vs path param)
+  - Fixed get_orders pagination
+  - Fixed timestamp/status parsing in order responses
+**v3.5** - WEBSOCKET OPTIMIZATION COMPLETE: Compression, deduplication, multi-subscription, callbacks
+  - 🗜️ Compression: 50-70% bandwidth reduction (permessage-deflate)
+  - 🔄 Deduplication: Hash tracking with 5-min TTL (prevents duplicate processing on reconnects)
+  - 📋 Multi-subscription: Single message for multiple markets (subscribe_markets_multi)
+  - 📞 Failure callbacks: Graceful shutdown notification on permanent failures
+  - 📊 Metrics: duplicates_blocked, dedup_cache_size, compression enabled
+  - ✅ All audit items complete (Critical + High + Medium + Low priority)
+  - See: Documentation/WEBSOCKET_AUDIT_PLAN.md
+**v3.3** - PRODUCTION-GRADE WEBSOCKET: Message queue, unified manager, batch subscriptions
+  - 🔄 Message queue/buffer for async processing (prevents WebSocket thread exhaustion)
+  - 📦 UnifiedWebSocketManager for coordinated CLOB + RTDS lifecycle
+  - 📋 Batch subscriptions with transaction semantics (all-or-nothing rollback)
+  - 📊 Queue metrics: depth, drops, processing lag
+  - ✅ Proven pattern from Strategy-3 production use
+  - See: api/unified_websocket.py and subscribe_markets_batch() method
+**v3.2** - WEBSOCKET ENHANCEMENT: Typed messages, health monitoring, metrics
+  - 📦 Typed message models for all CLOB WebSocket messages (OrderbookMessage, TradeMessage, OrderMessage, etc.)
+  - 🩺 Health monitoring: stats() and health_check() methods for WebSocket connection tracking
+  - 📊 Prometheus metrics: track messages, reconnections, processing time, uptime
+  - 🔍 Type-safe WebSocket callbacks with validation (no more raw dicts)
+  - ✅ Backward compatible: metrics can be disabled with enable_metrics=False
+  - See: examples/04_real_time_websocket.py and tests/unit/test_websocket_models.py
+**v3.1** - SECURITY & PERFORMANCE HARDENING: Critical patches for production
+  - 🔒 Credential redaction filter (prevents key leakage in logs)
+  - 🔒 Cryptographic nonce randomization (prevents front-running attacks)
+  - ⚡ 100x faster cache eviction (OrderedDict O(1) LRU vs O(n) min scan)
+  - 🐛 Memory leak fixes (AtomicNonceManager cleanup)
+  - 🐛 Price validation error handling (raise instead of silent failure)
+  - ✅ All improvements backward compatible
   - See: examples/05_structured_logging.py for credential redaction demo
 **v3.0** - DECIMAL MIGRATION: Financial-grade precision for all numeric types
   - All numeric fields (price, size, amounts) migrated from float to Decimal

@@ -4,16 +4,25 @@ Example 4: Real-Time WebSocket for Both Strategies
 Shows how to use WebSocket for instant market updates and order fills.
 Critical for HFT and real-time dashboards.
 
-v2.8 Note: WebSocket cleanup in finally blocks ensures no socket leaks.
-See Documentation/ROBUSTNESS_AUDIT.md for validation details.
+v3.2 Note: Typed message models for type-safe WebSocket handling.
+- OrderbookMessage: Market orderbook updates
+- TradeMessage: Trade executions (MATCHED, MINED, CONFIRMED, etc.)
+- OrderMessage: Order events (PLACEMENT, UPDATE, CANCELLATION)
 """
 
 import os
 import time
-from shared.polymarket import PolymarketClient, WalletConfig, OrderRequest, Side
+import asyncio
+from polymarket import PolymarketClient, WalletConfig
+from polymarket.api.websocket_models import (
+    TradeMessage,
+    OrderMessage,
+    TradeStatus,
+    OrderEventType
+)
 
-def main():
-    """WebSocket real-time updates example."""
+async def main():
+    """WebSocket real-time updates example with typed messages."""
 
     # 1. Initialize client
     print("Initializing client...")
@@ -29,7 +38,7 @@ def main():
 
     # 3. Get market to track
     print("\nFinding market...")
-    markets = client.get_markets(active=True, limit=1)
+    markets = await client.get_markets(active=True, limit=1)
 
     if not markets:
         print("No active markets found")
@@ -67,21 +76,66 @@ def main():
         # Subscribe to orderbook
         client.subscribe_orderbook(token_id, on_orderbook_update)
 
-        # Optional: Subscribe to order fills
+        # Optional: Subscribe to order fills (TYPED MESSAGES)
         if private_key:
             print("\n📬 Also subscribing to order fill notifications...")
+            print("  (Using typed messages: TradeMessage and OrderMessage)\n")
 
-            def on_order_update(order_data):
-                """Called when orders are filled."""
-                print(f"\n🔔 ORDER UPDATE: {order_data.get('status')}")
-                print(f"   Order ID: {order_data.get('orderId')}")
-                print(f"   Status: {order_data.get('status')}\n")
+            def on_order_update(message):
+                """
+                Called when orders are filled or updated.
+
+                Receives typed messages:
+                - TradeMessage: Trade executions (status changes)
+                - OrderMessage: Order events (placement, updates, cancellations)
+                """
+                if isinstance(message, TradeMessage):
+                    # Trade execution update
+                    status_emoji = {
+                        TradeStatus.MATCHED: "🎯",
+                        TradeStatus.MINED: "⛏️",
+                        TradeStatus.CONFIRMED: "✅",
+                        TradeStatus.RETRYING: "🔄",
+                        TradeStatus.FAILED: "❌",
+                    }.get(message.status, "📦")
+
+                    print(f"\n{status_emoji} TRADE UPDATE: {message.status}")
+                    print(f"   Trade ID: {message.id}")
+                    print(f"   Side: {message.side}")
+                    print(f"   Price: ${message.price}")
+                    print(f"   Size: {message.size}")
+                    print(f"   Outcome: {message.outcome}\n")
+
+                elif isinstance(message, OrderMessage):
+                    # Order event (placement, update, cancellation)
+                    event_emoji = {
+                        OrderEventType.PLACEMENT: "🆕",
+                        OrderEventType.UPDATE: "📝",
+                        OrderEventType.CANCELLATION: "🚫",
+                    }.get(message.type, "📦")
+
+                    print(f"\n{event_emoji} ORDER EVENT: {message.type}")
+                    print(f"   Order ID: {message.id}")
+                    print(f"   Side: {message.side}")
+                    print(f"   Price: ${message.price}")
+                    print(f"   Original Size: {message.original_size}")
+                    print(f"   Matched: {message.size_matched}\n")
 
             client.subscribe_user_orders(on_order_update, wallet_id="strategy1")
 
         # Keep running
         print("\n✓ WebSocket connected - receiving real-time updates")
-        print("  (Much faster than polling every 1s!)\n")
+        print("  (Much faster than polling every 1s!)")
+        print("  (All messages are type-safe with validation!)\n")
+
+        # Show WebSocket health stats
+        if hasattr(client._ws, 'stats'):
+            stats = client._ws.stats()
+            print("WebSocket Stats:")
+            print(f"  Status: {stats['status']}")
+            print(f"  Uptime: {stats.get('uptime_seconds', 0)}s")
+            print(f"  Messages: {stats['messages_received']}")
+            print(f"  Subscriptions: {stats['subscriptions']}\n")
 
         while True:
             time.sleep(1)
@@ -89,13 +143,13 @@ def main():
     except KeyboardInterrupt:
         print("\n\nStopping...")
         client.unsubscribe_all()
-        print(f"✓ Received {update_count} updates")
+        print(f"✓ Received {update_count} orderbook updates")
 
     except Exception as e:
         print(f"\n❌ Error: {e}")
 
     finally:
-        client.close()
+        await client.close()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

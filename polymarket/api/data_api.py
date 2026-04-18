@@ -22,8 +22,7 @@ from ..models import (
 )
 from ..exceptions import (
     APIError,
-    ValidationError,
-    MarketDataError
+    ValidationError
 )
 from ..utils.rate_limiter import RateLimiter
 from ..utils.retry import CircuitBreaker
@@ -75,7 +74,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Positions ==========
 
-    def get_positions(
+    async def get_positions(
         self,
         user: str,
         market: Optional[str] = None,
@@ -138,7 +137,7 @@ class DataAPI(BaseAPIClient):
             params["title"] = title[:100]  # Max 100 chars
 
         try:
-            response = self.get(
+            response = await self.get(
                 "/positions",
                 params=params,
                 rate_limit_key="GET:/positions",
@@ -155,8 +154,10 @@ class DataAPI(BaseAPIClient):
                 try:
                     position = Position(**item)
                     positions.append(position)
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.error(f"Failed to parse position: {e}")
+                except Exception as e:
+                    # Catch all exceptions including Decimal conversion errors
+                    logger.warning(f"Failed to parse position: {type(e).__name__}: {e}")
+                    logger.debug(f"Position data: {item}")
                     continue
 
             logger.info(f"Fetched {len(positions)} positions for {user}")
@@ -173,7 +174,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Trades ==========
 
-    def get_trades(
+    async def get_trades(
         self,
         user: Optional[str] = None,
         limit: int = 100,
@@ -221,7 +222,7 @@ class DataAPI(BaseAPIClient):
             params["side"] = side.value
 
         try:
-            response = self.get(
+            response = await self.get(
                 "/trades",
                 params=params,
                 rate_limit_key="GET:/trades",
@@ -255,7 +256,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Activity ==========
 
-    def get_activity(
+    async def get_activity(
         self,
         user: str,
         market: Optional[str] = None,
@@ -310,7 +311,7 @@ class DataAPI(BaseAPIClient):
             params["side"] = side.value
 
         try:
-            response = self.get(
+            response = await self.get(
                 "/activity",
                 params=params,
                 rate_limit_key="GET:/activity",
@@ -344,7 +345,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Portfolio Value ==========
 
-    def get_portfolio_value(
+    async def get_portfolio_value(
         self,
         user: str,
         market: Optional[str] = None
@@ -368,7 +369,7 @@ class DataAPI(BaseAPIClient):
             APIError: If request fails
 
         Example:
-            portfolio = client.data_api.get_portfolio_value("0x123...")
+            portfolio = await client.data_api.get_portfolio_value("0x123...")
             print(f"Total value: ${portfolio.equity_total}")
             print(f"Bets: ${portfolio.bets}, Cash: ${portfolio.cash}")
         """
@@ -383,17 +384,22 @@ class DataAPI(BaseAPIClient):
             params["market"] = market
 
         try:
-            response = self.get(
+            response = await self.get(
                 "/value",
                 params=params,
                 rate_limit_key="GET:/value",
                 retry=True
             )
 
-            # Parse response - API returns dict with bets, cash, equity_total
+            # Parse response - API returns list with single item [{user, value}]
+            if isinstance(response, list) and len(response) > 0:
+                # Extract first item from list
+                response = response[0]
+
             if isinstance(response, dict):
-                # Add user field for model
-                response["user"] = user
+                # Add user field for model if not present
+                if "user" not in response:
+                    response["user"] = user
 
                 # Legacy field - if value not present, calculate from equity_total
                 if "value" not in response:
@@ -424,7 +430,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Market Holders ==========
 
-    def get_holders(
+    async def get_holders(
         self,
         market: str,
         limit: int = 100,
@@ -449,7 +455,7 @@ class DataAPI(BaseAPIClient):
 
         Example:
             # Find whales with positions > $5000
-            whales = client.data_api.get_holders(
+            whales = await client.data_api.get_holders(
                 market="0x123...",
                 limit=500,
                 min_balance=5000
@@ -467,7 +473,7 @@ class DataAPI(BaseAPIClient):
         }
 
         try:
-            response = self.get(
+            response = await self.get(
                 "/holders",
                 params=params,
                 rate_limit_key="GET:/holders",
@@ -478,14 +484,22 @@ class DataAPI(BaseAPIClient):
                 logger.warning(f"Unexpected holders response format: {type(response)}")
                 return []
 
+            # API returns nested structure: [{token: str, holders: [...]}, ...]
+            # Flatten to list of Holder objects with token_id added
             holders = []
-            for item in response:
-                try:
-                    holder = Holder(**item)
-                    holders.append(holder)
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.error(f"Failed to parse holder: {e}")
-                    continue
+            for token_group in response:
+                token_id = token_group.get("token")
+                holder_list = token_group.get("holders", [])
+
+                for holder_data in holder_list:
+                    try:
+                        # Add token_id from parent structure
+                        holder_data["token_id"] = token_id
+                        holder = Holder(**holder_data)
+                        holders.append(holder)
+                    except Exception as e:
+                        logger.warning(f"Failed to parse holder: {e}")
+                        continue
 
             logger.info(f"Fetched {len(holders)} holders for market {market}")
             return holders
@@ -501,7 +515,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Leaderboard ==========
 
-    def get_leaderboard(
+    async def get_leaderboard(
         self,
         limit: int = 100,
         min_pnl: Optional[float] = None
@@ -520,7 +534,7 @@ class DataAPI(BaseAPIClient):
             APIError: If request fails
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/v1/leaderboard",
                 params={},
                 rate_limit_key="GET:/v1/leaderboard",

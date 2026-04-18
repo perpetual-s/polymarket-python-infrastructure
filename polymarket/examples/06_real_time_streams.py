@@ -12,10 +12,8 @@ Based on Phase 2: Real-Time Data Client
 """
 
 import time
-import json
-from shared.polymarket.api.real_time_data import (
+from polymarket.api.real_time_data import (
     RealTimeDataClient,
-    ConnectionStatus,
     StreamHelpers,
     ClobApiKeyCreds
 )
@@ -68,7 +66,7 @@ def example_event_comments():
         payload = message.payload
 
         if message.type == "comment_created":
-            print(f"[NEW COMMENT]")
+            print("[NEW COMMENT]")
             print(f"  Body: {payload.get('body')[:100]}...")
             print(f"  User: {payload.get('userAddress')}")
             print()
@@ -148,14 +146,14 @@ def example_market_lifecycle():
         payload = message.payload
 
         if message.type == "market_created":
-            print(f"[NEW MARKET CREATED]")
+            print("[NEW MARKET CREATED]")
             print(f"  Market: {payload.get('market')}")
             print(f"  Token IDs: {payload.get('asset_ids')}")
             print(f"  Min order size: {payload.get('min_order_size')}")
             print()
 
         elif message.type == "market_resolved":
-            print(f"[MARKET RESOLVED]")
+            print("[MARKET RESOLVED]")
             print(f"  Market: {payload.get('market')}")
             print(f"  Asset IDs: {payload.get('asset_ids')}")
             print()
@@ -191,7 +189,7 @@ def example_price_changes():
         payload = message.payload
 
         for change in payload.get('pc', []):  # pc = price changes
-            print(f"[PRICE CHANGE]")
+            print("[PRICE CHANGE]")
             print(f"  Token: {change.get('a')}")  # a = asset_id
             print(f"  Price: ${change.get('p')}")  # p = price
             print(f"  Side: {change.get('s')}")    # s = side
@@ -231,7 +229,7 @@ def example_orderbook_stream():
         """Handle orderbook updates."""
         payload = message.payload
 
-        print(f"[ORDERBOOK UPDATE]")
+        print("[ORDERBOOK UPDATE]")
         print(f"  Market: {payload.get('market')}")
         print(f"  Token: {payload.get('asset_id')}")
         print(f"  Hash: {payload.get('hash')}")
@@ -292,7 +290,7 @@ def example_user_orders():
         payload = message.payload
 
         if message.type == "order":
-            print(f"[ORDER UPDATE]")
+            print("[ORDER UPDATE]")
             print(f"  Order ID: {payload.get('id')}")
             print(f"  Market: {payload.get('market')}")
             print(f"  Side: {payload.get('side')}")
@@ -303,7 +301,7 @@ def example_user_orders():
             print()
 
         elif message.type == "trade":
-            print(f"[TRADE EXECUTION]")
+            print("[TRADE EXECUTION]")
             print(f"  Match ID: {payload.get('id')}")
             print(f"  Market: {payload.get('market')}")
             print(f"  Price: ${payload.get('price')}")
@@ -436,7 +434,7 @@ def example_multi_stream_dashboard():
     except KeyboardInterrupt:
         pass
     finally:
-        print(f"\n[FINAL STATS]")
+        print("\n[FINAL STATS]")
         print(f"  Total messages: {sum(stats.values())}")
         print(f"  Breakdown: {stats}")
         client.disconnect()

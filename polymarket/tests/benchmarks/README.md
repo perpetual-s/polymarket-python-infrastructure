@@ -1,6 +1,6 @@
 # Performance Benchmarks
 
-Measures latency, throughput, and scalability of shared/polymarket.
+Measures latency, throughput, and scalability of polymarket.
 
 ## Running Benchmarks
 

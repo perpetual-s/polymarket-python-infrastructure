@@ -11,6 +11,7 @@ Adapted from Polymarket's official clients (MIT License):
 """
 
 from .client import PolymarketClient
+from .market_manager import MarketManager, MarketManagerConfig, MarketStats
 from .models import (
     Side,
     OrderType,
@@ -79,11 +80,16 @@ from .utils.validation import (
     check_order_profitability,
 )
 
-__version__ = "1.0.3"
+__version__ = "3.7.0"
 
 __all__ = [
     # Main client
     "PolymarketClient",
+
+    # Market Manager (real-time market data)
+    "MarketManager",
+    "MarketManagerConfig",
+    "MarketStats",
 
     # Types
     "Side",

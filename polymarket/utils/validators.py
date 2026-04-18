@@ -13,7 +13,7 @@ from ..exceptions import ValidationError, OrderExpiredError
 
 MIN_PRICE = Decimal("0.01")
 MAX_PRICE = Decimal("0.99")
-MIN_SIZE = Decimal("1.0")  # USDC
+MIN_SIZE = Decimal("0.01")  # Minimum tokens (actual min is per-market)
 PRICE_DECIMALS = Decimal("0.01")  # 2 decimal places
 SIZE_DECIMALS = Decimal("0.01")   # 2 decimal places
 
