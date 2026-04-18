@@ -20,8 +20,9 @@ This example shows:
 
 import os
 import time
+import asyncio
 from decimal import Decimal
-from shared.polymarket import (
+from polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,
@@ -29,7 +30,7 @@ from shared.polymarket import (
     OrderType
 )
 
-def main():
+async def main():
     """Simple trading bot example."""
 
     # 1. Initialize client
@@ -53,7 +54,7 @@ def main():
     print("✓ Wallet added")
 
     # 3. Check balance
-    balance = client.get_balance("strategy1")
+    balance = await client.get_balance("strategy1")
     print(f"✓ Balance: ${balance.collateral:.2f} USDC")
 
     if balance.collateral < 10:
@@ -62,7 +63,7 @@ def main():
 
     # 4. Get market info
     print("\nFetching market...")
-    markets = client.get_markets(slug="trump-vs-biden-2024", limit=1)
+    markets = await client.get_markets(slug="trump-vs-biden-2024", limit=1)
 
     if not markets:
         print("Market not found")
@@ -81,7 +82,7 @@ def main():
 
     # 5. Get current orderbook
     print(f"\nFetching orderbook for token {token_id}...")
-    orderbook = client.get_orderbook(token_id)
+    orderbook = await client.get_orderbook(token_id)
     print(f"✓ Best Bid: {orderbook.best_bid}")
     print(f"✓ Best Ask: {orderbook.best_ask}")
     print(f"✓ Spread: {orderbook.spread}")
@@ -97,10 +98,10 @@ def main():
     )
 
     try:
-        response = client.place_order(order, wallet_id="strategy1")
+        response = await client.place_order(order, wallet_id="strategy1")
 
         if response.success:
-            print(f"✅ Order placed successfully!")
+            print("✅ Order placed successfully!")
             print(f"   Order ID: {response.order_id}")
             print(f"   Status: {response.status}")
 
@@ -109,7 +110,7 @@ def main():
             time.sleep(5)
 
             print("Cancelling order...")
-            cancelled = client.cancel_order(response.order_id, wallet_id="strategy1")
+            cancelled = await client.cancel_order(response.order_id, wallet_id="strategy1")
 
             if cancelled:
                 print("✅ Order cancelled successfully")
@@ -125,7 +126,7 @@ def main():
 
     # 8. Check positions
     print("\nChecking positions...")
-    positions = client.get_positions(wallet_id="strategy1")
+    positions = await client.get_positions(wallet_id="strategy1")
 
     if positions:
         print(f"✓ You have {len(positions)} positions:")
@@ -136,4 +137,4 @@ def main():
         print("  No open positions")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

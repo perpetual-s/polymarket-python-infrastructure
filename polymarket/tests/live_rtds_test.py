@@ -17,8 +17,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from shared.polymarket import PolymarketClient
-from shared.polymarket.api.real_time_data import Message
+from polymarket import PolymarketClient
+from polymarket.api.real_time_data import Message
 
 
 def test_crypto_prices_live():
@@ -32,7 +32,7 @@ def test_crypto_prices_live():
 
     def on_crypto_price(msg: Message):
         """Callback for crypto price updates."""
-        print(f"✅ Received crypto price update:")
+        print("✅ Received crypto price update:")
         print(f"   Topic: {msg.topic}")
         print(f"   Type: {msg.type}")
         print(f"   Timestamp: {msg.timestamp}")
@@ -93,7 +93,7 @@ def test_market_created_live():
 
     def on_market_created(msg: Message):
         """Callback for market created events."""
-        print(f"✅ New market created:")
+        print("✅ New market created:")
         print(f"   Payload: {msg.payload}")
         print()
         received_messages.append(msg)

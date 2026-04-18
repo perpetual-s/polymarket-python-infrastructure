@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 import logging
 
-from ..models import Position, Trade, Activity, Side
+from ..models import Position, Trade, Activity
 
 logger = logging.getLogger(__name__)
 

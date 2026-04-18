@@ -1,5 +1,5 @@
 """
-Unit tests for Decimal precision in shared/polymarket.
+Unit tests for Decimal precision in polymarket.
 
 Validates the financial-grade precision guarantees of Decimal migration.
 
@@ -15,14 +15,14 @@ import pytest
 from decimal import Decimal, ROUND_HALF_UP
 from pydantic import ValidationError
 
-from shared.polymarket.models import OrderRequest, Side, OrderType, Position, Balance
-from shared.polymarket.utils.fees import (
+from polymarket.models import OrderRequest, Side, OrderType, Position, Balance
+from polymarket.utils.fees import (
     calculate_net_cost,
     calculate_profit_after_fees,
     estimate_breakeven_exit,
     get_effective_spread,
 )
-from shared.polymarket.utils.validation import (
+from polymarket.utils.validation import (
     validate_balance,
     check_order_profitability,
 )

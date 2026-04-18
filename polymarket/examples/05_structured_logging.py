@@ -7,15 +7,16 @@ Critical for log aggregation and debugging.
 NEW in v3.1: Automatic credential redaction for security.
 """
 
+import asyncio
 import os
-from shared.polymarket import PolymarketClient, WalletConfig, OrderRequest, Side
-from shared.polymarket.utils.structured_logging import (
+from polymarket import PolymarketClient, WalletConfig, OrderRequest, Side
+from polymarket.utils.structured_logging import (
     configure_structured_logging,
     set_correlation_id,
     get_logger
 )
 
-def main():
+async def main():
     """Structured logging example."""
 
     # 1. Configure structured logging (do this at startup)
@@ -120,7 +121,7 @@ def main():
             wallet="strategy1"
         )
 
-        response = client.place_order(order, wallet_id="strategy1")
+        response = await client.place_order(order, wallet_id="strategy1")
 
         if response.success:
             # Log success
@@ -145,7 +146,7 @@ def main():
                 wallet="strategy1"
             )
 
-    except Exception as e:
+    except Exception:
         # Log exception with traceback
         logger.exception(
             "order_exception",
@@ -201,4 +202,4 @@ for row in cursor:
 """)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

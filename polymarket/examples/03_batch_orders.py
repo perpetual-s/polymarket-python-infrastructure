@@ -5,7 +5,8 @@ Shows how to place 10+ orders simultaneously - critical for Strategy-3 performan
 """
 
 import os
-from shared.polymarket import (
+import asyncio
+from polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,
@@ -13,7 +14,7 @@ from shared.polymarket import (
     OrderType
 )
 
-def main():
+async def main():
     """Batch order placement example."""
 
     # 1. Initialize client
@@ -28,7 +29,7 @@ def main():
 
     # 3. Get multiple markets
     print("Fetching markets...")
-    markets = client.get_markets(active=True, limit=10)
+    markets = await client.get_markets(active=True, limit=10)
     print(f"✓ Found {len(markets)} active markets")
 
     # 4. Build batch of orders
@@ -61,7 +62,7 @@ def main():
     start = time.time()
 
     # CRITICAL: Batch submission
-    responses = client.place_orders_batch(
+    responses = await client.place_orders_batch(
         orders,
         wallet_id="strategy3"
     )
@@ -96,7 +97,7 @@ def main():
     start = time.time()
 
     # CRITICAL: Batch orderbook fetch
-    orderbooks = client.get_orderbooks_batch(token_ids)
+    orderbooks = await client.get_orderbooks_batch(token_ids)
 
     elapsed = time.time() - start
 
@@ -116,4 +117,4 @@ def main():
     print(f"Speedup: {5/elapsed:.1f}x faster! 🚀")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

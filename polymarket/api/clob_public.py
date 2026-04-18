@@ -54,14 +54,14 @@ class PublicCLOBAPI(BaseAPIClient):
     API credentials or wallet signatures.
 
     Usage:
-        >>> from shared.polymarket.api.clob_public import PublicCLOBAPI
-        >>> from shared.polymarket.config import PolymarketSettings
+        >>> from polymarket.api.clob_public import PublicCLOBAPI
+        >>> from polymarket.config import PolymarketSettings
         >>>
         >>> settings = PolymarketSettings()
         >>> client = PublicCLOBAPI(settings)
         >>>
         >>> # Get orderbook
-        >>> orderbook = client.get_orderbook(token_id)
+        >>> orderbook = await client.get_orderbook(token_id)
         >>>
         >>> # Get spread
         >>> spread = client.get_spread(token_id)
@@ -93,7 +93,7 @@ class PublicCLOBAPI(BaseAPIClient):
 
     # ========== Health & System ==========
 
-    def get_ok(self) -> bool:
+    async def get_ok(self) -> bool:
         """
         Health check endpoint.
 
@@ -104,13 +104,13 @@ class PublicCLOBAPI(BaseAPIClient):
         """
         try:
             # get() method will raise exception on error, so reaching here means success
-            self.get("/", retry=False)
+            await self.get("/", retry=False)
             return True
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
 
-    def get_server_time(self) -> int:
+    async def get_server_time(self) -> int:
         """
         Get current server timestamp.
 
@@ -119,12 +119,12 @@ class PublicCLOBAPI(BaseAPIClient):
         Returns:
             Server timestamp in milliseconds
         """
-        response = self.get("/time")
+        response = await self.get("/time")
         return int(response.get("timestamp", 0))
 
     # ========== Pricing & Spreads ==========
 
-    def get_midpoint(self, token_id: str) -> Optional[Decimal]:
+    async def get_midpoint(self, token_id: str) -> Optional[Decimal]:
         """
         Get midpoint price for a token.
 
@@ -137,7 +137,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Midpoint price, or None if unavailable
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/midpoint",
                 params={"token_id": token_id}
             )
@@ -153,7 +153,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching midpoint for {token_id}: {e}")
             raise PriceUnavailableError(f"Midpoint unavailable: {e}")
 
-    def get_midpoints(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
+    async def get_midpoints(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
         """
         Get midpoint prices for multiple tokens (batch operation).
 
@@ -172,7 +172,7 @@ class PublicCLOBAPI(BaseAPIClient):
             # Build request body with BookParams format
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = self.post(
+            response = await self.post(
                 "/midpoints",
                 json_data=params
             )
@@ -211,7 +211,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching batch midpoints: {e}")
             return {tid: None for tid in token_ids}
 
-    def get_price(self, token_id: str, side: str) -> Optional[Decimal]:
+    async def get_price(self, token_id: str, side: str) -> Optional[Decimal]:
         """
         Get price for a token and side.
 
@@ -225,7 +225,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Price for the specified side, or None if unavailable
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/price",
                 params={"token_id": token_id, "side": side}
             )
@@ -241,7 +241,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching price for {token_id}: {e}")
             raise PriceUnavailableError(f"Price unavailable: {e}")
 
-    def get_prices(self, params: List[Dict[str, str]]) -> Dict[str, Optional[Decimal]]:
+    async def get_prices(self, params: List[Dict[str, str]]) -> Dict[str, Optional[Decimal]]:
         """
         Get prices for multiple tokens and sides (batch operation).
 
@@ -257,7 +257,7 @@ class PublicCLOBAPI(BaseAPIClient):
             return {}
 
         try:
-            response = self.post(
+            response = await self.post(
                 "/prices",
                 json_data=params
             )
@@ -278,7 +278,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching batch prices: {e}")
             return {}
 
-    def get_spread(self, token_id: str) -> Optional[Decimal]:
+    async def get_spread(self, token_id: str) -> Optional[Decimal]:
         """
         Get bid-ask spread for a token.
 
@@ -291,7 +291,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Spread (ask - bid), or None if unavailable
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/spread",
                 params={"token_id": token_id}
             )
@@ -307,7 +307,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching spread for {token_id}: {e}")
             return None
 
-    def get_spreads(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
+    async def get_spreads(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
         """
         Get bid-ask spreads for multiple tokens (batch operation).
 
@@ -325,15 +325,14 @@ class PublicCLOBAPI(BaseAPIClient):
         try:
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = self.post(
+            response = await self.post(
                 "/spreads",
                 json_data=params
             )
 
+            # API returns dict: {"token_id": "spread_value", ...}
             result = {}
-            for item in response:
-                token_id = item.get("token_id")
-                spread = item.get("spread")
+            for token_id, spread in response.items():
                 result[token_id] = to_decimal(spread) if spread is not None else None
 
             return result
@@ -344,7 +343,7 @@ class PublicCLOBAPI(BaseAPIClient):
 
     # ========== Order Books ==========
 
-    def get_orderbook(self, token_id: str) -> OrderBookType:
+    async def get_orderbook(self, token_id: str) -> OrderBookType:
         """
         Get full orderbook for a token.
 
@@ -360,7 +359,7 @@ class PublicCLOBAPI(BaseAPIClient):
             OrderBookError: If orderbook unavailable
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/book",
                 params={"token_id": token_id}
             )
@@ -412,7 +411,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching orderbook for {token_id}: {e}")
             raise OrderBookError(f"Orderbook unavailable: {e}")
 
-    def get_orderbooks_batch(
+    async def get_orderbooks_batch(
         self,
         token_ids: List[str]
     ) -> List[OrderBookType]:
@@ -433,7 +432,7 @@ class PublicCLOBAPI(BaseAPIClient):
         try:
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = self.post(
+            response = await self.post(
                 "/books",
                 json_data=params
             )
@@ -492,7 +491,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching batch orderbooks: {e}")
             return []
 
-    def get_order_book_hash(self, orderbook: OrderBookType) -> str:
+    async def get_order_book_hash(self, orderbook: OrderBookType) -> str:
         """
         Compute hash of orderbook state (local computation, no API call).
 
@@ -519,7 +518,7 @@ class PublicCLOBAPI(BaseAPIClient):
 
     # ========== Market Metadata ==========
 
-    def get_tick_size(self, token_id: str) -> Decimal:
+    async def get_tick_size(self, token_id: str) -> Decimal:
         """
         Get minimum tick size for a token.
 
@@ -532,7 +531,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Tick size (usually Decimal("0.01"))
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/tick_size",
                 params={"token_id": token_id}
             )
@@ -544,7 +543,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.warning(f"Error fetching tick size for {token_id}: {e}, using default 0.01")
             return Decimal("0.01")
 
-    def get_neg_risk(self, token_id: str) -> bool:
+    async def get_neg_risk(self, token_id: str) -> bool:
         """
         Check if token is in a neg-risk market.
 
@@ -557,7 +556,7 @@ class PublicCLOBAPI(BaseAPIClient):
             True if neg-risk enabled, False otherwise
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/neg_risk",
                 params={"token_id": token_id}
             )
@@ -568,7 +567,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.warning(f"Error fetching neg_risk for {token_id}: {e}, assuming False")
             return False
 
-    def get_fee_rate_bps(self, token_id: str) -> int:
+    async def get_fee_rate_bps(self, token_id: str) -> int:
         """
         Get fee rate in basis points for a token.
 
@@ -583,7 +582,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Fee rate in basis points (0 for Polymarket)
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/fee_rate",
                 params={"token_id": token_id}
             )
@@ -596,7 +595,7 @@ class PublicCLOBAPI(BaseAPIClient):
 
     # ========== Market Listings ==========
 
-    def get_simplified_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
+    async def get_simplified_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
         """
         Get simplified market list (fast, minimal data).
 
@@ -612,8 +611,8 @@ class PublicCLOBAPI(BaseAPIClient):
             }
         """
         try:
-            response = self.get(
-                "/simplified_markets",
+            response = await self.get(
+                "/simplified-markets",
                 params={"next_cursor": next_cursor}
             )
 
@@ -623,7 +622,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching simplified markets: {e}")
             return {"data": [], "next_cursor": ""}
 
-    def get_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
+    async def get_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
         """
         Get full market list (complete data).
 
@@ -639,7 +638,7 @@ class PublicCLOBAPI(BaseAPIClient):
             }
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/markets",
                 params={"next_cursor": next_cursor}
             )
@@ -650,7 +649,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching markets: {e}")
             return {"data": [], "next_cursor": ""}
 
-    def get_sampling_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
+    async def get_sampling_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
         """
         Get sampling market list.
 
@@ -663,8 +662,8 @@ class PublicCLOBAPI(BaseAPIClient):
             Market data with pagination
         """
         try:
-            response = self.get(
-                "/sampling_markets",
+            response = await self.get(
+                "/sampling-markets",
                 params={"next_cursor": next_cursor}
             )
 
@@ -674,7 +673,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching sampling markets: {e}")
             return {"data": [], "next_cursor": ""}
 
-    def get_sampling_simplified_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
+    async def get_sampling_simplified_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
         """
         Get sampling simplified market list.
 
@@ -687,8 +686,8 @@ class PublicCLOBAPI(BaseAPIClient):
             Simplified market data with pagination
         """
         try:
-            response = self.get(
-                "/sampling_simplified_markets",
+            response = await self.get(
+                "/sampling-simplified-markets",
                 params={"next_cursor": next_cursor}
             )
 
@@ -698,7 +697,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching sampling simplified markets: {e}")
             return {"data": [], "next_cursor": ""}
 
-    def get_market(self, condition_id: str) -> Dict[str, Any]:
+    async def get_market(self, condition_id: str) -> Dict[str, Any]:
         """
         Get single market details by condition ID.
 
@@ -714,7 +713,7 @@ class PublicCLOBAPI(BaseAPIClient):
             MarketNotFoundError: If market doesn't exist
         """
         try:
-            response = self.get(
+            response = await self.get(
                 f"/markets/{condition_id}"
             )
 
@@ -724,7 +723,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching market {condition_id}: {e}")
             raise MarketNotFoundError(f"Market not found: {condition_id}")
 
-    def get_market_trades_events(self, condition_id: str) -> List[Dict[str, Any]]:
+    async def get_market_trades_events(self, condition_id: str) -> List[Dict[str, Any]]:
         """
         Get trade events for a market.
 
@@ -737,7 +736,7 @@ class PublicCLOBAPI(BaseAPIClient):
             List of trade event dictionaries
         """
         try:
-            response = self.get(
+            response = await self.get(
                 f"/market_trades_events/{condition_id}"
             )
 
@@ -750,7 +749,7 @@ class PublicCLOBAPI(BaseAPIClient):
 
     # ========== Trade History ==========
 
-    def get_last_trade_price(self, token_id: str) -> Optional[Decimal]:
+    async def get_last_trade_price(self, token_id: str) -> Optional[Decimal]:
         """
         Get last trade price for a token.
 
@@ -763,7 +762,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Last trade price, or None if no trades
         """
         try:
-            response = self.get(
+            response = await self.get(
                 "/last_trade_price",
                 params={"token_id": token_id}
             )
@@ -778,7 +777,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error fetching last trade price for {token_id}: {e}")
             return None
 
-    def get_last_trades_prices(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
+    async def get_last_trades_prices(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
         """
         Get last trade prices for multiple tokens (batch operation).
 
@@ -796,7 +795,7 @@ class PublicCLOBAPI(BaseAPIClient):
         try:
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = self.post(
+            response = await self.post(
                 "/last_trades_prices",
                 json_data=params
             )
@@ -815,7 +814,7 @@ class PublicCLOBAPI(BaseAPIClient):
 
     # ========== Derived Methods (Convenience) ==========
 
-    def get_best_bid_ask(self, token_id: str) -> Optional[Tuple[Decimal, Decimal]]:
+    async def get_best_bid_ask(self, token_id: str) -> Optional[Tuple[Decimal, Decimal]]:
         """
         Get best bid and ask prices (top of book).
 
@@ -829,7 +828,7 @@ class PublicCLOBAPI(BaseAPIClient):
             (best_bid, best_ask) tuple, or None if unavailable
         """
         try:
-            orderbook = self.get_orderbook(token_id)
+            orderbook = await self.get_orderbook(token_id)
 
             if not orderbook.bids or not orderbook.asks:
                 logger.warning(f"Empty orderbook for token {token_id}")
@@ -845,7 +844,7 @@ class PublicCLOBAPI(BaseAPIClient):
             logger.error(f"Error getting best bid/ask for {token_id}: {e}")
             return None
 
-    def get_liquidity_depth(
+    async def get_liquidity_depth(
         self,
         token_id: str,
         price_range: Decimal = Decimal("0.05")
@@ -870,7 +869,7 @@ class PublicCLOBAPI(BaseAPIClient):
             }
         """
         try:
-            orderbook = self.get_orderbook(token_id)
+            orderbook = await self.get_orderbook(token_id)
 
             if not orderbook.bids or not orderbook.asks:
                 return {

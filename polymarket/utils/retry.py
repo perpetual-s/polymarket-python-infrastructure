@@ -8,7 +8,7 @@ import asyncio
 import random
 import time
 import threading
-from typing import Callable, TypeVar, Optional, Any
+from typing import Callable, TypeVar, Optional
 from functools import wraps
 import logging
 
@@ -94,7 +94,7 @@ class CircuitBreaker:
 
             return result
 
-        except Exception as e:
+        except Exception:
             # Failure - increment counter
             with self._lock:
                 self._failures += 1

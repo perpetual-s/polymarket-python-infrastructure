@@ -6,10 +6,12 @@ Demonstrates how to check which orders earn 2% maker rebates on Polymarket.
 Run: python examples/09_strategy4_order_scoring.py
 """
 
-from shared.polymarket import PolymarketClient, WalletConfig, OrderRequest, Side
+import asyncio
+
+from polymarket import PolymarketClient
 
 
-def example_1_check_single_order():
+async def example_1_check_single_order():
     """Example 1: Check if a single order earns maker rebates."""
     print("\n" + "="*60)
     print("Example 1: Check Single Order for Maker Rebates")
@@ -23,7 +25,7 @@ def example_1_check_single_order():
     print(f"\nChecking if order {order_id[:20]}... earns maker rebates...")
 
     try:
-        is_scoring = client.is_order_scoring(order_id)
+        is_scoring = await client.is_order_scoring(order_id)
 
         if is_scoring:
             print("✅ Order IS earning 2% maker rebates!")
@@ -36,7 +38,7 @@ def example_1_check_single_order():
         print(f"Error checking order scoring: {e}")
 
 
-def example_2_batch_check_orders():
+async def example_2_batch_check_orders():
     """Example 2: Batch check multiple orders for rebates."""
     print("\n" + "="*60)
     print("Example 2: Batch Check Order Scoring")
@@ -57,7 +59,7 @@ def example_2_batch_check_orders():
     print(f"\nChecking {len(order_ids)} orders for maker rebate eligibility...\n")
 
     try:
-        scoring = client.are_orders_scoring(order_ids)
+        scoring = await client.are_orders_scoring(order_ids)
 
         # Count earning vs non-earning
         earning_count = sum(scoring.values())
@@ -72,7 +74,7 @@ def example_2_batch_check_orders():
             print(f"{order_id[:20]:<25} {status:<15} {rebate}")
 
         print("\n" + "="*60)
-        print(f"Summary:")
+        print("Summary:")
         print(f"  Earning rebates: {earning_count} orders (2% maker rebate)")
         print(f"  Not earning:     {not_earning_count} orders")
         print(f"  Total checked:   {len(scoring)} orders")
@@ -92,7 +94,7 @@ def example_3_active_orders_scoring():
     print("Code demonstration:\n")
 
     print("""
-from shared.polymarket import PolymarketClient, WalletConfig
+from polymarket import PolymarketClient, WalletConfig
 
 # Setup
 client = PolymarketClient()
@@ -103,7 +105,7 @@ orders = client.get_orders(wallet_id="strategy4")
 order_ids = [order.order_id for order in orders]
 
 # Batch check scoring
-scoring = client.are_orders_scoring(order_ids)
+scoring = await client.are_orders_scoring(order_ids)
 
 # Calculate potential rebate earnings
 total_size = 0
@@ -147,7 +149,7 @@ To earn 2% maker rebates on Polymarket:
 
 3. ✅ Check scoring status regularly
    # Monitor which orders are earning
-   scoring = client.are_orders_scoring(active_order_ids)
+   scoring = await client.are_orders_scoring(active_order_ids)
    earning_orders = [oid for oid, is_scoring in scoring.items() if is_scoring]
 
 4. ✅ Optimize order placement
@@ -180,13 +182,13 @@ from datetime import datetime, timedelta
 client = PolymarketClient()
 
 # Get trade history
-trades = client.get_trades(wallet_id="strategy4")
+trades = await client.get_trades(wallet_id="strategy4")
 
 # Filter for filled maker orders (earning rebates)
 maker_trades = []
 for trade in trades:
     # Check if this was a scoring order
-    was_scoring = client.is_order_scoring(trade.order_id)
+    was_scoring = await client.is_order_scoring(trade.order_id)
     if was_scoring:
         maker_trades.append(trade)
 
@@ -210,7 +212,7 @@ print(f"Annualized Rebate Income: ${annual_rebate:.2f}")
     """)
 
 
-def main():
+async def main():
     """Run all examples."""
     print("\n" + "="*60)
     print("STRATEGY-4: ORDER SCORING FOR LIQUIDITY MINING")
@@ -229,7 +231,10 @@ def main():
 
     for name, func in examples:
         try:
-            func()
+            if asyncio.iscoroutinefunction(func):
+                await func()
+            else:
+                func()
         except Exception as e:
             print(f"\n❌ Example failed: {e}")
 
@@ -248,4 +253,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

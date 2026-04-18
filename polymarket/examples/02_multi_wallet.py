@@ -3,27 +3,26 @@ Example 2: Multi-Wallet Tracking for Strategy-3
 
 Shows how to track 100+ wallets simultaneously with batch operations.
 Copy this pattern for your Strategy-3 dashboard backend.
-
-v2.8 Note: Thread-safe request deduplication (2-10x fewer redundant API calls)
-and background worker pattern prevent thread exhaustion under high load.
-See Documentation/ROBUSTNESS_AUDIT.md for validation details.
 """
 
-import os
-from shared.polymarket import PolymarketClient
-from typing import List, Dict
+import asyncio
+from typing import List
 
-def main():
+from polymarket import PolymarketClient
+from polymarket.config import PolymarketSettings
+
+
+async def main():
     """Multi-wallet tracking example."""
 
     # 1. Initialize client optimized for 100+ wallets
     print("Initializing client for multi-wallet...")
-    client = PolymarketClient(
-        # CRITICAL settings for Strategy-3
+    settings = PolymarketSettings(
         pool_connections=100,      # Handle 100+ concurrent requests
-        pool_maxsize=200,           # Max connections
-        batch_max_workers=20        # Parallel batch operations
+        pool_maxsize=200,          # Max connections
+        batch_max_workers=20,      # Parallel batch operations
     )
+    client = PolymarketClient(settings=settings)
     print("✓ Client initialized for 100+ wallets")
 
     # 2. Load wallet addresses (from your database)
@@ -45,7 +44,7 @@ def main():
     start = time.time()
 
     # CRITICAL: Use batch operation - 10x faster than sequential
-    positions_by_wallet = client.get_positions_batch(
+    positions_by_wallet = await client.get_positions_batch(
         wallet_addresses,
         size_threshold=1.0,  # Only positions > $1
         limit=100            # Max 100 positions per wallet
@@ -92,7 +91,7 @@ def main():
     # 6. Detect consensus signals
     print("\n🔍 Detecting Consensus Signals...")
 
-    signals = client.detect_signals(
+    signals = await client.detect_signals(
         wallet_addresses,
         min_wallets=5,           # At least 5 wallets in position
         min_agreement=0.7,       # 70% agree on direction
@@ -134,4 +133,4 @@ def main():
     """)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

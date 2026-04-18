@@ -22,7 +22,7 @@ This includes:
 ## Quick Start (Production-Safe Pattern)
 
 ```python
-from shared.polymarket import (
+from polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,
@@ -75,7 +75,7 @@ if not profitable:
     return
 
 # STEP 5: Place order (after all checks passed)
-response = client.place_order(order, wallet_id="my_wallet")
+response = await client.place_order(order, wallet_id="my_wallet")
 print(f"Order placed: {response.order_id}, cost ${net_cost:.2f}")
 ```
 

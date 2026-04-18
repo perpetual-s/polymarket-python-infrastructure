@@ -11,14 +11,14 @@ Demonstrates the new CTF (Conditional Token Framework) infrastructure:
 These features enable capital-efficient trading on multi-outcome markets.
 
 References:
-- shared/polymarket/Documentation/NEG_RISK_CTF.md
+- polymarket/Documentation/NEG_RISK_CTF.md
 - https://github.com/Polymarket/neg-risk-ctf-adapter
 - https://github.com/Polymarket/ctf-exchange
 """
 
-import os
+import asyncio
 from decimal import Decimal
-from shared.polymarket import (
+from polymarket import (
     PolymarketClient,
     Side,
     # Fee calculation utilities
@@ -29,13 +29,10 @@ from shared.polymarket import (
     calculate_profit_after_fees,
     get_effective_spread,
     # Validation utilities
-    validate_order,
     validate_balance,
     validate_price_bounds,
-    validate_neg_risk_market,
     check_order_profitability,
     # CTF utilities
-    NegRiskAdapter,
     ConversionCalculator,
     is_safe_to_trade,
     NEG_RISK_ADAPTER,
@@ -81,7 +78,7 @@ def demonstrate_fee_calculations():
 
     # 3. Compare fees
     comparison = compare_fees_buy_vs_sell(price, size, fee_rate_bps)
-    print(f"\nFee Comparison:")
+    print("\nFee Comparison:")
     print(f"  BUY fee % of cost: {comparison['buy_fee_pct_of_cost']:.2f}%")
     print(f"  SELL fee % of proceeds: {comparison['sell_fee_pct_of_proceeds']:.2f}%")
 
@@ -90,7 +87,7 @@ def demonstrate_fee_calculations():
     breakeven, total_fees = estimate_breakeven_exit(
         Side.BUY, entry_price, size, fee_rate_bps, fee_rate_bps
     )
-    print(f"\nBreakeven Analysis:")
+    print("\nBreakeven Analysis:")
     print(f"  Entry: ${entry_price:.4f}")
     print(f"  Breakeven exit: ${breakeven:.4f}")
     print(f"  Total fees: ${total_fees:.2f}")
@@ -102,7 +99,7 @@ def demonstrate_fee_calculations():
         Side.BUY, entry_price, exit_price, size, fee_rate_bps, fee_rate_bps
     )
 
-    print(f"\nP&L ($0.60 → $0.70):")
+    print("\nP&L ($0.60 → $0.70):")
     print(f"  Entry cost: ${pnl['entry_cost']:.2f}")
     print(f"  Exit proceeds: ${pnl['exit_proceeds']:.2f}")
     print(f"  Gross profit: ${pnl['gross_profit']:.2f}")
@@ -124,7 +121,7 @@ def demonstrate_fee_calculations():
     print("\n✅ Fee calculations complete\n")
 
 
-def demonstrate_market_validation():
+async def demonstrate_market_validation():
     """Show market safety validation."""
     print("=" * 70)
     print("FEATURE 2: NEG-RISK MARKET VALIDATION")
@@ -132,7 +129,7 @@ def demonstrate_market_validation():
 
     # Get markets
     client = PolymarketClient()
-    markets = client.get_markets(limit=10)
+    markets = await client.get_markets(limit=10)
 
     print(f"\nChecking {len(markets)} markets for neg-risk safety...\n")
 
@@ -153,12 +150,12 @@ def demonstrate_market_validation():
                 else:
                     print(f"⚠ UNSAFE: {market.slug}")
                     if market.neg_risk_augmented:
-                        print(f"  Reason: Augmented market (incomplete outcome universe)")
+                        print("  Reason: Augmented market (incomplete outcome universe)")
             except Exception as e:
                 print(f"❌ INVALID: {market.slug}")
                 print(f"  Reason: {e}")
 
-    print(f"\nSummary:")
+    print("\nSummary:")
     print(f"  Total markets: {len(markets)}")
     print(f"  Neg-risk markets: {len(neg_risk_markets)}")
     print(f"  Safe for trading: {safe_count}")
@@ -199,7 +196,7 @@ def demonstrate_validation_utilities():
         min_profit_usdc=Decimal("1.0")
     )
 
-    print(f"Trade 1 ($0.60 → $0.70, $100):")
+    print("Trade 1 ($0.60 → $0.70, $100):")
     print(f"  Profitable: {profitable}")
     print(f"  Net profit: ${profit:.2f}")
 
@@ -212,7 +209,7 @@ def demonstrate_validation_utilities():
         min_profit_usdc=Decimal("1.0")
     )
 
-    print(f"\nTrade 2 ($0.60 → $0.61, $100):")
+    print("\nTrade 2 ($0.60 → $0.61, $100):")
     print(f"  Profitable: {profitable}")
     print(f"  Net profit: ${profit:.2f}")
 
@@ -228,7 +225,7 @@ def demonstrate_validation_utilities():
         fee_rate_bps=0  # Polymarket charges 0% fees
     )
 
-    print(f"Balance check ($100 USDC, buy $100 at 0.60):")
+    print("Balance check ($100 USDC, buy $100 at 0.60):")
     print(f"  Valid: {valid}")
     if error:
         print(f"  Error: {error}")
@@ -242,7 +239,7 @@ def demonstrate_validation_utilities():
         fee_rate_bps=0  # Polymarket charges 0% fees
     )
 
-    print(f"\nBalance check ($50 USDC, buy $100 at 0.60):")
+    print("\nBalance check ($50 USDC, buy $100 at 0.60):")
     print(f"  Valid: {valid}")
     if error:
         print(f"  Error: {error}")
@@ -278,14 +275,14 @@ def demonstrate_ctf_adapter():
         total_outcomes=3
     )
 
-    print(f"Election with 3 candidates (A, B, C):")
-    print(f"  Convert: 1 NO_A + 1 NO_B")
-    print(f"  Receive:")
+    print("Election with 3 candidates (A, B, C):")
+    print("  Convert: 1 NO_A + 1 NO_B")
+    print("  Receive:")
     print(f"    Collateral: ${result['collateral']:.2f} USDC")
     print(f"    YES tokens: {result['yes_token_count']} (YES_C)")
 
-    print(f"\nFormula: collateral = amount × (no_token_count - 1)")
-    print(f"  = 1.0 × (2 - 1) = 1.0 USDC")
+    print("\nFormula: collateral = amount × (no_token_count - 1)")
+    print("  = 1.0 × (2 - 1) = 1.0 USDC")
 
     print("\n⚠ WARNING: NegRiskAdapter requires on-chain transactions")
     print("  • Requires MATIC for gas fees")
@@ -295,7 +292,7 @@ def demonstrate_ctf_adapter():
     print("\n✅ CTF adapter overview complete\n")
 
 
-def main():
+async def main():
     """Run all demonstrations."""
     print("\n")
     print("╔" + "=" * 68 + "╗")
@@ -305,7 +302,7 @@ def main():
 
     # Feature demonstrations
     demonstrate_fee_calculations()
-    demonstrate_market_validation()
+    await demonstrate_market_validation()
     demonstrate_validation_utilities()
     demonstrate_ctf_adapter()
 
@@ -331,10 +328,10 @@ def main():
     print("   • Comprehensive input validation")
 
     print("\n📚 Documentation:")
-    print("   shared/polymarket/Documentation/NEG_RISK_CTF.md")
+    print("   polymarket/Documentation/NEG_RISK_CTF.md")
 
     print("\n" + "=" * 70 + "\n")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

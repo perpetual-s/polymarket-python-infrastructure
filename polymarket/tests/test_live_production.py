@@ -4,6 +4,7 @@ Quick test of Polymarket API with production wallet.
 SAFE: Only reads data, does NOT place orders.
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -11,10 +12,10 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from shared.polymarket import PolymarketClient, WalletConfig
+from polymarket import PolymarketClient, WalletConfig
 
 
-def test_production_api():
+async def test_production_api():
     """Test Polymarket API with production wallet (read-only)."""
 
     # Get credentials from .env
@@ -46,7 +47,7 @@ def test_production_api():
     print("TEST 1: Fetch Active Markets")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=5, active=True)
+        markets = await client.get_markets(limit=5, active=True)
         print(f"✓ Found {len(markets)} active markets")
 
         if markets:
@@ -63,7 +64,7 @@ def test_production_api():
     print("TEST 2: Fetch Wallet Balance")
     print("=" * 60)
     try:
-        balance = client.get_balances("production")
+        balance = await client.get_balances("production")
         print(f"✓ USDC Balance: ${balance.collateral:.2f}")
 
         if balance.tokens:
@@ -76,7 +77,7 @@ def test_production_api():
     print("TEST 3: Fetch Positions")
     print("=" * 60)
     try:
-        positions = client.get_positions("production")
+        positions = await client.get_positions("production")
         print(f"✓ Found {len(positions)} positions")
 
         if positions:
@@ -102,7 +103,7 @@ def test_production_api():
     print("TEST 4: Fetch Trade History")
     print("=" * 60)
     try:
-        trades = client.get_trades("production", limit=5)
+        trades = await client.get_trades("production", limit=5)
         print(f"✓ Found {len(trades)} recent trades")
 
         if trades:
@@ -120,10 +121,10 @@ def test_production_api():
     print("TEST 5: Fetch Orderbook (if markets exist)")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=1, active=True)
+        markets = await client.get_markets(limit=1, active=True)
         if markets and markets[0].tokens:
             token_id = markets[0].tokens[0]
-            orderbook = client.get_orderbook(token_id)
+            orderbook = await client.get_orderbook(token_id)
 
             print(f"✓ Orderbook for: {markets[0].question}")
             print(f"  Best Bid: ${orderbook.best_bid:.4f}" if orderbook.best_bid else "  No bids")
@@ -138,7 +139,7 @@ def test_production_api():
     print("TEST 6: API Health Check")
     print("=" * 60)
     try:
-        health = client.health_check()
+        health = await client.health_check()
         print(f"✓ API Status: {health.get('status', 'unknown')}")
     except Exception as e:
         print(f"❌ Error checking health: {e}")
@@ -155,7 +156,7 @@ def test_production_api():
     print("  - Enable WebSocket for real-time updates")
 
     # Cleanup
-    client.close()
+    await client.close()
 
 
 if __name__ == "__main__":
@@ -163,4 +164,4 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
 
-    test_production_api()
+    asyncio.run(test_production_api())

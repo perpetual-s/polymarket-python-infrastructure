@@ -1,6 +1,7 @@
 """Tests for validators."""
 
 import pytest
+from decimal import Decimal
 from ..utils.validators import (
     validate_price,
     validate_size,
@@ -12,9 +13,10 @@ from ..exceptions import ValidationError
 
 def test_validate_price():
     """Test price validation."""
-    assert validate_price(0.50) == 0.50
-    assert validate_price(0.01) == 0.01
-    assert validate_price(0.99) == 0.99
+    # Validators return Decimal for financial precision
+    assert validate_price(0.50) == Decimal("0.50")
+    assert validate_price(0.01) == Decimal("0.01")
+    assert validate_price(0.99) == Decimal("0.99")
 
     with pytest.raises(ValidationError):
         validate_price(0.0)  # Too low
@@ -28,11 +30,12 @@ def test_validate_price():
 
 def test_validate_size():
     """Test size validation."""
-    assert validate_size(10.0) == 10.0
-    assert validate_size(100.5) == 100.5
+    # Validators return Decimal for financial precision
+    assert validate_size(10.0) == Decimal("10.0")
+    assert validate_size(100.5) == Decimal("100.5")
 
     with pytest.raises(ValidationError):
-        validate_size(0.5)  # Below min
+        validate_size(0.005)  # Below min (0.01)
 
     with pytest.raises(ValidationError):
         validate_size(-10)  # Negative
@@ -52,7 +55,8 @@ def test_validate_token_id():
 def test_validate_order():
     """Test complete order validation."""
     result = validate_order("123", 0.55, 10.0, "BUY")
-    assert result == ("123", 0.55, 10.0, "BUY")
+    # Validators return Decimal for financial precision
+    assert result == ("123", Decimal("0.55"), Decimal("10.0"), "BUY")
 
     with pytest.raises(ValidationError):
         validate_order("123", 1.5, 10.0, "BUY")  # Invalid price

@@ -10,11 +10,12 @@ Run: python examples/08_phase4_5_6_features.py
 """
 
 import time
+import asyncio
 from datetime import datetime
-from shared.polymarket import PolymarketClient, WalletConfig, OrderRequest, Side
+from polymarket import PolymarketClient
 
 
-def example_1_health_check():
+async def example_1_health_check():
     """Example 1: CLOB health check (Phase 5)."""
     print("\n" + "="*60)
     print("Example 1: CLOB Health Check")
@@ -23,11 +24,11 @@ def example_1_health_check():
     client = PolymarketClient()
 
     # Check if CLOB server is operational
-    is_healthy = client.get_ok()
+    is_healthy = await client.get_ok()
     print(f"CLOB Server Status: {'✅ Operational' if is_healthy else '❌ Down'}")
 
     # Get server timestamp for clock sync
-    server_time_ms = client.get_server_time()
+    server_time_ms = await client.get_server_time()
     server_time = datetime.fromtimestamp(server_time_ms / 1000)
     local_time = datetime.now()
 
@@ -45,7 +46,7 @@ def example_1_health_check():
         print("✅ Clock synchronization acceptable")
 
 
-def example_2_fast_price_checks():
+async def example_2_fast_price_checks():
     """Example 2: Fast price checks without orderbooks (Phase 5)."""
     print("\n" + "="*60)
     print("Example 2: Fast Price Checks")
@@ -54,7 +55,7 @@ def example_2_fast_price_checks():
     client = PolymarketClient()
 
     # Get market with tokens
-    markets = client.get_markets(active=True, limit=1)
+    markets = await client.get_markets(active=True, limit=1)
     if not markets or not markets[0].tokens:
         print("No tradable markets available")
         return
@@ -67,13 +68,13 @@ def example_2_fast_price_checks():
 
     # OLD WAY: Fetch full orderbook (slower)
     start = time.time()
-    book = client.get_orderbook(token_id)
+    book = await client.get_orderbook(token_id)
     old_time = (time.time() - start) * 1000
     print(f"OLD (full orderbook): {book.midpoint:.3f} ({old_time:.1f}ms)")
 
     # NEW WAY: Get last trade price directly (faster)
     start = time.time()
-    last_price = client.get_last_trade_price(token_id)
+    last_price = await client.get_last_trade_price(token_id)
     new_time = (time.time() - start) * 1000
     print(f"NEW (last trade):     {last_price:.3f} ({new_time:.1f}ms)")
 
@@ -82,7 +83,7 @@ def example_2_fast_price_checks():
     print(f"\n⚡ Speedup: {speedup:.1f}x faster")
 
 
-def example_3_batch_last_prices():
+async def example_3_batch_last_prices():
     """Example 3: Batch last trade prices (Phase 5)."""
     print("\n" + "="*60)
     print("Example 3: Batch Last Trade Prices")
@@ -91,7 +92,7 @@ def example_3_batch_last_prices():
     client = PolymarketClient()
 
     # Get multiple markets
-    markets = client.get_markets(active=True, limit=5)
+    markets = await client.get_markets(active=True, limit=5)
     token_ids = []
     for market in markets:
         if market.tokens:
@@ -105,7 +106,7 @@ def example_3_batch_last_prices():
 
     # Batch endpoint (single API call)
     start = time.time()
-    prices = client.get_last_trades_prices(token_ids)
+    prices = await client.get_last_trades_prices(token_ids)
     batch_time = (time.time() - start) * 1000
 
     # Display results
@@ -118,7 +119,7 @@ def example_3_batch_last_prices():
     print(f"   (~{batch_time/len(prices):.0f}ms per price)")
 
 
-def example_4_batch_orderbooks():
+async def example_4_batch_orderbooks():
     """Example 4: Native batch orderbooks (Phase 4 - 10x faster)."""
     print("\n" + "="*60)
     print("Example 4: Native Batch Orderbooks (10x Faster)")
@@ -127,7 +128,7 @@ def example_4_batch_orderbooks():
     client = PolymarketClient()
 
     # Get markets with multiple tokens
-    markets = client.get_markets(active=True, limit=10)
+    markets = await client.get_markets(active=True, limit=10)
     token_ids = []
     for market in markets:
         if market.tokens:
@@ -144,7 +145,7 @@ def example_4_batch_orderbooks():
 
     # NEW: Native batch endpoint (single API call)
     start = time.time()
-    books = client.get_orderbooks_batch(token_ids)
+    books = await client.get_orderbooks_batch(token_ids)
     batch_time = (time.time() - start) * 1000
 
     # Display results
@@ -158,13 +159,13 @@ def example_4_batch_orderbooks():
 
         print(f"{token_id[:15]:<15} {best_bid:<12} {best_ask:<12} {spread_pct:<10}")
 
-    print(f"\n⚡ Performance:")
+    print("\n⚡ Performance:")
     print(f"   Total time: {batch_time:.0f}ms")
     print(f"   Per book: ~{batch_time/len(books):.0f}ms")
-    print(f"   10x faster than individual fetches!")
+    print("   10x faster than individual fetches!")
 
 
-def example_5_simplified_markets():
+async def example_5_simplified_markets():
     """Example 5: Lightweight market list (Phase 5)."""
     print("\n" + "="*60)
     print("Example 5: Simplified Markets (Lightweight)")
@@ -173,7 +174,7 @@ def example_5_simplified_markets():
     client = PolymarketClient()
 
     # Get simplified markets (lighter response)
-    response = client.get_simplified_markets()
+    response = await client.get_simplified_markets()
 
     markets = response.get("data", [])
     next_cursor = response.get("next_cursor")
@@ -191,7 +192,7 @@ def example_5_simplified_markets():
         print("   Call get_simplified_markets(next_cursor) for next page")
 
 
-def example_6_tick_size_validation():
+async def example_6_tick_size_validation():
     """Example 6: Automatic tick size validation (Phase 6)."""
     print("\n" + "="*60)
     print("Example 6: Automatic Tick Size Validation")
@@ -225,11 +226,11 @@ def example_6_tick_size_validation():
 
     # If tick size is 0.001 and price is 0.5555 (invalid),
     # order will be REJECTED before signing (saves gas)
-    response = client.place_order(order)
+    response = await client.place_order(order)
     """)
 
 
-def example_7_integration_demo():
+async def example_7_integration_demo():
     """Example 7: All features together (realistic use case)."""
     print("\n" + "="*60)
     print("Example 7: Integration Demo (All Features)")
@@ -238,14 +239,14 @@ def example_7_integration_demo():
     client = PolymarketClient()
 
     # 1. Health check
-    if not client.get_ok():
+    if not await client.get_ok():
         print("❌ CLOB server unavailable, aborting")
         return
 
     print("✅ CLOB server operational\n")
 
     # 2. Get simplified markets (fast)
-    markets_response = client.get_simplified_markets()
+    markets_response = await client.get_simplified_markets()
     markets = markets_response["data"][:5]
 
     # 3. Extract token IDs
@@ -262,11 +263,11 @@ def example_7_integration_demo():
 
     # 4. Batch fetch orderbooks (10x faster)
     print("Fetching orderbooks (native batch endpoint)...")
-    books = client.get_orderbooks_batch(token_ids)
+    books = await client.get_orderbooks_batch(token_ids)
 
     # 5. Batch fetch last prices (fast)
     print("Fetching last trade prices...")
-    last_prices = client.get_last_trades_prices(token_ids)
+    last_prices = await client.get_last_trades_prices(token_ids)
 
     # 6. Analyze and display
     print("\nMarket Analysis:")
@@ -287,7 +288,7 @@ def example_7_integration_demo():
     print("\n✅ All data fetched with new Phase 4-6 enhancements!")
 
 
-def main():
+async def main():
     """Run all examples."""
     print("\n" + "="*60)
     print("POLYMARKET API PHASES 4-6 ENHANCEMENTS")
@@ -310,7 +311,7 @@ def main():
 
     for name, func in examples:
         try:
-            func()
+            await func()
         except Exception as e:
             print(f"\n❌ Example failed: {e}")
 
@@ -322,4 +323,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

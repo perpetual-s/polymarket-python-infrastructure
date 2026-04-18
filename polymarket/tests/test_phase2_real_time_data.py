@@ -14,7 +14,7 @@ import pytest
 import time
 import json
 from unittest.mock import Mock, patch, MagicMock
-from shared.polymarket.api.real_time_data import (
+from polymarket.api.real_time_data import (
     RealTimeDataClient,
     ConnectionStatus,
     ClobApiKeyCreds,
@@ -101,7 +101,7 @@ class TestConnectionManagement:
 class TestSubscriptionHandling:
     """Test subscription methods."""
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_basic(self, mock_ws_class):
         """Test basic subscription."""
         mock_ws = MagicMock()
@@ -123,7 +123,7 @@ class TestSubscriptionHandling:
         assert data["subscriptions"][0]["topic"] == "activity"
         assert data["subscriptions"][0]["type"] == "trades"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_with_filters(self, mock_ws_class):
         """Test subscription with filters."""
         mock_ws = MagicMock()
@@ -141,7 +141,7 @@ class TestSubscriptionHandling:
 
         assert data["subscriptions"][0]["filters"] == filters
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_with_clob_auth(self, mock_ws_class):
         """Test subscription with CLOB auth."""
         mock_ws = MagicMock()
@@ -165,7 +165,7 @@ class TestSubscriptionHandling:
         assert "clob_auth" in data["subscriptions"][0]
         assert data["subscriptions"][0]["clob_auth"]["key"] == "test-key"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_unsubscribe(self, mock_ws_class):
         """Test unsubscribe."""
         mock_ws = MagicMock()
@@ -264,7 +264,7 @@ class TestMessageParsing:
 class TestStreamHelpers:
     """Test StreamHelpers convenience methods."""
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_market_trades(self, mock_ws_class):
         """Test market trades helper."""
         mock_ws = MagicMock()
@@ -284,7 +284,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters["market_slug"] == "trump-2024"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_event_trades(self, mock_ws_class):
         """Test event trades helper."""
         mock_ws = MagicMock()
@@ -302,7 +302,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters["event_slug"] == "election-2024"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_event_comments(self, mock_ws_class):
         """Test event comments helper."""
         mock_ws = MagicMock()
@@ -322,7 +322,7 @@ class TestStreamHelpers:
         assert filters["parentEntityID"] == 100
         assert filters["parentEntityType"] == "Event"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_crypto_price(self, mock_ws_class):
         """Test crypto price helper."""
         mock_ws = MagicMock()
@@ -342,7 +342,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters["symbol"] == "btcusdt"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_market_orderbook(self, mock_ws_class):
         """Test market orderbook helper."""
         mock_ws = MagicMock()
@@ -363,7 +363,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters == token_ids
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_price_changes(self, mock_ws_class):
         """Test price changes helper."""
         mock_ws = MagicMock()
@@ -382,7 +382,7 @@ class TestStreamHelpers:
         assert data["subscriptions"][0]["topic"] == "clob_market"
         assert data["subscriptions"][0]["type"] == "price_change"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_new_markets(self, mock_ws_class):
         """Test new markets helper."""
         mock_ws = MagicMock()
@@ -400,7 +400,7 @@ class TestStreamHelpers:
         assert data["subscriptions"][0]["topic"] == "clob_market"
         assert data["subscriptions"][0]["type"] == "market_created"
 
-    @patch('shared.polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
     def test_subscribe_to_market_resolutions(self, mock_ws_class):
         """Test market resolutions helper."""
         mock_ws = MagicMock()

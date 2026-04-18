@@ -13,8 +13,9 @@ Copy this for your Strategy-1 and Strategy-3 bots.
 """
 
 import os
+import asyncio
 from decimal import Decimal
-from shared.polymarket import (
+from polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,
@@ -27,13 +28,13 @@ from shared.polymarket import (
     calculate_profit_after_fees,
     check_order_profitability,
 )
-from shared.polymarket.exceptions import (
+from polymarket.exceptions import (
     ValidationError,
     InsufficientBalanceError,
     OrderRejectedError,
 )
 
-def main():
+async def main():
     """Production-safe trading example with all validations."""
 
     # 1. Initialize client
@@ -56,11 +57,11 @@ def main():
     print("✓ Wallet added\n")
 
     # 3. Get balance
-    balance = client.get_balance("strategy1")
+    balance = await client.get_balance("strategy1")
     print(f"Current Balance: ${balance.collateral:.2f} USDC\n")
 
     # 4. Get market and orderbook
-    markets = client.get_markets(limit=1, active=True)
+    markets = await client.get_markets(limit=1, active=True)
     if not markets:
         print("No markets found")
         return
@@ -73,7 +74,7 @@ def main():
 
     print(f"Market: {market.question}")
 
-    orderbook = client.get_orderbook(token_id)
+    orderbook = await client.get_orderbook(token_id)
     print(f"Best Ask: {orderbook.best_ask}")
     print(f"Best Bid: {orderbook.best_bid}")
     print(f"Spread: {orderbook.spread}\n")
@@ -107,7 +108,7 @@ def main():
     if not valid:
         print(f"❌ Invalid order: {error}")
         return
-    print(f"✓ Order parameters valid")
+    print("✓ Order parameters valid")
 
     # 1.3: Calculate fees BEFORE placing order
     print("\n[2/4] Calculating fees...")
@@ -154,7 +155,7 @@ def main():
         print(f"❌ Trade not profitable: ${net_profit:.2f} profit")
         print(f"   Entry: ${entry_price:.4f}")
         print(f"   Target exit: ${exit_price:.4f}")
-        print(f"   Spread too small after fees")
+        print("   Spread too small after fees")
         return
 
     print(f"✓ Trade profitable: ${net_profit:.2f} net profit after fees")
@@ -169,7 +170,7 @@ def main():
         exit_fee_rate_bps=fee_rate_bps
     )
 
-    print(f"\n  P&L Breakdown:")
+    print("\n  P&L Breakdown:")
     print(f"    Entry cost:    ${pnl['entry_cost']:.2f}")
     print(f"    Exit proceeds: ${pnl['exit_proceeds']:.2f}")
     print(f"    Gross profit:  ${pnl['gross_profit']:.2f}")
@@ -186,10 +187,10 @@ def main():
     print("=" * 70)
 
     try:
-        response = client.place_order(order, wallet_id="strategy1")
+        response = await client.place_order(order, wallet_id="strategy1")
 
         if response.success:
-            print(f"\n✅ Order placed successfully!")
+            print("\n✅ Order placed successfully!")
             print(f"   Order ID: {response.order_id}")
             print(f"   Status: {response.status}")
             print(f"\n   Cost: ${net_cost:.2f}")
@@ -215,7 +216,7 @@ def main():
     print("STEP 3: POSITION MONITORING")
     print("=" * 70)
 
-    positions = client.get_positions(wallet_id="strategy1")
+    positions = await client.get_positions(wallet_id="strategy1")
 
     if positions:
         print(f"\nOpen Positions: {len(positions)}")
@@ -239,4 +240,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -119,9 +119,12 @@ class RealTimeDataClient:
         self.ws: Optional[websocket.WebSocketApp] = None
         self._ws_thread: Optional[threading.Thread] = None
 
-        # Connection state
+        # Connection state - CRITICAL: Use lock to prevent race conditions
+        # that caused thread explosion (16,384 threads -> kernel panic)
         self._status = ConnectionStatus.DISCONNECTED
         self._shutdown_requested = False
+        self._connect_lock = threading.Lock()  # Protect connect() from concurrent calls
+        self._connecting = False  # Track if connect is in progress
 
         # Ping management
         self._ping_timer: Optional[threading.Timer] = None
@@ -131,6 +134,7 @@ class RealTimeDataClient:
         self._reconnect_attempts = 0
         self._max_reconnect_delay = 300  # 5 minutes max
         self._reconnect_timer: Optional[threading.Timer] = None
+        self._reconnect_lock = threading.Lock()  # Prevent double reconnection scheduling
 
         # Subscription tracking (for resubscription after reconnect)
         self._active_subscriptions = []
@@ -150,9 +154,24 @@ class RealTimeDataClient:
         Returns:
             Self for chaining
         """
-        if self._shutdown_requested:
-            logger.warning("Cannot connect: shutdown requested")
-            return self
+        # CRITICAL: Use lock to prevent race condition where multiple threads
+        # (from reconnect timers, _on_error, _on_close) can each spawn a new thread.
+        # This was causing thread explosion (16,384 threads -> kernel panic).
+        with self._connect_lock:
+            if self._shutdown_requested:
+                logger.warning("Cannot connect: shutdown requested")
+                return self
+
+            if self._connecting:
+                logger.warning("Already connecting, ignoring duplicate connect call")
+                return self
+
+            # Check if already connected
+            if self._is_connected():
+                logger.warning("Already connected, ignoring connect call")
+                return self
+
+            self._connecting = True
 
         self._notify_status_change(ConnectionStatus.CONNECTING)
 
@@ -337,6 +356,11 @@ class RealTimeDataClient:
     def _on_open(self, ws):
         """WebSocket open handler."""
         logger.info("WebSocket connected")
+
+        # CRITICAL: Reset _connecting flag so future reconnects can proceed
+        with self._connect_lock:
+            self._connecting = False
+
         self._notify_status_change(ConnectionStatus.CONNECTED)
 
         # Reset reconnection attempts on successful connection
@@ -435,21 +459,8 @@ class RealTimeDataClient:
     def _on_error(self, ws, error):
         """WebSocket error handler."""
         logger.error(f"WebSocket error: {error}")
-
-        if self.auto_reconnect and not self._shutdown_requested:
-            # Exponential backoff: 2, 4, 8, 16, 32, 64, 128, 256, 300 max
-            delay = min(2 ** self._reconnect_attempts, self._max_reconnect_delay)
-            self._reconnect_attempts += 1
-
-            logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_attempts})...")
-
-            def reconnect():
-                if not self._shutdown_requested:
-                    self.connect()
-
-            self._reconnect_timer = threading.Timer(delay, reconnect)
-            self._reconnect_timer.daemon = True
-            self._reconnect_timer.start()
+        # Schedule reconnect (if not already scheduled by _on_close)
+        self._schedule_reconnect()
 
     def _on_close(self, ws, close_status_code, close_msg):
         """WebSocket close handler."""
@@ -461,14 +472,40 @@ class RealTimeDataClient:
             self._ping_timer.cancel()
             self._ping_timer = None
 
-        if self.auto_reconnect and not self._shutdown_requested:
+        # Schedule reconnect (if not already scheduled by _on_error)
+        self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        """
+        Schedule reconnection with exponential backoff.
+
+        CRITICAL: Uses lock to prevent double reconnection scheduling.
+        Both _on_error and _on_close can fire during disconnect, and without
+        this protection, each would create a timer -> thread explosion.
+        """
+        if not self.auto_reconnect or self._shutdown_requested:
+            return
+
+        with self._reconnect_lock:
+            # Cancel existing reconnect timer if any (prevent timer accumulation)
+            if self._reconnect_timer is not None:
+                self._reconnect_timer.cancel()
+                self._reconnect_timer = None
+
+            # Reset _connecting flag so the scheduled reconnect can proceed
+            with self._connect_lock:
+                self._connecting = False
+
             # Exponential backoff: 2, 4, 8, 16, 32, 64, 128, 256, 300 max
             delay = min(2 ** self._reconnect_attempts, self._max_reconnect_delay)
             self._reconnect_attempts += 1
 
-            logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_attempts})...")
+            logger.info(f"Scheduling reconnect in {delay}s (attempt {self._reconnect_attempts})...")
 
             def reconnect():
+                # Clear timer reference before connect (inside timer callback)
+                with self._reconnect_lock:
+                    self._reconnect_timer = None
                 if not self._shutdown_requested:
                     self.connect()
 

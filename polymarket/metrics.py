@@ -90,6 +90,57 @@ class Metrics:
             ['wallet']
         )
 
+        # WebSocket metrics (v3.2)
+        self.websocket_messages = Counter(
+            'polymarket_websocket_messages_total',
+            'Total WebSocket messages received',
+            ['channel', 'event_type']
+        )
+
+        self.websocket_connections = Gauge(
+            'polymarket_websocket_connections_active',
+            'Active WebSocket connections',
+            ['channel']
+        )
+
+        self.websocket_reconnections = Counter(
+            'polymarket_websocket_reconnections_total',
+            'Total WebSocket reconnections',
+            ['channel']
+        )
+
+        self.websocket_processing_time = Histogram(
+            'polymarket_websocket_processing_seconds',
+            'Time to process WebSocket message',
+            ['channel', 'event_type']
+        )
+
+        self.websocket_uptime = Gauge(
+            'polymarket_websocket_uptime_seconds',
+            'WebSocket connection uptime',
+            ['channel']
+        )
+
+        # WebSocket queue metrics (v3.3)
+        self.websocket_queue_drops = Counter(
+            'polymarket_websocket_queue_drops_total',
+            'Total messages dropped due to full queue',
+            ['channel']
+        )
+
+        self.websocket_queue_lag = Histogram(
+            'polymarket_websocket_queue_lag_seconds',
+            'Queue processing lag (time from enqueue to dequeue)',
+            ['channel']
+        )
+
+        # WebSocket deduplication metrics (v3.5 - L2)
+        self.websocket_duplicates = Counter(
+            'polymarket_websocket_duplicates_total',
+            'Total duplicate messages blocked by deduplication',
+            ['channel']
+        )
+
         # Start metrics server
         try:
             start_http_server(port)
@@ -133,6 +184,48 @@ class Metrics:
         """Set USDC balance."""
         if self.enabled:
             self.balance_usdc.labels(wallet=wallet).set(usdc)
+
+    # ========== WebSocket Metrics (v3.2) ==========
+
+    def track_websocket_message(self, channel: str, event_type: str) -> None:
+        """Record WebSocket message received."""
+        if self.enabled:
+            self.websocket_messages.labels(channel=channel, event_type=event_type).inc()
+
+    def track_websocket_processing(self, channel: str, event_type: str, duration: float) -> None:
+        """Record WebSocket message processing time."""
+        if self.enabled:
+            self.websocket_processing_time.labels(channel=channel, event_type=event_type).observe(duration)
+
+    def set_websocket_connection(self, channel: str, connected: bool) -> None:
+        """Set WebSocket connection state."""
+        if self.enabled:
+            self.websocket_connections.labels(channel=channel).set(1 if connected else 0)
+
+    def track_websocket_duplicate(self, channel: str) -> None:
+        """Record duplicate WebSocket message blocked (v3.5 - L2)."""
+        if self.enabled:
+            self.websocket_duplicates.labels(channel=channel).inc()
+
+    def track_websocket_reconnection(self, channel: str) -> None:
+        """Record WebSocket reconnection."""
+        if self.enabled:
+            self.websocket_reconnections.labels(channel=channel).inc()
+
+    def set_websocket_uptime(self, channel: str, uptime_seconds: int) -> None:
+        """Set WebSocket connection uptime."""
+        if self.enabled:
+            self.websocket_uptime.labels(channel=channel).set(uptime_seconds)
+
+    def track_websocket_queue_drop(self, channel: str) -> None:
+        """Record WebSocket message dropped due to full queue (v3.3)."""
+        if self.enabled:
+            self.websocket_queue_drops.labels(channel=channel).inc()
+
+    def track_websocket_queue_lag(self, channel: str, lag_seconds: float) -> None:
+        """Record WebSocket queue processing lag (v3.3)."""
+        if self.enabled:
+            self.websocket_queue_lag.labels(channel=channel).observe(lag_seconds)
 
 
 # Global metrics instance

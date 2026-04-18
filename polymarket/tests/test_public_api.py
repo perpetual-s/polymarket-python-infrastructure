@@ -4,15 +4,16 @@ Test Polymarket public API (no authentication required).
 
 import os
 import sys
+import asyncio
 from pathlib import Path
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from shared.polymarket import PolymarketClient
+from polymarket import PolymarketClient
 
 
-def test_public_api():
+async def test_public_api():
     """Test Polymarket public API endpoints."""
 
     print("=" * 60)
@@ -32,7 +33,7 @@ def test_public_api():
     print("TEST 1: Fetch Active Markets")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=10, active=True)
+        markets = await client.get_markets(limit=10, active=True)
         print(f"✓ Found {len(markets)} active markets\n")
 
         if markets:
@@ -55,7 +56,7 @@ def test_public_api():
     print("TEST 2: Search Markets (query: 'trump')")
     print("=" * 60)
     try:
-        results = client.search_markets("trump", limit=5)
+        results = await client.search_markets("trump", limit=5)
         print(f"✓ Found {len(results)} results\n")
 
         for i, market in enumerate(results[:3], 1):
@@ -72,10 +73,10 @@ def test_public_api():
     print("TEST 3: Get Market by Slug (if available)")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=1, active=True)
+        markets = await client.get_markets(limit=1, active=True)
         if markets:
             slug = markets[0].slug
-            market = client.get_market_by_slug(slug)
+            market = await client.get_market_by_slug(slug)
 
             print(f"✓ Fetched market: {market.question}")
             print(f"  ID: {market.id if hasattr(market, 'id') else 'N/A'}")
@@ -95,14 +96,14 @@ def test_public_api():
     print("TEST 4: Fetch Orderbook")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=1, active=True)
+        markets = await client.get_markets(limit=1, active=True)
         if markets and hasattr(markets[0], 'tokens') and markets[0].tokens:
             token_id = markets[0].tokens[0]
 
             print(f"Fetching orderbook for: {markets[0].question}")
             print(f"Token ID: {token_id}\n")
 
-            orderbook = client.get_orderbook(token_id)
+            orderbook = await client.get_orderbook(token_id)
 
             print(f"✓ Orderbook fetched:")
             if orderbook.best_bid is not None:
@@ -142,11 +143,11 @@ def test_public_api():
     print("TEST 5: Get Midpoint Price")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=1, active=True)
+        markets = await client.get_markets(limit=1, active=True)
         if markets and hasattr(markets[0], 'tokens') and markets[0].tokens:
             token_id = markets[0].tokens[0]
 
-            midpoint = client.get_midpoint(token_id)
+            midpoint = await client.get_midpoint(token_id)
             print(f"✓ Midpoint price: ${midpoint:.4f}")
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -156,14 +157,14 @@ def test_public_api():
     print("TEST 6: Batch Fetch Orderbooks")
     print("=" * 60)
     try:
-        markets = client.get_markets(limit=3, active=True)
+        markets = await client.get_markets(limit=3, active=True)
         if markets:
             token_ids = [token for m in markets if hasattr(m, 'tokens') and m.tokens for token in m.tokens[:1]]
 
             if token_ids:
                 print(f"Fetching orderbooks for {len(token_ids)} tokens...\n")
 
-                books = client.get_orderbooks_batch(token_ids)
+                books = await client.get_orderbooks_batch(token_ids)
 
                 print(f"✓ Fetched {len(books)} orderbooks")
                 for i, (token_id, book) in enumerate(list(books.items())[:3], 1):
@@ -186,7 +187,7 @@ def test_public_api():
     print("  3. Then wallet operations will work (balances, positions, orders)")
 
     # Cleanup
-    client.close()
+    await client.close()
 
 
 if __name__ == "__main__":
@@ -194,4 +195,4 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
 
-    test_public_api()
+    asyncio.run(test_public_api())

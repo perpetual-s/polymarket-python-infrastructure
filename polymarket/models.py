@@ -7,9 +7,9 @@ DECIMAL PRECISION: All numeric types use Decimal for financial-grade accuracy.
 
 from enum import Enum
 from typing import Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from pydantic import BaseModel, Field, field_validator, ConfigDict, field_serializer, AliasChoices
+from pydantic import BaseModel, Field, field_validator, ConfigDict, SecretStr, AliasChoices
 
 
 class Side(str, Enum):
@@ -60,7 +60,7 @@ class OrderRequest(BaseModel):
 
     token_id: str = Field(..., description="ERC1155 token ID")
     price: Decimal = Field(..., ge=Decimal("0.01"), le=Decimal("0.99"), description="Order price (0.01-0.99)")
-    size: Decimal = Field(..., gt=0, description="Order size in USDC value (BUY: spend amount, SELL: sell value)")
+    size: Decimal = Field(..., gt=0, description="Number of tokens/contracts to buy or sell")
     side: Side = Field(..., description="BUY or SELL")
     order_type: OrderType = Field(default=OrderType.GTC, description="Order type")
     expiration: Optional[int] = Field(None, description="Unix timestamp for GTD orders")
@@ -99,11 +99,23 @@ class OrderRequest(BaseModel):
 
 
 class MarketOrderRequest(BaseModel):
-    """Market order request."""
+    """
+    Market order request.
+
+    CRITICAL: `amount` has DIFFERENT semantics based on side:
+    - BUY: amount = USD to spend
+    - SELL: amount = tokens (shares) to sell
+
+    This matches official py-clob-client MarketOrderArgs behavior.
+    """
     model_config = ConfigDict(use_enum_values=True)
 
     token_id: str = Field(..., description="ERC1155 token ID")
-    amount: Decimal = Field(..., gt=0, description="Amount in USDC")
+    amount: Decimal = Field(
+        ...,
+        gt=0,
+        description="BUY: USD to spend | SELL: tokens to sell"
+    )
     side: Side = Field(..., description="BUY or SELL")
     order_type: OrderType = Field(default=OrderType.FOK, description="FOK or FAK")
 
@@ -210,7 +222,13 @@ class Position(BaseModel):
         if isinstance(v, Decimal):
             return v
         elif isinstance(v, str):
-            return Decimal(v)
+            # Handle empty strings and invalid values
+            if not v or v.strip() in ("", "null", "None", "NaN", "nan"):
+                return Decimal("0.0")
+            try:
+                return Decimal(v)
+            except InvalidOperation:
+                return Decimal("0.0")
         elif isinstance(v, (int, float)):
             return Decimal(str(v))
         elif v is None:
@@ -270,33 +288,46 @@ class ActivityType(str, Enum):
     REWARD = "REWARD"
     CONVERSION = "CONVERSION"
     MAKER_REBATE = "MAKER_REBATE"
-    YIELD = "YIELD"
+    YIELD = "YIELD"  # Interest/staking rewards
 
 
 class Activity(BaseModel):
-    """Onchain activity record."""
-    # Timing
+    """
+    Onchain activity record from Data API /activity endpoint.
+
+    Note: Many fields are nullable depending on activity type.
+    TRADE activities have side, price, conditionId populated.
+    YIELD activities may have nulls for market-specific fields.
+    """
+    # Required fields
     timestamp: int
-
-    # Activity type
     type: ActivityType
-
-    # Blockchain
     transaction_hash: str = Field(..., alias="transactionHash")
-
-    # Market context
-    market: str
-    condition_id: str = Field(..., alias="conditionId")
-    asset: str
-    title: str
-    outcome: str
-
-    # Trade-specific (optional — non-TRADE events return side="" from the API)
-    side: Optional[Side] = None
-
-    # Amounts
     size: Decimal
-    usd_value: Decimal = Field(..., alias="usdValue")
+    usdc_size: Decimal = Field(..., alias="usdcSize")
+
+    # Wallet info
+    proxy_wallet: Optional[str] = Field(None, alias="proxyWallet")
+
+    # Market context (nullable for non-TRADE activities)
+    condition_id: Optional[str] = Field(None, alias="conditionId")
+    asset: Optional[str] = None
+    title: Optional[str] = None
+    outcome: Optional[str] = None
+    outcome_index: Optional[int] = Field(None, alias="outcomeIndex")
+    slug: Optional[str] = None
+    event_slug: Optional[str] = Field(None, alias="eventSlug")
+    icon: Optional[str] = None
+
+    # Trade-specific (optional)
+    side: Optional[Side] = None
+    price: Optional[Decimal] = None
+
+    # User profile (optional)
+    name: Optional[str] = None
+    pseudonym: Optional[str] = None
+    bio: Optional[str] = None
+    profile_image: Optional[str] = Field(None, alias="profileImage")
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
@@ -309,10 +340,12 @@ class Activity(BaseModel):
             return None
         return v
 
-    @field_validator("size", "usd_value", mode="before")
+    @field_validator("size", "usdc_size", "price", mode="before")
     @classmethod
-    def validate_numeric(cls, v: Any) -> Decimal:
+    def validate_numeric(cls, v: Any) -> Optional[Decimal]:
         """Convert numeric fields to Decimal."""
+        if v is None:
+            return None
         if isinstance(v, Decimal):
             return v
         elif isinstance(v, str):
@@ -354,12 +387,28 @@ class PortfolioValue(BaseModel):
 
 
 class Holder(BaseModel):
-    """Market token holder."""
+    """
+    Market token holder from Data API /holders endpoint.
+
+    Note: API returns nested structure { token: str, holders: [Holder] }.
+    The get_holders method flattens this and adds token_id to each holder.
+    """
     proxy_wallet: str = Field(..., alias="proxyWallet")
-    pseudonym: Optional[str] = None
     amount: Decimal
-    outcome: str
-    profile_picture: Optional[str] = Field(None, alias="profilePicture")
+    outcome_index: int = Field(..., alias="outcomeIndex")
+
+    # Token info (added by parser from parent structure)
+    token_id: Optional[str] = None
+    asset: Optional[str] = None
+
+    # Profile info (all optional)
+    pseudonym: Optional[str] = None
+    name: Optional[str] = None
+    bio: Optional[str] = None
+    profile_image: Optional[str] = Field(None, alias="profileImage")
+    profile_image_optimized: Optional[str] = Field(None, alias="profileImageOptimized")
+    display_username_public: bool = Field(False, alias="displayUsernamePublic")
+    verified: bool = False
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -476,6 +525,42 @@ class Market(BaseModel):
     neg_risk: Optional[bool] = Field(None, alias="negRisk", description="Negative risk market (mutually exclusive outcomes)")
     enable_neg_risk: Optional[bool] = Field(None, alias="enableNegRisk", description="Neg-risk enabled for this market")
     neg_risk_augmented: Optional[bool] = Field(None, alias="negRiskAugmented", description="Augmented neg-risk (incomplete outcome universe)")
+    neg_risk_market_id: Optional[str] = Field(None, alias="negRiskMarketID", description="Neg-risk CTF adapter market ID")
+    neg_risk_request_id: Optional[str] = Field(None, alias="negRiskRequestID", description="Neg-risk CTF adapter request ID")
+
+    # Grouped market fields (CRITICAL for correct resolution dates)
+    group_item_title: Optional[str] = Field(None, alias="groupItemTitle", description="Resolution date/title for grouped markets")
+    group_item_threshold: Optional[int] = Field(None, alias="groupItemThreshold", description="Ordering threshold for grouped markets")
+
+    # Trading state fields
+    best_bid: Optional[Decimal] = Field(None, alias="bestBid", description="Current best bid price")
+    best_ask: Optional[Decimal] = Field(None, alias="bestAsk", description="Current best ask price")
+    spread: Optional[Decimal] = Field(None, description="Current bid-ask spread")
+    last_trade_price: Optional[Decimal] = Field(None, alias="lastTradePrice", description="Last trade price")
+    competitive: Optional[Decimal] = Field(None, description="Market competitiveness score (0-1)")
+
+    # Trading constraints
+    order_min_size: Optional[Decimal] = Field(None, alias="orderMinSize", description="Minimum order size in USDC")
+    order_price_min_tick_size: Optional[Decimal] = Field(None, alias="orderPriceMinTickSize", description="Minimum price tick size")
+    accepting_orders: Optional[bool] = Field(None, alias="acceptingOrders", description="Whether market is accepting orders")
+
+    # UMA oracle fields
+    question_id: Optional[str] = Field(None, alias="questionID", description="UMA oracle question ID")
+    uma_bond: Optional[Decimal] = Field(None, alias="umaBond", description="UMA bond amount")
+    uma_reward: Optional[Decimal] = Field(None, alias="umaReward", description="UMA reward amount")
+    resolution_source: Optional[str] = Field(None, alias="resolutionSource", description="URL/source for market resolution")
+
+    # Time-windowed volumes
+    volume_24h: Optional[Decimal] = Field(None, alias="volume24hr", description="24-hour trading volume")
+    volume_1wk: Optional[Decimal] = Field(None, alias="volume1wk", description="1-week trading volume")
+    volume_1mo: Optional[Decimal] = Field(None, alias="volume1mo", description="1-month trading volume")
+
+    # Creator/resolver fields
+    submitted_by: Optional[str] = Field(None, alias="submitted_by", description="Address that submitted the market")
+    resolved_by: Optional[str] = Field(None, alias="resolvedBy", description="Address that resolves the market")
+
+    # Date tracking
+    has_reviewed_dates: Optional[bool] = Field(None, alias="hasReviewedDates", description="Whether dates have been reviewed")
 
     @field_validator("outcomes", mode="before")
     @classmethod
@@ -523,7 +608,14 @@ class Market(BaseModel):
         else:
             return Decimal("0.0")
 
-    @field_validator("rewards_min_size", "rewards_max_spread", mode="before")
+    @field_validator(
+        "rewards_min_size", "rewards_max_spread",
+        "best_bid", "best_ask", "spread", "last_trade_price", "competitive",
+        "order_min_size", "order_price_min_tick_size",
+        "uma_bond", "uma_reward",
+        "volume_24h", "volume_1wk", "volume_1mo",
+        mode="before"
+    )
     @classmethod
     def validate_optional_numeric(cls, v: Any) -> Optional[Decimal]:
         """Convert optional numeric fields to Decimal."""
@@ -532,7 +624,10 @@ class Market(BaseModel):
         if isinstance(v, Decimal):
             return v
         elif isinstance(v, str):
-            return Decimal(v)
+            try:
+                return Decimal(v)
+            except Exception:
+                return None
         elif isinstance(v, (int, float)):
             return Decimal(str(v))
         else:
@@ -578,6 +673,11 @@ class Event(BaseModel):
     # Negative risk indicator
     neg_risk: Optional[bool] = Field(None, alias="negRisk", description="Negative risk event")
 
+    # Volume and liquidity (from /events/pagination endpoint)
+    volume: float = Field(0.0, description="Total event volume in USD")
+    liquidity: float = Field(0.0, description="Total event liquidity in USD")
+    volume_24h: Optional[float] = Field(None, alias="volume24hr", description="24h volume")
+
     @field_validator("markets", mode="before")
     @classmethod
     def parse_markets(cls, v: Any) -> list[Any]:
@@ -597,7 +697,7 @@ class OrderBook(BaseModel):
     market: Optional[str] = None
     tick_size: Optional[Decimal] = None
     neg_risk: Optional[bool] = None
-    timestamp: Union[datetime, int] = Field(default_factory=lambda: datetime.utcnow())
+    timestamp: Union[datetime, int] = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("tick_size", mode="before")
     @classmethod
@@ -644,7 +744,7 @@ class OrderBook(BaseModel):
 # Configuration Models
 class WalletConfig(BaseModel):
     """Wallet configuration."""
-    private_key: str = Field(..., description="Wallet private key (hex)")
+    private_key: SecretStr = Field(..., description="Wallet private key (hex)")
     address: Optional[str] = Field(None, description="Wallet address (derived if not provided)")
     signature_type: SignatureType = Field(default=SignatureType.EOA)
     funder: Optional[str] = Field(None, description="Funder address for proxy wallets")

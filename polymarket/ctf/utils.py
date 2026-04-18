@@ -8,8 +8,8 @@ Provides:
 """
 
 import logging
-from typing import Dict, List, Optional
-from ..models import Market, Position
+from typing import Dict, List
+from ..models import Market
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,6 @@ Configuration management for Polymarket client.
 Loads settings from environment variables with validation.
 """
 
-import os
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,7 +20,8 @@ class PolymarketSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore"
+        extra="ignore",
+        validate_assignment=True,
     )
 
     # API URLs
@@ -113,7 +113,7 @@ class PolymarketSettings(BaseSettings):
 
     # Validation
     validate_orders: bool = Field(default=True, description="Validate orders before sending")
-    min_order_size: float = Field(default=1.0, ge=0.01, description="Minimum order size (USDC)")
+    min_order_size: float = Field(default=0.01, ge=0.01, description="Minimum order size (tokens, actual min is per-market)")
 
     def __repr__(self) -> str:
         """Safe repr without sensitive data."""
@@ -152,8 +152,7 @@ RATE_LIMITS = {
 
     # === CLOB API - Balance Operations ===
     # Balance queries: 20-125 req/10s (using conservative 20)
-    "GET:/balance": {"limit": 20, "window": 10},
-    "GET:/balances": {"limit": 20, "window": 10},
+    "GET:/balance-allowance": {"limit": 20, "window": 10},
 
     # === CLOB API - Authentication ===
     # Auth operations: 50 req/10s

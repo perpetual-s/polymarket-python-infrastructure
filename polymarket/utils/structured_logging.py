@@ -6,10 +6,9 @@ Enables correlation IDs, structured data, and queryable logs.
 
 import json
 import logging
-import time
 import uuid
 import re
-from typing import Any, Dict, Optional
+from typing import Optional
 from datetime import datetime
 from contextvars import ContextVar
 

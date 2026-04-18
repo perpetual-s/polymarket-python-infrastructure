@@ -11,14 +11,14 @@ Run with: pytest tests/testnet/ -v --testnet
 
 import os
 import pytest
-from shared.polymarket import (
+from polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,
     Side,
     OrderType
 )
-from shared.polymarket.exceptions import ValidationError
+from polymarket.exceptions import ValidationError
 
 
 def pytest_configure(config):
@@ -35,7 +35,7 @@ def testnet_enabled():
 
 
 @pytest.fixture(scope="module")
-def testnet_client(testnet_enabled):
+async def testnet_client(testnet_enabled):
     """Create testnet client."""
     client = PolymarketClient(
         chain_id=80002,  # Polygon Amoy testnet
@@ -51,16 +51,17 @@ def testnet_client(testnet_enabled):
     yield client
 
     # Cleanup
-    client.close()
+    await client.close()
 
 
 @pytest.mark.testnet
 class TestLiveMarketData:
     """Test live market data endpoints."""
 
-    def test_get_markets(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_get_markets(self, testnet_client):
         """Test fetching markets from testnet."""
-        markets = testnet_client.get_markets(limit=10, active=True)
+        markets = await testnet_client.get_markets(limit=10, active=True)
 
         assert isinstance(markets, list)
         # Testnet may have 0 markets
@@ -70,23 +71,25 @@ class TestLiveMarketData:
             assert hasattr(market, 'tokens')
             print(f"✓ Found {len(markets)} testnet markets")
 
-    def test_search_markets(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_search_markets(self, testnet_client):
         """Test market search."""
-        results = testnet_client.search_markets("test", limit=5)
+        results = await testnet_client.search_markets("test", limit=5)
 
         assert isinstance(results, list)
         print(f"✓ Search returned {len(results)} results")
 
-    def test_get_orderbook(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_get_orderbook(self, testnet_client):
         """Test orderbook fetching."""
         # First get a market
-        markets = testnet_client.get_markets(limit=1, active=True)
+        markets = await testnet_client.get_markets(limit=1, active=True)
 
         if not markets or not markets[0].tokens:
             pytest.skip("No active testnet markets with tokens")
 
         token_id = markets[0].tokens[0]
-        orderbook = testnet_client.get_orderbook(token_id)
+        orderbook = await testnet_client.get_orderbook(token_id)
 
         assert orderbook.token_id == token_id
         assert isinstance(orderbook.bids, list)
@@ -98,9 +101,10 @@ class TestLiveMarketData:
 class TestLiveWalletOperations:
     """Test live wallet operations."""
 
-    def test_get_balances(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_get_balances(self, testnet_client):
         """Test balance fetching."""
-        balance = testnet_client.get_balances("testnet")
+        balance = await testnet_client.get_balances("testnet")
 
         assert hasattr(balance, 'collateral')
         print(f"✓ Testnet balance: {balance.collateral} USDC")
@@ -108,9 +112,10 @@ class TestLiveWalletOperations:
         if balance.collateral < 10.0:
             print(f"⚠ Low testnet balance: {balance.collateral} USDC")
 
-    def test_get_positions(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_get_positions(self, testnet_client):
         """Test position fetching."""
-        positions = testnet_client.get_positions("testnet")
+        positions = await testnet_client.get_positions("testnet")
 
         assert isinstance(positions, list)
         print(f"✓ Found {len(positions)} positions")
@@ -121,16 +126,18 @@ class TestLiveWalletOperations:
             assert hasattr(pos, 'size')
             print(f"  - {pos.title}: {pos.size} shares")
 
-    def test_get_trades(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_get_trades(self, testnet_client):
         """Test trade history."""
-        trades = testnet_client.get_trades("testnet", limit=10)
+        trades = await testnet_client.get_trades("testnet", limit=10)
 
         assert isinstance(trades, list)
         print(f"✓ Found {len(trades)} trades")
 
-    def test_get_activity(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_get_activity(self, testnet_client):
         """Test activity log."""
-        activity = testnet_client.get_activity("testnet", limit=10)
+        activity = await testnet_client.get_activity("testnet", limit=10)
 
         assert isinstance(activity, list)
         print(f"✓ Found {len(activity)} activity events")
@@ -163,7 +170,8 @@ class TestLiveOrderPlacement:
         print("✓ Order validation working")
 
     @pytest.mark.skip(reason="Requires manual enabling - uses real testnet funds")
-    def test_place_small_order(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_place_small_order(self, testnet_client):
         """
         Test placing a real order on testnet.
 
@@ -171,7 +179,7 @@ class TestLiveOrderPlacement:
         Uses real testnet USDC.
         """
         # Get a testnet market
-        markets = testnet_client.get_markets(limit=1, active=True)
+        markets = await testnet_client.get_markets(limit=1, active=True)
         if not markets or not markets[0].tokens:
             pytest.skip("No active testnet markets")
 
@@ -186,14 +194,14 @@ class TestLiveOrderPlacement:
             order_type=OrderType.GTC
         )
 
-        response = testnet_client.place_order(order, wallet_id="testnet")
+        response = await testnet_client.place_order(order, wallet_id="testnet")
 
         print(f"✓ Order placed: {response.order_id}")
         print(f"  Status: {response.status}")
 
         if response.success:
             # Try to cancel it
-            cancelled = testnet_client.cancel_order(response.order_id, wallet_id="testnet")
+            cancelled = await testnet_client.cancel_order(response.order_id, wallet_id="testnet")
             print(f"  Cancelled: {cancelled}")
 
 
@@ -201,9 +209,10 @@ class TestLiveOrderPlacement:
 class TestLiveHealthCheck:
     """Test live health checks."""
 
-    def test_health_check(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_health_check(self, testnet_client):
         """Test health check endpoint."""
-        status = testnet_client.health_check()
+        status = await testnet_client.health_check()
 
         assert "status" in status
         assert status["status"] in ["healthy", "degraded"]
@@ -215,7 +224,8 @@ class TestLiveWebSocket:
     """Test live WebSocket connections."""
 
     @pytest.mark.skip(reason="WebSocket tests require manual verification")
-    def test_subscribe_orderbook(self, testnet_client):
+    @pytest.mark.asyncio
+    async def test_subscribe_orderbook(self, testnet_client):
         """
         Test WebSocket orderbook subscription.
 
@@ -223,7 +233,7 @@ class TestLiveWebSocket:
         """
         import time
 
-        markets = testnet_client.get_markets(limit=1, active=True)
+        markets = await testnet_client.get_markets(limit=1, active=True)
         if not markets or not markets[0].tokens:
             pytest.skip("No active testnet markets")
 

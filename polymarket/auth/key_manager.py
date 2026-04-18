@@ -70,7 +70,7 @@ class KeyManager:
         """
         try:
             # Validate private key
-            private_key = validate_private_key(wallet_config.private_key)
+            private_key = validate_private_key(wallet_config.private_key.get_secret_value())
 
             # ALWAYS derive signer address from private key
             # This is the address that signs transactions (EOA address)
