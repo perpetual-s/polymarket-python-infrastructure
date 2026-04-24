@@ -128,59 +128,83 @@ class PolymarketSettings(BaseSettings):
 
 # Rate limit configurations per endpoint
 # Source: https://docs.polymarket.com/quickstart/introduction/rate-limits
-# Updated: October 28, 2025 to match official Polymarket docs
+# Audited against official docs on 2026-04-23.
+# Every rate_limit_key passed from polymarket/api/*.py is listed below;
+# unknown keys fall through to "default" which is intentionally conservative.
 RATE_LIMITS = {
-    # === CLOB API - Trading ===
-    # Trading operations: 2,400 req/10s burst; 24,000 req/10 min sustained (40 req/s avg)
-    "POST:/order": {"burst": 2400, "limit": 2400, "window": 10, "sustained": 24000, "sustained_window": 600},
-    "DELETE:/order": {"burst": 2400, "limit": 2400, "window": 10, "sustained": 24000, "sustained_window": 600},
-    "POST:/orders": {"burst": 2400, "limit": 2400, "window": 10, "sustained": 24000, "sustained_window": 600},
-    "DELETE:/cancel-all": {"burst": 2400, "limit": 2400, "window": 10, "sustained": 24000, "sustained_window": 600},
+    # === CLOB API - Trading (burst + sustained) ===
+    # Official limits have increased since the earlier defaults.
+    "POST:/order": {"burst": 3500, "limit": 3500, "window": 10, "sustained": 36000, "sustained_window": 600},
+    "DELETE:/order": {"burst": 3000, "limit": 3000, "window": 10, "sustained": 30000, "sustained_window": 600},
+    "POST:/orders": {"burst": 1000, "limit": 1000, "window": 10, "sustained": 15000, "sustained_window": 600},
+    "DELETE:/orders": {"burst": 1000, "limit": 1000, "window": 10, "sustained": 15000, "sustained_window": 600},
+    "DELETE:/cancel-all": {"burst": 250, "limit": 250, "window": 10, "sustained": 6000, "sustained_window": 600},
+    "DELETE:/cancel-market-orders": {"burst": 1000, "limit": 1000, "window": 10, "sustained": 1500, "sustained_window": 600},
 
     # === CLOB API - Market Data ===
-    # Market data endpoints: 200 req/10s (official limit)
-    "GET:/book": {"limit": 200, "window": 10},
-    "GET:/midpoint": {"limit": 200, "window": 10},
-    "GET:/price": {"limit": 200, "window": 10},
-    "GET:/last_trade_price": {"limit": 200, "window": 10},
-    "GET:/spread": {"limit": 200, "window": 10},
+    # Singles: 1,500 req/10s; batch/plural variants: 500 req/10s.
+    "GET:/book": {"limit": 1500, "window": 10},
+    "GET:/books": {"limit": 500, "window": 10},
+    "POST:/books": {"limit": 500, "window": 10},              # Batch books via POST body
+    "GET:/midpoint": {"limit": 1500, "window": 10},
+    "GET:/midpoints": {"limit": 500, "window": 10},
+    "GET:/price": {"limit": 1500, "window": 10},
+    "GET:/prices": {"limit": 500, "window": 10},
+    "GET:/last-trade-price": {"limit": 1500, "window": 10},
+    "POST:/last-trades-prices": {"limit": 500, "window": 10},
+    "GET:/prices-history": {"limit": 1000, "window": 10},
+    "GET:/spread": {"limit": 1500, "window": 10},             # Docs bucket with singles
+    "GET:/tick-size": {"limit": 200, "window": 10},
+    "GET:/neg-risk": {"limit": 200, "window": 10},            # No doc entry; tick-size bucket
+    "GET:/simplified-markets": {"limit": 500, "window": 10},
 
-    # Order/Trade queries: 200 req/10s
-    "GET:/data/order": {"limit": 200, "window": 10},
-    "GET:/data/orders": {"limit": 200, "window": 10},
-    "GET:/data/trades": {"limit": 75, "window": 10},  # Trades endpoint: 75 req/10s
+    # === CLOB API - Ledger (order/trade queries) ===
+    "GET:/data/order": {"limit": 900, "window": 10},
+    "GET:/data/orders": {"limit": 500, "window": 10},
+    "GET:/data/trades": {"limit": 500, "window": 10},
+    "GET:/notifications": {"limit": 125, "window": 10},
+    "GET:/order-scoring": {"limit": 900, "window": 10},       # Ledger bucket
+    "POST:/orders-scoring": {"limit": 900, "window": 10},     # Ledger bucket
 
-    # === CLOB API - Balance Operations ===
-    # Balance queries: 20-125 req/10s (using conservative 20)
-    "GET:/balance-allowance": {"limit": 20, "window": 10},
+    # === CLOB API - Balance ===
+    "GET:/balance-allowance": {"limit": 200, "window": 10},
+    "GET:/balance-allowance/update": {"limit": 50, "window": 10},
 
     # === CLOB API - Authentication ===
-    # Auth operations: 50 req/10s
-    "POST:/auth/api-key": {"limit": 50, "window": 10},
-    "GET:/auth/derive-api-key": {"limit": 50, "window": 10},
-    "POST:/auth/nonce": {"limit": 50, "window": 10},
+    "POST:/auth/api-key": {"limit": 100, "window": 10},
+    "GET:/auth/derive-api-key": {"limit": 100, "window": 10},
+    "POST:/auth/nonce": {"limit": 100, "window": 10},
 
     # === CLOB API - General ===
-    # General CLOB endpoints: 5,000 req/10s
-    "GET:/ok": {"limit": 50, "window": 10},  # OK endpoint: 50 req/10s
-    "CLOB:default": {"limit": 5000, "window": 10},
+    "GET:/ok": {"limit": 100, "window": 10},
+    "GET:/": {"limit": 100, "window": 10},                    # Root / health-adjacent
+    "GET:/time": {"limit": 100, "window": 10},
+    "CLOB:default": {"limit": 9000, "window": 10},
 
     # === Gamma API ===
-    # Official Polymarket rate limits (updated 2025-10-29)
-    "GET:/markets": {"limit": 125, "window": 10},  # Official: 125 req/10s
-    "GET:/search": {"limit": 300, "window": 10},   # Official: 300 req/10s
-    "GET:/events": {"limit": 100, "window": 10},   # Official: 100 req/10s
-    "GET:/tags": {"limit": 100, "window": 10},     # Official: 100 req/10s (Tags endpoint)
+    "GET:/markets": {"limit": 300, "window": 10},
+    "GET:/events": {"limit": 500, "window": 10},
+    "GET:/events/pagination": {"limit": 500, "window": 10},
+    "GET:/comments": {"limit": 200, "window": 10},
+    "GET:/tags": {"limit": 200, "window": 10},
+    "GET:/search": {"limit": 300, "window": 10},              # /public-search in docs = 350; keep 300 for /search
     "GET:/public-profile": {"limit": 100, "window": 10},
-    "GAMMA:default": {"limit": 750, "window": 10}, # Official: 750 req/10s (general)
+    "GAMMA:default": {"limit": 4000, "window": 10},
 
     # === Data API ===
-    # Data API: 200 req/10s general
+    "GET:/positions": {"limit": 150, "window": 10},
+    "GET:/closed-positions": {"limit": 150, "window": 10},
+    "GET:/trades": {"limit": 200, "window": 10},
     "GET:/v1/leaderboard": {"limit": 200, "window": 10},
-    "DATA:default": {"limit": 200, "window": 10},
+    "GET:/activity": {"limit": 1000, "window": 10},           # Data API default bucket
+    "GET:/holders": {"limit": 1000, "window": 10},
+    "GET:/value": {"limit": 1000, "window": 10},
+    "DATA:default": {"limit": 1000, "window": 10},
 
     # === Default fallback ===
-    # Conservative fallback for unknown endpoints
+    # Intentionally conservative. Every known endpoint above should hit its own
+    # entry; falling through to "default" means the endpoint is new or the key
+    # is misnamed - in either case, stay well below platform limits.
     "default": {"limit": 100, "window": 10},
 }
 

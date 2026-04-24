@@ -1020,9 +1020,16 @@ Batch Operations (100 wallets):
 **Run benchmarks:** `pytest tests/benchmarks/ -v -s`
 
 ### Rate Limits (Polymarket CLOB API)
-- **POST /order:** 2,400 per 10s burst, 24,000 per 10min sustained
-- **Other endpoints:** 120 requests per minute
-- **Our implementation:** Automatic rate limiting with 80% margin
+
+Matches the [official docs](https://docs.polymarket.com/quickstart/introduction/rate-limits) as re-audited on 2026-04-23. Headline values:
+
+- **CLOB trading (burst / sustained):** `POST /order` 3,500 / 36,000; `DELETE /order` 3,000 / 30,000; `POST /orders` and `DELETE /orders` 1,000 / 15,000; `DELETE /cancel-all` 250 / 6,000; `DELETE /cancel-market-orders` 1,000 / 1,500.
+- **CLOB market-data singles** (`/book`, `/midpoint`, `/price`, `/last-trade-price`, `/spread`): 1,500 req/10s. Batch variants (`/books`, `/midpoints`, `/prices`, `/last-trades-prices`, `/simplified-markets`): 500 req/10s.
+- **CLOB balance / auth / general:** `GET /balance-allowance` 200 req/10s, `UPDATE` 50 req/10s; auth endpoints 100 req/10s; `GET /ok` 100 req/10s; CLOB default 9,000 req/10s.
+- **Gamma API:** `/markets` 300 req/10s, `/events` 500 req/10s, `/tags` 200 req/10s, `/search` 300 req/10s, `/public-profile` 100 req/10s, default 4,000 req/10s.
+- **Data API:** `/positions` 150 req/10s, `/trades` 200 req/10s, `/v1/leaderboard` 200 req/10s, default 1,000 req/10s.
+
+The library enforces these via `PolymarketClient(enable_rate_limiting=True)` (default) with an 80% safety margin, so effective caps stay below the advertised platform limit. Every `rate_limit_key` passed by `polymarket/api/*.py` has an explicit entry in `polymarket/config.py` RATE_LIMITS; unknown keys fall through to a conservative 100 req/10s.
 
 ### Multi-Wallet Performance
 - **Strategy-1:** 12-15 API calls/min (well under 120 limit)

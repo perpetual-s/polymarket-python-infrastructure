@@ -985,17 +985,21 @@ asyncio.run(main())
 
 ### Rate Limits Summary (Public Endpoints)
 
-From [official Polymarket docs](https://docs.polymarket.com/quickstart/introduction/rate-limits):
+From [official Polymarket docs](https://docs.polymarket.com/quickstart/introduction/rate-limits) (re-audited 2026-04-23):
 
 | Endpoint | Rate Limit | Notes |
 |----------|------------|-------|
-| General CLOB | 5,000 req/10s | Baseline for unlisted endpoints |
-| /book, /price, /midprice | 200 req/10s | Single token queries |
-| /books, /prices, /midprices, /spreads | 80 req/10s | Batch operations (10x more efficient) |
-| /markets (general) | 250 req/10s | Full market data |
-| /markets (listing) | 100 req/10s | Market listing |
-| /markets/0x (individual) | 50 req/10s | Single market lookup |
-| /ok (health check) | 50 req/10s | Server health |
+| CLOB default | 9,000 req/10s | Baseline for unlisted endpoints |
+| `/book`, `/price`, `/midpoint`, `/last-trade-price`, `/spread` | 1,500 req/10s | Single token queries |
+| `/books`, `/prices`, `/midpoints`, `/last-trades-prices`, `/simplified-markets` | 500 req/10s | Batch variants |
+| `/prices-history` | 1,000 req/10s | Historical price series |
+| `/tick-size`, `/neg-risk` | 200 req/10s | Market metadata |
+| `/ok` (health check) | 100 req/10s | Server health |
+| Gamma `/markets` | 300 req/10s | Full market data |
+| Gamma `/events`, `/events/pagination` | 500 req/10s | Event listing |
+| Gamma `/search` | 300 req/10s | Market search |
+| Gamma `/public-profile` | 100 req/10s | Public profile lookup |
+| Gamma default | 4,000 req/10s | Unlisted Gamma endpoints |
 
 **Enforcement:** Requests over limit are delayed/queued (Cloudflare throttling), not dropped.
 
@@ -2339,12 +2343,59 @@ with UnifiedWebSocketManager(clob_ws, rtds) as manager:
 
 ## Rate Limits
 
-### CLOB API
+Source: [official Polymarket docs](https://docs.polymarket.com/quickstart/introduction/rate-limits). Last audited 2026-04-23. Every `rate_limit_key` passed by `polymarket/api/*.py` has an explicit entry in `polymarket/config.py` RATE_LIMITS; unknown keys fall through to a conservative 100 req/10s default.
 
-| Endpoint | Limit |
-|----------|-------|
-| POST /order | 2,400 per 10s burst, 24,000 per 10min sustained |
-| Other endpoints | 120 requests per minute |
+### CLOB API — Trading (burst / sustained)
+
+| Endpoint | Pre-margin cap |
+|----------|---:|
+| `POST /order` | 3,500 req/10s, sustained 36,000 req/10min |
+| `DELETE /order` | 3,000 req/10s, sustained 30,000 req/10min |
+| `POST /orders`, `DELETE /orders` | 1,000 req/10s, sustained 15,000 req/10min |
+| `DELETE /cancel-all` | 250 req/10s, sustained 6,000 req/10min |
+| `DELETE /cancel-market-orders` | 1,000 req/10s, sustained 1,500 req/10min |
+
+### CLOB API — Market data
+
+| Endpoint | Pre-margin cap |
+|----------|---:|
+| `GET /book`, `/midpoint`, `/price`, `/last-trade-price`, `/spread` | 1,500 req/10s |
+| `GET /books`, `/midpoints`, `/prices`, `/last-trades-prices`, `/simplified-markets` (and `POST /books`) | 500 req/10s |
+| `GET /prices-history` | 1,000 req/10s |
+| `GET /tick-size`, `/neg-risk` | 200 req/10s |
+
+### CLOB API — Ledger / balance / auth / general
+
+| Endpoint | Pre-margin cap |
+|----------|---:|
+| `GET /data/order`, `/order-scoring`, `POST /orders-scoring` | 900 req/10s |
+| `GET /data/orders`, `/data/trades` | 500 req/10s |
+| `GET /notifications` | 125 req/10s |
+| `GET /balance-allowance` | 200 req/10s |
+| `GET /balance-allowance/update` | 50 req/10s |
+| Auth endpoints (`POST /auth/api-key`, `GET /auth/derive-api-key`, `POST /auth/nonce`) | 100 req/10s |
+| `GET /ok`, `GET /`, `GET /time` | 100 req/10s |
+| CLOB default | 9,000 req/10s |
+
+### Gamma API
+
+| Endpoint | Pre-margin cap |
+|----------|---:|
+| `GET /markets` | 300 req/10s |
+| `GET /events`, `/events/pagination` | 500 req/10s |
+| `GET /comments`, `/tags` | 200 req/10s |
+| `GET /search` | 300 req/10s (docs also list `/public-search` at 350 req/10s) |
+| `GET /public-profile` | 100 req/10s |
+| Gamma default | 4,000 req/10s |
+
+### Data API
+
+| Endpoint | Pre-margin cap |
+|----------|---:|
+| `GET /positions`, `/closed-positions` | 150 req/10s |
+| `GET /trades`, `/v1/leaderboard` | 200 req/10s |
+| `GET /activity`, `/holders`, `/value` | 1,000 req/10s |
+| Data API default | 1,000 req/10s |
 
 ### Implementation
 
