@@ -700,7 +700,7 @@ class GammaAPI(BaseAPIClient):
             response = await self.get(
                 "/search",
                 params=params,
-                rate_limit_key="GET:/markets/search"
+                rate_limit_key="GET:/search"
             )
 
             markets = []
