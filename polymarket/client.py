@@ -5,7 +5,7 @@ Unified interface for all Polymarket operations across strategies.
 Thread-safe, multi-wallet, production-ready.
 """
 
-from typing import Optional, List, Callable, Dict, Any
+from typing import Optional, List, Callable, Dict, Any, Tuple
 import asyncio
 import logging
 import atexit
@@ -209,6 +209,12 @@ class PolymarketClient:
         # Real-Time Data Service client (lazy initialized)
         self._rtds: Optional[RealTimeDataClient] = None
         self._rtds_lock = threading.Lock()  # Thread-safe RTDS initialization (used in property)
+
+        # RTDS handler registry: (topic, type) -> {id(callback): callback}
+        # Written by subscribe_* on caller threads, read by the RTDS message thread,
+        # so every access must hold _rtds_handlers_lock.
+        self._rtds_handlers: Dict[Tuple[str, str], Dict[int, Callable]] = {}
+        self._rtds_handlers_lock = threading.Lock()
 
         # WebSocket client lock (thread-safe initialization)
         self._ws_lock = threading.Lock()
@@ -2627,7 +2633,7 @@ class PolymarketClient:
                     self._rtds = RealTimeDataClient(
                         host=self.settings.rtds_url,
                         on_connect=self._on_rtds_connect,
-                        on_message=None,  # Set per-subscription
+                        on_message=self._dispatch_rtds_message,  # Single dispatcher, wired once
                         on_status_change=self._on_rtds_status_change,
                         auto_reconnect=self.settings.rtds_auto_reconnect,
                         ping_interval=self.settings.rtds_ping_interval
@@ -2636,24 +2642,14 @@ class PolymarketClient:
                     # Establish connection
                     self._rtds.connect()
 
-                    # Wait for connection to establish (up to 10 seconds)
-                    import time
-                    connection_timeout = 10.0
-                    poll_interval = 0.1
-                    elapsed = 0.0
-
-                    while elapsed < connection_timeout:
-                        if self._rtds._is_connected():
-                            logger.info("RTDS connection established")
-                            break
-                        time.sleep(poll_interval)
-                        elapsed += poll_interval
-                    else:
-                        # Timeout reached without connection
-                        logger.warning(
-                            f"RTDS connection not established after {connection_timeout}s, "
-                            "but client is initialized. Connection may establish asynchronously."
+                    # Fail loudly if the connection is not established in time:
+                    # proceeding would let subscribe_* calls silently go nowhere.
+                    if not self._rtds_wait_connected(timeout=10.0):
+                        raise RuntimeError(
+                            "RTDS connection not established within 10s; "
+                            "subscription would be silent — aborting"
                         )
+                    logger.info("RTDS connection established")
 
                     logger.info(
                         f"RTDS client initialized: {self.settings.rtds_url}",
@@ -2670,9 +2666,90 @@ class PolymarketClient:
                         exc_info=True,
                         extra={"rtds_url": self.settings.rtds_url}
                     )
-                    # Set to None so retry is possible
+                    # Best-effort shutdown so a failed init does not leak
+                    # connect/reconnect threads, then clear so retry is possible
+                    if self._rtds is not None:
+                        try:
+                            self._rtds.disconnect()
+                        except Exception:
+                            pass
                     self._rtds = None
                     raise RuntimeError(f"RTDS initialization failed: {e}") from e
+
+    def _rtds_wait_connected(self, timeout: float) -> bool:
+        """
+        Poll until the RTDS transport reports connected.
+
+        Args:
+            timeout: Maximum seconds to wait
+
+        Returns:
+            True if connected within the timeout, False otherwise
+        """
+        poll_interval = 0.1
+        elapsed = 0.0
+        while elapsed < timeout:
+            if self._rtds._is_connected():
+                return True
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+        return False
+
+    def _register_rtds_handler(self, topic: str, type: str, callback: Callable) -> None:
+        """
+        Register a callback for RTDS messages matching (topic, type).
+
+        Idempotent per callback: re-registering the same callback for the same
+        (topic, type) — e.g. subscribing more tokens — keeps one entry, so each
+        message is delivered to it exactly once. Registry is keyed by
+        id(callback); because bound methods are recreated on every attribute
+        access (obj.method is obj.method -> False, but == True), equal callbacks
+        are also deduplicated.
+        """
+        with self._rtds_handlers_lock:
+            handlers = self._rtds_handlers.setdefault((topic, type), {})
+            if id(callback) in handlers:
+                return
+            if any(existing == callback for existing in handlers.values()):
+                return
+            handlers[id(callback)] = callback
+
+    def _dispatch_rtds_message(self, client: "RealTimeDataClient", message: "Message") -> None:
+        """
+        Route an RTDS message to every handler registered for its (topic, type),
+        any (topic, "*") wildcard handlers, and any (topic, "prefix_*") handlers
+        whose prefix matches the message type. Each handler fires at most once
+        per message. Handler exceptions are isolated so one failing callback
+        cannot break the others or the RTDS thread.
+        """
+        with self._rtds_handlers_lock:
+            handlers = list(self._rtds_handlers.get((message.topic, message.type), {}).values())
+            if message.type != "*":
+                handlers += list(self._rtds_handlers.get((message.topic, "*"), {}).values())
+            # Prefix arm: keys like ("rfq", "request_*") are server-side filter
+            # patterns; messages arrive with concrete types ("request_created"),
+            # so match registry keys whose type ends with "*" by prefix.
+            for (topic_k, type_k), bucket in self._rtds_handlers.items():
+                if topic_k != message.topic or type_k == message.type or type_k == "*":
+                    continue
+                if type_k.endswith("*") and message.type.startswith(type_k[:-1]):
+                    handlers += list(bucket.values())
+        # A handler registered under multiple matching keys fires once per message
+        seen_ids: set = set()
+        unique_handlers = []
+        for handler in handlers:
+            if id(handler) not in seen_ids:
+                seen_ids.add(id(handler))
+                unique_handlers.append(handler)
+        for handler in unique_handlers:
+            try:
+                handler(message)
+            except Exception as e:
+                logger.error(f"RTDS handler error for {message.topic}/{message.type}: {e}")
+
+    def get_rtds_stats(self) -> Optional[Dict[str, Any]]:
+        """Transport stats for monitoring (None when RTDS not initialized)."""
+        return self._rtds.stats() if self._rtds else None
 
     def _on_rtds_connect(self, client: RealTimeDataClient) -> None:
         """
@@ -2776,19 +2853,8 @@ class PolymarketClient:
         elif event_slug:
             filters = json.dumps({"event_slug": event_slug})
 
-        # Wrap callback for error handling
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in activity_trades callback: {e}",
-                    exc_info=True,
-                    extra={"market_slug": market_slug, "event_slug": event_slug}
-                )
-
-        # Set callback and subscribe
-        self._rtds.on_custom_message = safe_callback
+        # Register handler and subscribe (dispatcher owns error isolation)
+        self._register_rtds_handler("activity", "trades", callback)
         self._rtds.subscribe(
             topic="activity",
             type="trades",
@@ -2830,17 +2896,7 @@ class PolymarketClient:
 
         filters = json.dumps({"market_slug": market_slug}) if market_slug else None
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in orders_matched callback: {e}",
-                    exc_info=True,
-                    extra={"market_slug": market_slug}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("activity", "orders_matched", callback)
         self._rtds.subscribe(
             topic="activity",
             type="orders_matched",
@@ -2874,16 +2930,7 @@ class PolymarketClient:
         """
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in market_created callback: {e}",
-                    exc_info=True
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("clob_market", "market_created", callback)
         self._rtds.subscribe(
             topic="clob_market",
             type="market_created"
@@ -2916,16 +2963,7 @@ class PolymarketClient:
         """
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in market_resolved callback: {e}",
-                    exc_info=True
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("clob_market", "market_resolved", callback)
         self._rtds.subscribe(
             topic="clob_market",
             type="market_resolved"
@@ -2970,17 +3008,7 @@ class PolymarketClient:
 
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in price_changes callback: {e}",
-                    exc_info=True,
-                    extra={"token_count": len(token_ids)}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("clob_market", "price_change", callback)
         self._rtds.subscribe(
             topic="clob_market",
             type="price_change",
@@ -3016,6 +3044,16 @@ class PolymarketClient:
             type="price_change",
             filters=json.dumps(token_ids)
         )
+
+        # Drop facade handlers once no price_change subscriptions remain on the wire
+        with self._rtds._subscriptions_lock:
+            remaining = any(
+                s["topic"] == "clob_market" and s["type"] == "price_change"
+                for s in self._rtds._active_subscriptions
+            )
+        if not remaining:
+            with self._rtds_handlers_lock:
+                self._rtds_handlers.pop(("clob_market", "price_change"), None)
 
         logger.info("Unsubscribed from price_changes", extra={"token_count": len(token_ids)})
 
@@ -3059,17 +3097,7 @@ class PolymarketClient:
 
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in orderbook_rtds callback: {e}",
-                    exc_info=True,
-                    extra={"token_count": len(token_ids)}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("clob_market", "agg_orderbook", callback)
         self._rtds.subscribe(
             topic="clob_market",
             type="agg_orderbook",
@@ -3116,17 +3144,7 @@ class PolymarketClient:
                 "parentEntityType": parent_entity_type
             })
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in comments callback: {e}",
-                    exc_info=True,
-                    extra={"parent_entity_id": parent_entity_id}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("comments", "*", callback)
         self._rtds.subscribe(
             topic="comments",
             type="*",  # All comment events
@@ -3165,17 +3183,7 @@ class PolymarketClient:
 
         filters = json.dumps({"parentEntityID": parent_entity_id}) if parent_entity_id else None
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in reactions callback: {e}",
-                    exc_info=True,
-                    extra={"parent_entity_id": parent_entity_id}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("comments", "reaction_*", callback)
         self._rtds.subscribe(
             topic="comments",
             type="reaction_*",  # All reaction events
@@ -3214,17 +3222,7 @@ class PolymarketClient:
 
         filters = json.dumps({"market": market}) if market else None
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in rfq_requests callback: {e}",
-                    exc_info=True,
-                    extra={"market": market}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("rfq", "request_*", callback)
         self._rtds.subscribe(
             topic="rfq",
             type="request_*",  # All request events
@@ -3263,17 +3261,7 @@ class PolymarketClient:
 
         filters = json.dumps({"requestId": request_id}) if request_id else None
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in rfq_quotes callback: {e}",
-                    exc_info=True,
-                    extra={"request_id": request_id}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("rfq", "quote_*", callback)
         self._rtds.subscribe(
             topic="rfq",
             type="quote_*",  # All quote events
@@ -3321,17 +3309,7 @@ class PolymarketClient:
 
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in crypto_prices callback: {e}",
-                    exc_info=True,
-                    extra={"symbol": symbol}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("crypto_prices", "update", callback)
         self._rtds.subscribe(
             topic="crypto_prices",
             type="update",
@@ -3381,17 +3359,7 @@ class PolymarketClient:
 
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in crypto_prices_chainlink callback: {e}",
-                    exc_info=True,
-                    extra={"symbol": symbol}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("crypto_prices_chainlink", "update", callback)
         self._rtds.subscribe(
             topic="crypto_prices_chainlink",
             type="update",
@@ -3437,17 +3405,7 @@ class PolymarketClient:
 
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in last_trade_price callback: {e}",
-                    exc_info=True,
-                    extra={"token_count": len(token_ids)}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("clob_market", "last_trade_price", callback)
         self._rtds.subscribe(
             topic="clob_market",
             type="last_trade_price",
@@ -3495,17 +3453,7 @@ class PolymarketClient:
 
         self._ensure_rtds()
 
-        def safe_callback(client, message: Message):
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(
-                    f"Error in tick_size_change callback: {e}",
-                    exc_info=True,
-                    extra={"token_count": len(token_ids)}
-                )
-
-        self._rtds.on_custom_message = safe_callback
+        self._register_rtds_handler("clob_market", "tick_size_change", callback)
         self._rtds.subscribe(
             topic="clob_market",
             type="tick_size_change",
@@ -3533,6 +3481,8 @@ class PolymarketClient:
                 logger.info("Unsubscribed from all RTDS streams")
             except Exception as e:
                 logger.error(f"Error unsubscribing from RTDS: {e}", exc_info=True)
+        with self._rtds_handlers_lock:
+            self._rtds_handlers.clear()
 
     # ========== Utility Methods ==========
 
