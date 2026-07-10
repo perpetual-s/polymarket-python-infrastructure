@@ -12,7 +12,7 @@ Run: python examples/08_phase4_5_6_features.py
 import time
 import asyncio
 from datetime import datetime
-from polymarket import PolymarketClient
+from shared.polymarket import PolymarketClient
 
 
 async def example_1_health_check():

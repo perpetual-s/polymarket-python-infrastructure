@@ -12,7 +12,7 @@ Based on Phase 2: Real-Time Data Client
 """
 
 import time
-from polymarket.api.real_time_data import (
+from shared.polymarket.api.real_time_data import (
     RealTimeDataClient,
     StreamHelpers,
     ClobApiKeyCreds

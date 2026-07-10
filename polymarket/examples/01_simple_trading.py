@@ -22,7 +22,7 @@ import os
 import time
 import asyncio
 from decimal import Decimal
-from polymarket import (
+from shared.polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,

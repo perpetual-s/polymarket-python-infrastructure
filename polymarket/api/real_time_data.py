@@ -23,6 +23,11 @@ except ImportError:
         "Install with: pip install websocket-client"
     )
 
+from .websocket_logging import (
+    install_websocket_transient_disconnect_filter,
+    is_transient_websocket_disconnect,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -144,6 +149,8 @@ class RealTimeDataClient:
         self._connection_start_time: Optional[float] = None
         self._total_messages_received = 0
         self._total_reconnections = 0
+
+        install_websocket_transient_disconnect_filter()
 
         logger.info(f"Initialized RealTimeDataClient: {self.host}")
 
@@ -458,7 +465,10 @@ class RealTimeDataClient:
 
     def _on_error(self, ws, error):
         """WebSocket error handler."""
-        logger.error(f"WebSocket error: {error}")
+        if is_transient_websocket_disconnect(error):
+            logger.warning(f"WebSocket transient disconnect: {error}")
+        else:
+            logger.error(f"WebSocket error: {error}")
         # Schedule reconnect (if not already scheduled by _on_close)
         self._schedule_reconnect()
 

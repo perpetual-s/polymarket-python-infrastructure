@@ -13,8 +13,8 @@ from loguru import logger
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-from polymarket import PolymarketClient, WalletConfig
-from polymarket.models import SignatureType
+from shared.polymarket import PolymarketClient, WalletConfig
+from shared.polymarket.models import SignatureType
 
 
 async def main():

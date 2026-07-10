@@ -15,7 +15,7 @@ Copy this for your Strategy-1 and Strategy-3 bots.
 import os
 import asyncio
 from decimal import Decimal
-from polymarket import (
+from shared.polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,
@@ -28,7 +28,7 @@ from polymarket import (
     calculate_profit_after_fees,
     check_order_profitability,
 )
-from polymarket.exceptions import (
+from shared.polymarket.exceptions import (
     ValidationError,
     InsufficientBalanceError,
     OrderRejectedError,

@@ -36,6 +36,7 @@ from ..utils.numeric import to_decimal
 from ..config import PolymarketSettings
 from ..models import OrderBook as OrderBookType
 from ..exceptions import (
+    APIError,
     PriceUnavailableError,
     OrderBookError,
     MarketNotFoundError
@@ -46,6 +47,18 @@ from ..utils.retry import CircuitBreaker
 logger = logging.getLogger(__name__)
 
 
+def _is_no_orderbook_404(error: Exception) -> bool:
+    """Return True when Polymarket reports a token has no CLOB orderbook."""
+    if not isinstance(error, APIError) or error.status_code != 404:
+        return False
+    response = error.response if isinstance(error.response, dict) else {}
+    detail = str(response.get("error", ""))
+    return (
+        "No orderbook exists for the requested token id" in str(error)
+        or "No orderbook exists for the requested token id" in detail
+    )
+
+
 class PublicCLOBAPI(BaseAPIClient):
     """
     Public CLOB API client for market data (no authentication required).
@@ -54,8 +67,8 @@ class PublicCLOBAPI(BaseAPIClient):
     API credentials or wallet signatures.
 
     Usage:
-        >>> from polymarket.api.clob_public import PublicCLOBAPI
-        >>> from polymarket.config import PolymarketSettings
+        >>> from shared.polymarket.api.clob_public import PublicCLOBAPI
+        >>> from shared.polymarket.config import PolymarketSettings
         >>>
         >>> settings = PolymarketSettings()
         >>> client = PublicCLOBAPI(settings)
@@ -408,6 +421,11 @@ class PublicCLOBAPI(BaseAPIClient):
             )
 
         except Exception as e:
+            if _is_no_orderbook_404(e):
+                raise OrderBookError(
+                    f"No orderbook exists for token {token_id}: {e}",
+                    token_id=token_id,
+                ) from e
             logger.error(f"Error fetching orderbook for {token_id}: {e}")
             raise OrderBookError(f"Orderbook unavailable: {e}")
 
@@ -840,6 +858,12 @@ class PublicCLOBAPI(BaseAPIClient):
 
             return (best_bid, best_ask)
 
+        except OrderBookError as e:
+            if "No orderbook exists" in str(e):
+                logger.warning(f"No orderbook exists for token {token_id}; bid/ask unavailable")
+                return None
+            logger.error(f"Error getting best bid/ask for {token_id}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Error getting best bid/ask for {token_id}: {e}")
             return None

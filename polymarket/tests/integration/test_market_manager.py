@@ -2,7 +2,7 @@
 Integration tests for MarketManager.
 
 Tests the real-time market data architecture against live CLOB API.
-Run with: pytest polymarket/tests/integration/test_market_manager.py -v
+Run with: pytest shared/polymarket/tests/integration/test_market_manager.py -v
 """
 
 import asyncio

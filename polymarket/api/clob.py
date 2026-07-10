@@ -22,6 +22,7 @@ from ..models import (
     OrderBook as OrderBookType
 )
 from ..exceptions import (
+    APIError,
     TradingError,
     OrderRejectedError,
     PriceUnavailableError,
@@ -252,6 +253,15 @@ class CLOBAPI(BaseAPIClient):
             logger.debug(f"Midpoint for {token_id}: {price}")
             return price
 
+        except APIError as e:
+            if e.status_code == 404:
+                logger.warning(f"No midpoint/orderbook for token {token_id}")
+                return None
+            logger.error(f"Failed to get midpoint for {token_id}: {e}")
+            raise PriceUnavailableError(
+                f"Failed to get midpoint: {e}",
+                token_id=token_id
+            )
         except Exception as e:
             logger.error(f"Failed to get midpoint for {token_id}: {e}")
             raise PriceUnavailableError(
@@ -504,10 +514,9 @@ class CLOBAPI(BaseAPIClient):
             # then pass as data= with explicit Content-Type header (like official py-clob-client does with httpx json=)
             body_str = json.dumps(body)
 
-            # DEBUG: Log the order payload for troubleshooting
-            logger.error(f"🔍 POST /order payload: {body_str[:1000]}")  # First 1000 chars
-            logger.error(f"🔍 Signed order keys: {list(signed_order.keys())}")
-            logger.error(f"🔍 Order type: {order_type}, Owner: {api_key}, Address: {address}")
+            # Never log the payload/API key here: signed order material and
+            # credentials must not reach persistent logs.
+            logger.debug(f"POST /order: type={order_type}, token={signed_order.get('tokenId', '?')}")
 
             # Create L2 headers with HMAC signature
             l2_headers = self._create_l2_headers(
@@ -782,9 +791,12 @@ class CLOBAPI(BaseAPIClient):
         """
         try:
             path = "/orders"
+            # owner must be the API key, matching post_order above (the batch
+            # path previously sent the wallet address, which the single-order
+            # path explicitly documents as wrong per py-clob-client).
             body = {
                 "orders": signed_orders,
-                "owner": address
+                "owner": api_key
             }
 
             # CRITICAL: Use the SAME JSON serializer for HMAC and request body
@@ -817,12 +829,14 @@ class CLOBAPI(BaseAPIClient):
                     f"Invalid batch order response format: expected dict, got {type(response).__name__}: {response}"
                 )
 
-            # Parse responses
+            # Parse responses. The single-order endpoint returns 'orderID';
+            # accept both spellings so a successful batch placement can never
+            # come back with order_id=None and break DB linkage.
             results = []
             for idx, order_response in enumerate(response.get("orders", [])):
                 success = order_response.get("success", False)
                 error_msg = order_response.get("errorMsg")
-                order_id = order_response.get("orderId")
+                order_id = order_response.get("orderID") or order_response.get("orderId")
                 status = order_response.get("status")
 
                 results.append(OrderResponse(

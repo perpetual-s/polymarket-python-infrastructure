@@ -101,13 +101,13 @@ class PolymarketClient:
         self.settings = settings.model_copy(deep=True) if settings is not None else get_settings()
         self.db = db  # Store database client for credential caching
 
-        # Override settings if provided
         settings_fields = type(self.settings).model_fields
         for key, value in settings_overrides.items():
             if key not in settings_fields:
                 raise TypeError(f"Unknown PolymarketClient setting override: {key}")
             setattr(self.settings, key, value)
 
+        # Override settings if provided
         if enable_rate_limiting is not None:
             self.settings.enable_rate_limiting = enable_rate_limiting
 
@@ -128,13 +128,24 @@ class PolymarketClient:
                 margin=self.settings.rate_limit_margin
             )
 
-        # Circuit breaker
+        # Circuit breakers — split by plane so market-data flakiness cannot
+        # block order placement/cancel (and vice versa):
+        # - trading breaker: authenticated CLOB (orders, cancels, balances)
+        # - data breaker: Gamma, Data API, public CLOB reads
+        # `self.circuit_breaker` stays as the trading breaker: it guards the
+        # calls that move money, and shared/bot health checks key off it.
         self.circuit_breaker = None
+        self.data_circuit_breaker = None
         if enable_circuit_breaker is not False:
             self.circuit_breaker = CircuitBreaker(
                 failure_threshold=self.settings.circuit_breaker_threshold,
                 timeout=self.settings.circuit_breaker_timeout,
-                name="polymarket"
+                name="polymarket-trading"
+            )
+            self.data_circuit_breaker = CircuitBreaker(
+                failure_threshold=self.settings.circuit_breaker_threshold,
+                timeout=self.settings.circuit_breaker_timeout,
+                name="polymarket-data"
             )
 
         # CRITICAL FIX: Track reserved balance to prevent over-ordering
@@ -145,11 +156,12 @@ class PolymarketClient:
         if self.circuit_breaker:
             logger.info("Circuit breaker enabled")
 
-        # Initialize API clients
+        # Initialize API clients (data-plane APIs get the data breaker so
+        # their failures cannot open the trading breaker)
         self.gamma = GammaAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.circuit_breaker
+            circuit_breaker=self.data_circuit_breaker
         )
 
         self.clob = CLOBAPI(
@@ -162,13 +174,13 @@ class PolymarketClient:
         self.data = DataAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.circuit_breaker
+            circuit_breaker=self.data_circuit_breaker
         )
 
         self.public_clob = PublicCLOBAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.circuit_breaker
+            circuit_breaker=self.data_circuit_breaker
         )
 
         # Initialize metrics
@@ -434,6 +446,30 @@ class PolymarketClient:
             offset=offset,
             active=active,
             closed=closed,
+            **kwargs
+        )
+
+    async def get_markets_keyset(
+        self,
+        limit: int = 100,
+        after_cursor: Optional[str] = None,
+        active: Optional[bool] = None,
+        closed: Optional[bool] = None,
+        archived: Optional[bool] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Get markets using Gamma cursor pagination.
+
+        Use this for full/deep refreshes; legacy offset pagination is capped by
+        Gamma and can fail before all open markets are fetched.
+        """
+        return await self.gamma.get_markets_keyset(
+            limit=limit,
+            after_cursor=after_cursor,
+            active=active,
+            closed=closed,
+            archived=archived,
             **kwargs
         )
 
@@ -1924,15 +1960,28 @@ class PolymarketClient:
         return {}
 
     def get_circuit_breaker_state(self) -> Optional[str]:
-        """Get circuit breaker state."""
+        """Get the TRADING circuit breaker state.
+
+        This is what bot health/shutdown logic keys off: a data-plane breaker
+        opening (market metadata flakiness) must not shut the bot down while
+        order placement is still healthy.
+        """
         if self.circuit_breaker:
             return self.circuit_breaker.state
         return None
 
+    def get_data_circuit_breaker_state(self) -> Optional[str]:
+        """Get the data-plane (Gamma/Data/public CLOB) circuit breaker state."""
+        if self.data_circuit_breaker:
+            return self.data_circuit_breaker.state
+        return None
+
     def reset_circuit_breaker(self) -> None:
-        """Reset circuit breaker."""
+        """Reset both trading and data circuit breakers."""
         if self.circuit_breaker:
             self.circuit_breaker.reset()
+        if self.data_circuit_breaker:
+            self.data_circuit_breaker.reset()
 
     def _get_data_address(self, credentials: "WalletCredentials") -> str:
         """
@@ -2406,7 +2455,7 @@ class PolymarketClient:
             wallet_id: Wallet to track
 
         Example:
-            >>> from polymarket.api.websocket_models import TradeMessage, OrderMessage
+            >>> from shared.polymarket.api.websocket_models import TradeMessage, OrderMessage
             >>> def on_fill(message):
             ...     if isinstance(message, TradeMessage):
             ...         print(f"Trade: {message.status} - {message.price}")
@@ -2874,6 +2923,36 @@ class PolymarketClient:
         )
 
         logger.info("Subscribed to price_changes", extra={"token_count": len(token_ids)})
+
+    def unsubscribe_market_price_changes(
+        self,
+        token_ids: List[str]
+    ) -> None:
+        """
+        Unsubscribe from price change events for specific tokens.
+
+        Args:
+            token_ids: List of token IDs to stop monitoring
+
+        Raises:
+            ValueError: If token_ids is empty
+        """
+        import json
+
+        if not token_ids:
+            raise ValueError("token_ids cannot be empty")
+
+        if self._rtds is None:
+            logger.debug("RTDS client not initialized; no price_changes subscription to remove")
+            return
+
+        self._rtds.unsubscribe(
+            topic="clob_market",
+            type="price_change",
+            filters=json.dumps(token_ids)
+        )
+
+        logger.info("Unsubscribed from price_changes", extra={"token_count": len(token_ids)})
 
     def subscribe_market_orderbook_rtds(
         self,

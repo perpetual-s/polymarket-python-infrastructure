@@ -1,4 +1,4 @@
-"""Pytest configuration for unit tests in polymarket.
+"""Pytest configuration for unit tests in shared/polymarket.
 
 These tests require an async event loop as PolymarketClient/APIs create aiohttp sessions.
 Skip by default until tests are updated for async context.

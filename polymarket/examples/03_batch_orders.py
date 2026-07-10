@@ -6,7 +6,7 @@ Shows how to place 10+ orders simultaneously - critical for Strategy-3 performan
 
 import os
 import asyncio
-from polymarket import (
+from shared.polymarket import (
     PolymarketClient,
     WalletConfig,
     OrderRequest,

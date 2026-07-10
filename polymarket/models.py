@@ -750,14 +750,8 @@ class WalletConfig(BaseModel):
     funder: Optional[str] = Field(None, description="Funder address for proxy wallets")
 
 
-class ClientConfig(BaseModel):
-    """Client configuration."""
-    chain_id: int = Field(default=137, description="Polygon chain ID")
-    clob_url: str = Field(default="https://clob.polymarket.com", description="CLOB API URL")
-    gamma_url: str = Field(default="https://gamma-api.polymarket.com", description="Gamma API URL")
-    request_timeout: float = Field(default=30.0, description="Request timeout in seconds")
-    max_retries: int = Field(default=3, description="Max retry attempts")
-    enable_rate_limiting: bool = Field(default=True, description="Enable rate limiting")
+# NOTE: a stale ClientConfig model was removed; PolymarketSettings in
+# config.py is the only client configuration surface.
 
 
 # Filter Models
