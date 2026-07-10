@@ -111,7 +111,9 @@ Fields:
 | `async close() -> None` | yes | `None` | logs cleanup errors |
 | `async health_check() -> Dict[str, Any]` | yes | health dict | returns unhealthy dict on error |
 | `get_rate_limiter_stats() -> dict` | no | stats or `{}` | none |
-| `get_circuit_breaker_state() -> Optional[str]` | no | state or `None` | none |
+| `get_circuit_breaker_state() -> Optional[str]` | no | trading-breaker state or `None` | none |
+| `get_data_circuit_breaker_state() -> Optional[str]` | no | worst-of data-plane state or `None` | none |
+| `get_data_circuit_breaker_states() -> Dict[str, Optional[str]]` | no | per-surface data-plane states | none |
 | `reset_circuit_breaker() -> None` | no | `None` | none |
 | `__enter__() -> PolymarketClient` | no | self | cleanup via sync wrapper |
 | `__exit__(exc_type, exc_val, exc_tb) -> None` | no | `None` | logs cleanup errors |
@@ -125,11 +127,25 @@ Health shape:
     "status": "healthy" | "degraded" | "unhealthy",
     "clob": {...},
     "circuit_breaker": "closed" | "open" | "half_open" | "disabled",
+    "data_circuit_breakers": {  # per-surface data-plane breakers; {} if disabled
+        "polymarket-gamma": "CLOSED" | "OPEN" | "HALF_OPEN",
+        "polymarket-data": "CLOSED" | "OPEN" | "HALF_OPEN",
+        "polymarket-clob-public": "CLOSED" | "OPEN" | "HALF_OPEN",
+    },
     "rate_limiter": {...},
     "inflight_orders": int,
     "timestamp": float,
 }
 ```
+
+Circuit breakers are split per upstream surface — four named breakers, each guarding one plane so an outage on one cannot block the others:
+
+- `polymarket-trading` — authenticated CLOB calls that move money (orders, cancels, balances). Exposed via `get_circuit_breaker_state()` and the `circuit_breaker` health key. **Only this breaker gates bot health**: `shared/bot` keys shutdown/health off the trading breaker alone, so a data-plane outage never shuts the bot down.
+- `polymarket-gamma` — Gamma API (market/event metadata).
+- `polymarket-data` — Data API (positions, trades, activity).
+- `polymarket-clob-public` — public CLOB reads (books, prices, spreads).
+
+The three data-plane breakers are independent (a Data API outage cannot open the Gamma breaker). `get_data_circuit_breaker_states()` returns each by name; `get_data_circuit_breaker_state()` returns the worst state across them (`OPEN` > `HALF_OPEN` > `CLOSED`) for back-compat. `reset_circuit_breaker()` resets all four. All are `None` (and the states map is `{}`) when `enable_circuit_breaker=False`.
 
 ## 4. Authentication and wallet management
 

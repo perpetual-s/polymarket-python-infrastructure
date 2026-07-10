@@ -129,25 +129,32 @@ class PolymarketClient:
                 margin=self.settings.rate_limit_margin
             )
 
-        # Circuit breakers — split by plane so market-data flakiness cannot
-        # block order placement/cancel (and vice versa):
+        # Circuit breakers — split per upstream surface so one plane's
+        # flakiness cannot block another (and market-data reads can never open
+        # the trading breaker):
         # - trading breaker: authenticated CLOB (orders, cancels, balances)
-        # - data breaker: Gamma, Data API, public CLOB reads
+        # - gamma breaker: Gamma API (market/event metadata)
+        # - data breaker: Data API (positions, trades, activity)
+        # - public CLOB breaker: public CLOB reads (books, prices, spreads)
         # `self.circuit_breaker` stays as the trading breaker: it guards the
-        # calls that move money, and shared/bot health checks key off it.
+        # calls that move money, and shared/bot health checks key off it alone.
         self.circuit_breaker = None
+        self.gamma_circuit_breaker = None
         self.data_circuit_breaker = None
+        self.public_clob_circuit_breaker = None
         if enable_circuit_breaker is not False:
-            self.circuit_breaker = CircuitBreaker(
-                failure_threshold=self.settings.circuit_breaker_threshold,
-                timeout=self.settings.circuit_breaker_timeout,
-                name="polymarket-trading"
-            )
-            self.data_circuit_breaker = CircuitBreaker(
-                failure_threshold=self.settings.circuit_breaker_threshold,
-                timeout=self.settings.circuit_breaker_timeout,
-                name="polymarket-data"
-            )
+
+            def _cb(name: str) -> CircuitBreaker:
+                return CircuitBreaker(
+                    failure_threshold=self.settings.circuit_breaker_threshold,
+                    timeout=self.settings.circuit_breaker_timeout,
+                    name=name,
+                )
+
+            self.circuit_breaker = _cb("polymarket-trading")
+            self.gamma_circuit_breaker = _cb("polymarket-gamma")
+            self.data_circuit_breaker = _cb("polymarket-data")
+            self.public_clob_circuit_breaker = _cb("polymarket-clob-public")
 
         # CRITICAL FIX: Track reserved balance to prevent over-ordering
         # Maps wallet_id -> reserved USD amount for pending orders
@@ -157,12 +164,13 @@ class PolymarketClient:
         if self.circuit_breaker:
             logger.info("Circuit breaker enabled")
 
-        # Initialize API clients (data-plane APIs get the data breaker so
-        # their failures cannot open the trading breaker)
+        # Initialize API clients — each data-plane surface gets its own breaker
+        # so one upstream's failures cannot open another's (and none can open
+        # the trading breaker)
         self.gamma = GammaAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.data_circuit_breaker
+            circuit_breaker=self.gamma_circuit_breaker
         )
 
         self.clob = CLOBAPI(
@@ -181,7 +189,7 @@ class PolymarketClient:
         self.public_clob = PublicCLOBAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.data_circuit_breaker
+            circuit_breaker=self.public_clob_circuit_breaker
         )
 
         # Initialize metrics
@@ -2041,18 +2049,29 @@ class PolymarketClient:
             return self.circuit_breaker.state
         return None
 
+    def get_data_circuit_breaker_states(self) -> Dict[str, Optional[str]]:
+        """Per-surface data-plane breaker states, keyed by breaker name."""
+        return {
+            b.name: b.state
+            for b in (self.gamma_circuit_breaker, self.data_circuit_breaker,
+                      self.public_clob_circuit_breaker)
+            if b is not None
+        }
+
     def get_data_circuit_breaker_state(self) -> Optional[str]:
-        """Get the data-plane (Gamma/Data/public CLOB) circuit breaker state."""
-        if self.data_circuit_breaker:
-            return self.data_circuit_breaker.state
+        """Worst state across the data-plane breakers (back-compat aggregate)."""
+        states = self.get_data_circuit_breaker_states().values()
+        for level in ("OPEN", "HALF_OPEN", "CLOSED"):
+            if level in states:
+                return level
         return None
 
     def reset_circuit_breaker(self) -> None:
-        """Reset both trading and data circuit breakers."""
-        if self.circuit_breaker:
-            self.circuit_breaker.reset()
-        if self.data_circuit_breaker:
-            self.data_circuit_breaker.reset()
+        """Reset the trading breaker and all three data-plane breakers."""
+        for breaker in (self.circuit_breaker, self.gamma_circuit_breaker,
+                        self.data_circuit_breaker, self.public_clob_circuit_breaker):
+            if breaker is not None:
+                breaker.reset()
 
     def _get_data_address(self, credentials: "WalletCredentials") -> str:
         """
@@ -2451,6 +2470,7 @@ class PolymarketClient:
                 "status": "healthy" if clob_health["status"] == "healthy" else "degraded",
                 "clob": clob_health,
                 "circuit_breaker": cb_state,
+                "data_circuit_breakers": self.get_data_circuit_breaker_states(),
                 "rate_limiter": rate_stats,
                 "inflight_orders": len(self._inflight_orders),
                 "timestamp": time.time()
