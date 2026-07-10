@@ -12,6 +12,7 @@ import pytest
 import asyncio
 import time
 import threading
+import logging
 from unittest.mock import Mock, patch, MagicMock
 from polymarket.api.websocket import WebSocketClient
 
@@ -389,6 +390,250 @@ class TestGracefulShutdownCallbacks:
         assert received_reasons == reasons
 
 
+class TestTransientConnectionLogging:
+    """Transient WebSocket disconnects should not poison paper evidence."""
+
+    def test_remote_host_lost_logs_warning_not_error(self, caplog):
+        """A recoverable remote close is WARNING, not ERROR."""
+        from websocket import WebSocketConnectionClosedException
+
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, WebSocketConnectionClosedException("Connection to remote host was lost."))
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_run_forever_remote_host_lost_logs_warning_not_error(self, monkeypatch, caplog):
+        """A recoverable run_forever disconnect is WARNING, not ERROR."""
+        from polymarket.api.websocket import ChannelType
+        import websocket
+
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        ws._running = True
+        ws._channel_type = ChannelType.USER
+
+        class DisconnectingWebSocketApp:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_forever(self, **kwargs):
+                ws._running = False
+                raise Exception("Connection to remote host was lost.")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(websocket, "WebSocketApp", DisconnectingWebSocketApp)
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._run()
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_websocket_library_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for remote closes is also WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("Connection to remote host was lost. - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_ping_pong_timeout_logs_warning_not_error(self, caplog):
+        """A recoverable ping/pong timeout is WARNING, not ERROR."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, Exception("ping/pong timed out"))
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "ping/pong timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_connection_timed_out_logs_warning_not_error(self, caplog):
+        """A recoverable connection timeout is WARNING, not ERROR."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, Exception("Connection timed out"))
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "Connection timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_websocket_library_ping_timeout_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for ping/pong timeouts is also WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("ping/pong timed out - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "ping/pong timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_websocket_library_connection_timeout_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for connection timeouts is also WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("Connection timed out - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "Connection timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_websocket_library_close_frame_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for close frame 1001 is WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("fin=1 opcode=8 data=b'\\x03\\xe9' - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "opcode=8" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_connection_reset_logs_warning_not_error(self, caplog):
+        """A recoverable peer reset is WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, OSError(54, "Connection reset by peer"))
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "Connection reset by peer" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_handshake_429_logs_warning_not_error(self, caplog):
+        """A websocket rate-limit handshake refusal is a transient disconnect."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        error = (
+            "Handshake status 429 Too Many Requests -+-+- "
+            "{'server': 'cloudflare'} -+-+- b'{\"message\":\"Too Many Requests\"}'"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, Exception(error))
+
+        assert any(
+            record.name == "polymarket.api.websocket"
+            and record.levelno == logging.WARNING
+            and "Handshake status 429 Too Many Requests" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "polymarket.api.websocket"
+            and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_websocket_library_handshake_429_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for 429 handshakes is WARNING."""
+        WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        message = (
+            "Handshake status 429 Too Many Requests -+-+- "
+            "{'server': 'cloudflare'} -+-+- b'{\"message\":\"Too Many Requests\"}' - goodbye"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error(message)
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "Handshake status 429 Too Many Requests" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+
 class TestWebSocketCompression:
     """Test WebSocket compression (L3)."""
 
@@ -462,7 +707,7 @@ class TestConfigurablePingIntervals:
             api_key="test_key"
         )
 
-        assert ws.ping_interval == 30
+        assert ws.ping_interval == 20
         assert ws.ping_timeout == 10
 
     def test_custom_ping_intervals(self):

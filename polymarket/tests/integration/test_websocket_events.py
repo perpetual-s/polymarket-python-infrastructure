@@ -2,7 +2,7 @@
 Integration tests for MarketManager WebSocket events.
 
 Tests real-time market_created and market_resolved event handling.
-Run with: pytest polymarket/tests/integration/test_websocket_events.py -v
+Run with: pytest shared/polymarket/tests/integration/test_websocket_events.py -v
 """
 
 import asyncio

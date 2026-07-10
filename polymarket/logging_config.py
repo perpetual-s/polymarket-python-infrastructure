@@ -54,7 +54,7 @@ DEFAULT_LOGGING_CONFIG = {
         }
     },
     "loggers": {
-        "polymarket": {
+        "shared.polymarket": {
             "level": "INFO",
             "handlers": ["console", "file", "error_file"],
             "propagate": False
@@ -84,7 +84,7 @@ def setup_logging(
 
     # Override level
     if level:
-        config["loggers"]["polymarket"]["level"] = level.upper()
+        config["loggers"]["shared.polymarket"]["level"] = level.upper()
 
     # Override log file
     if log_file:
@@ -111,4 +111,4 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger instance
     """
-    return logging.getLogger(f"polymarket.{name}")
+    return logging.getLogger(f"shared.polymarket.{name}")

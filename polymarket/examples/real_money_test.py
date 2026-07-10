@@ -25,8 +25,8 @@ from loguru import logger
 # Load environment
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-from polymarket import PolymarketClient, WalletConfig
-from polymarket.models import SignatureType, OrderRequest
+from shared.polymarket import PolymarketClient, WalletConfig
+from shared.polymarket.models import SignatureType, OrderRequest
 
 # Market details
 MARKET_CONDITION_ID = "0xcb111226a8271fed0c71bb5ec1bd67b2a4fd72f1eb08466e2180b9efa99d3f32"

@@ -26,7 +26,6 @@ from .models import (
     Market,
     OrderBook,
     WalletConfig,
-    ClientConfig,
     LeaderboardTrader,
 )
 from .exceptions import (
@@ -105,7 +104,6 @@ __all__ = [
     "Market",
     "OrderBook",
     "WalletConfig",
-    "ClientConfig",
     "LeaderboardTrader",
 
     # Exceptions

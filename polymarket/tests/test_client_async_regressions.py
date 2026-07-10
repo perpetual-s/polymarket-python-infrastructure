@@ -73,6 +73,34 @@ def make_order(
 
 
 @pytest.mark.asyncio
+async def test_unsubscribe_market_price_changes_constructs_token_filter() -> None:
+    client = build_test_client()
+    try:
+        rtds = Mock()
+        client._rtds = rtds
+
+        client.unsubscribe_market_price_changes(token_ids=["12345", "67890"])
+
+        call_kwargs = rtds.unsubscribe.call_args.kwargs
+        assert call_kwargs["topic"] == "clob_market"
+        assert call_kwargs["type"] == "price_change"
+        assert '"12345"' in call_kwargs["filters"]
+        assert '"67890"' in call_kwargs["filters"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_market_price_changes_rejects_empty_tokens() -> None:
+    client = build_test_client()
+    try:
+        with pytest.raises(ValueError, match="cannot be empty"):
+            client.unsubscribe_market_price_changes(token_ids=[])
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_place_order_reserves_buy_notional() -> None:
     client = build_test_client()
     try:
@@ -343,6 +371,7 @@ async def test_place_market_order_buy_reserves_usd_amount() -> None:
         assert await client.get_reserved_balance("test-wallet") == Decimal("20.00")
     finally:
         await client.close()
+
 
 @pytest.mark.asyncio
 async def test_health_check_awaits_async_clob_probe() -> None:

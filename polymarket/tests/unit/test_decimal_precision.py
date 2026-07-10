@@ -1,5 +1,5 @@
 """
-Unit tests for Decimal precision in polymarket.
+Unit tests for Decimal precision in shared/polymarket.
 
 Validates the financial-grade precision guarantees of Decimal migration.
 

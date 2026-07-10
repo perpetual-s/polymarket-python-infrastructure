@@ -194,12 +194,39 @@ class RetryStrategy:
         if isinstance(exception, (CircuitBreakerError,)):
             return False
 
-        # Retry on API errors, timeouts, rate limits
-        if isinstance(exception, (APIError, TimeoutError, RateLimitError)):
+        if isinstance(exception, APIError):
+            status_code = getattr(exception, "status_code", None)
+            if status_code is not None and 400 <= status_code < 500:
+                return False
+            return True
+
+        # Retry on timeouts and rate limits
+        if isinstance(exception, (TimeoutError, RateLimitError)):
             return True
 
         # Retry on connection errors
         if isinstance(exception, (ConnectionError, OSError)):
+            return True
+
+        return False
+
+    def _should_count_circuit_failure(self, exception: Exception) -> bool:
+        """Return True when an exception represents upstream/API health failure.
+
+        RateLimitError (429) deliberately does NOT count: it is backpressure,
+        not an outage, and it is handled by the rate limiter plus retry
+        backoff. Counting 429s let a burst of activity polling open the
+        breaker and block unrelated trading calls (the 398d309b incident
+        shape).
+        """
+        if isinstance(exception, (CircuitBreakerError, RateLimitError)):
+            return False
+
+        if isinstance(exception, APIError):
+            status_code = getattr(exception, "status_code", None)
+            return status_code is None or status_code >= 500
+
+        if isinstance(exception, (TimeoutError, ConnectionError, OSError)):
             return True
 
         return False
@@ -223,14 +250,57 @@ class RetryStrategy:
 
         for attempt in range(self.max_retries + 1):
             try:
-                # Use circuit breaker if available
                 if self.circuit_breaker:
-                    return self.circuit_breaker.call(func, *args, **kwargs)
-                else:
-                    return func(*args, **kwargs)
+                    with self.circuit_breaker._lock:
+                        if self.circuit_breaker._state == "OPEN":
+                            if (
+                                self.circuit_breaker._last_failure_time
+                                and time.time() - self.circuit_breaker._last_failure_time
+                                >= self.circuit_breaker.timeout
+                            ):
+                                logger.info(
+                                    f"Circuit breaker {self.circuit_breaker.name}: OPEN -> HALF_OPEN"
+                                )
+                                self.circuit_breaker._state = "HALF_OPEN"
+                            else:
+                                raise CircuitBreakerError(
+                                    f"Circuit breaker {self.circuit_breaker.name} is OPEN"
+                                )
+
+                result = func(*args, **kwargs)
+
+                if self.circuit_breaker:
+                    with self.circuit_breaker._lock:
+                        if self.circuit_breaker._state == "HALF_OPEN":
+                            logger.info(
+                                f"Circuit breaker {self.circuit_breaker.name}: HALF_OPEN -> CLOSED"
+                            )
+                            self.circuit_breaker._state = "CLOSED"
+                            self.circuit_breaker._failures = 0
+
+                return result
 
             except Exception as e:
                 last_exception = e
+
+                if self.circuit_breaker and self._should_count_circuit_failure(e):
+                    with self.circuit_breaker._lock:
+                        self.circuit_breaker._failures += 1
+                        self.circuit_breaker._last_failure_time = time.time()
+
+                        if self.circuit_breaker._failures >= self.circuit_breaker.failure_threshold:
+                            if self.circuit_breaker._state != "OPEN":
+                                logger.warning(
+                                    f"Circuit breaker {self.circuit_breaker.name}: "
+                                    f"{self.circuit_breaker._state} -> OPEN "
+                                    f"({self.circuit_breaker._failures} failures)"
+                                )
+                            self.circuit_breaker._state = "OPEN"
+                        elif self.circuit_breaker._state == "HALF_OPEN":
+                            logger.warning(
+                                f"Circuit breaker {self.circuit_breaker.name}: HALF_OPEN -> OPEN"
+                            )
+                            self.circuit_breaker._state = "OPEN"
 
                 if not self._should_retry(e, attempt):
                     logger.debug(
@@ -309,7 +379,7 @@ class RetryStrategy:
                 last_exception = e
 
                 # Update circuit breaker on failure with proper locking
-                if self.circuit_breaker:
+                if self.circuit_breaker and self._should_count_circuit_failure(e):
                     with self.circuit_breaker._lock:
                         self.circuit_breaker._failures += 1
                         self.circuit_breaker._last_failure_time = time.time()

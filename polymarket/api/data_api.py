@@ -22,6 +22,7 @@ from ..models import (
 )
 from ..exceptions import (
     APIError,
+    TimeoutError,
     ValidationError
 )
 from ..utils.rate_limiter import RateLimiter
@@ -315,7 +316,7 @@ class DataAPI(BaseAPIClient):
                 "/activity",
                 params=params,
                 rate_limit_key="GET:/activity",
-                retry=True
+                retry=False
             )
 
             if not isinstance(response, list):
@@ -334,7 +335,12 @@ class DataAPI(BaseAPIClient):
             logger.info(f"Fetched {len(activities)} activities for {user}")
             return activities
 
-        except (APIError, TimeoutError):
+        except APIError as e:
+            if e.status_code == 404:
+                logger.warning(f"No activity found for {user}")
+                return []
+            raise
+        except TimeoutError:
             raise
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to parse activity response for {user}: {e}")

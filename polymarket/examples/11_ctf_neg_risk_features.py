@@ -11,14 +11,14 @@ Demonstrates the new CTF (Conditional Token Framework) infrastructure:
 These features enable capital-efficient trading on multi-outcome markets.
 
 References:
-- polymarket/Documentation/NEG_RISK_CTF.md
+- shared/polymarket/Documentation/NEG_RISK_CTF.md
 - https://github.com/Polymarket/neg-risk-ctf-adapter
 - https://github.com/Polymarket/ctf-exchange
 """
 
 import asyncio
 from decimal import Decimal
-from polymarket import (
+from shared.polymarket import (
     PolymarketClient,
     Side,
     # Fee calculation utilities
@@ -328,7 +328,7 @@ async def main():
     print("   • Comprehensive input validation")
 
     print("\n📚 Documentation:")
-    print("   polymarket/Documentation/NEG_RISK_CTF.md")
+    print("   shared/polymarket/Documentation/NEG_RISK_CTF.md")
 
     print("\n" + "=" * 70 + "\n")
 

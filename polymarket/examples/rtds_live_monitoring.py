@@ -21,8 +21,8 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from polymarket import PolymarketClient
-from polymarket.api.real_time_data import Message
+from shared.polymarket import PolymarketClient
+from shared.polymarket.api.real_time_data import Message
 
 # Configure logging
 logging.basicConfig(

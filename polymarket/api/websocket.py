@@ -18,6 +18,10 @@ from enum import Enum
 from collections import deque
 import logging
 
+from .websocket_logging import (
+    install_websocket_transient_disconnect_filter,
+    is_transient_websocket_disconnect,
+)
 from .websocket_models import (
     WebSocketMessage,
     parse_websocket_message,
@@ -96,6 +100,7 @@ class WebSocketClient:
         self.on_failure_callback = on_failure_callback
         self.enable_deduplication = enable_deduplication
         self.dedup_window_seconds = dedup_window_seconds
+        install_websocket_transient_disconnect_filter()
 
         self._ws = None
         self._thread: Optional[threading.Thread] = None
@@ -450,7 +455,10 @@ class WebSocketClient:
                 time.sleep(self.reconnect_delay)
 
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                if is_transient_websocket_disconnect(e):
+                    logger.warning(f"WebSocket transient disconnect: {e}")
+                else:
+                    logger.error(f"WebSocket error: {e}")
                 # Check if this is a fatal error requiring failure callback
                 if not self._running:
                     # Connection was explicitly stopped, not a failure
@@ -639,6 +647,9 @@ class WebSocketClient:
 
     def _on_error(self, ws, error) -> None:
         """Handle error."""
+        if is_transient_websocket_disconnect(error):
+            logger.warning(f"WebSocket transient disconnect: {error}")
+            return
         logger.error(f"WebSocket error: {error}")
 
     def _on_close(self, ws, close_status_code, close_msg) -> None:

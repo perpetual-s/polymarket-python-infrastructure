@@ -14,7 +14,7 @@ Web research findings: https://docs.polymarket.com/
 
 import os
 import asyncio
-from polymarket import PolymarketClient, WalletConfig
+from shared.polymarket import PolymarketClient, WalletConfig
 
 
 async def main():

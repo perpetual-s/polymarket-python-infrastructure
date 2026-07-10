@@ -282,11 +282,12 @@ def calculate_time_weighted_pnl(
     # Filter activities within time window
     recent_activities = [
         a for a in activities
-        if a.timestamp >= cutoff_timestamp and a.type.value == "TRADE"
+        if a.timestamp >= cutoff_timestamp
+        and getattr(a.type, "value", a.type) == "TRADE"
     ]
 
     # Calculate P&L from recent activities
-    pnl = sum(a.usd_value for a in recent_activities)
+    pnl = sum(a.usdc_size for a in recent_activities)
 
     # Calculate initial value (approximation)
     initial_value = sum(p.initial_value for p in positions)

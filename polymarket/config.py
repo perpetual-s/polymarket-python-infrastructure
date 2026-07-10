@@ -129,11 +129,11 @@ class PolymarketSettings(BaseSettings):
 # Rate limit configurations per endpoint
 # Source: https://docs.polymarket.com/quickstart/introduction/rate-limits
 # Audited against official docs on 2026-04-23.
-# Every rate_limit_key passed from polymarket/api/*.py is listed below;
+# Every rate_limit_key passed from shared/polymarket/api/*.py is listed below;
 # unknown keys fall through to "default" which is intentionally conservative.
 RATE_LIMITS = {
     # === CLOB API - Trading (burst + sustained) ===
-    # Official limits have increased since the earlier defaults.
+    # Official limits have increased since the earlier project defaults.
     "POST:/order": {"burst": 3500, "limit": 3500, "window": 10, "sustained": 36000, "sustained_window": 600},
     "DELETE:/order": {"burst": 3000, "limit": 3000, "window": 10, "sustained": 30000, "sustained_window": 600},
     "POST:/orders": {"burst": 1000, "limit": 1000, "window": 10, "sustained": 15000, "sustained_window": 600},
@@ -183,6 +183,7 @@ RATE_LIMITS = {
 
     # === Gamma API ===
     "GET:/markets": {"limit": 300, "window": 10},
+    "GET:/markets/keyset": {"limit": 300, "window": 10},
     "GET:/events": {"limit": 500, "window": 10},
     "GET:/events/pagination": {"limit": 500, "window": 10},
     "GET:/comments": {"limit": 200, "window": 10},

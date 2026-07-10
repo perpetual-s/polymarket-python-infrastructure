@@ -8,8 +8,8 @@ Copy this pattern for your Strategy-3 dashboard backend.
 import asyncio
 from typing import List
 
-from polymarket import PolymarketClient
-from polymarket.config import PolymarketSettings
+from shared.polymarket import PolymarketClient
+from shared.polymarket.config import PolymarketSettings
 
 
 async def main():

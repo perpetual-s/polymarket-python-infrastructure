@@ -190,6 +190,16 @@ class TestRTDSSubscriptionMethods:
             client.subscribe_market_orderbook_rtds(Mock(), token_ids=[])
 
     @patch('polymarket.client.RealTimeDataClient')
+    def test_unsubscribe_market_price_changes_validation(self, mock_rtds_class):
+        """unsubscribe_market_price_changes should validate token_ids."""
+        client = PolymarketClient()
+        mock_rtds = Mock()
+        mock_rtds_class.return_value = mock_rtds
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            client.unsubscribe_market_price_changes(token_ids=[])
+
+    @patch('polymarket.client.RealTimeDataClient')
     def test_subscribe_crypto_prices_chainlink_validation(self, mock_rtds_class):
         """subscribe_crypto_prices_chainlink should validate symbol."""
         client = PolymarketClient()
@@ -425,6 +435,22 @@ class TestRTDSSubscriptionFilters:
         assert call_kwargs['topic'] == 'clob_market'
         assert call_kwargs['type'] == 'price_change'
         # Filter should be JSON list
+        assert '"12345"' in call_kwargs['filters']
+        assert '"67890"' in call_kwargs['filters']
+
+    @patch('polymarket.client.RealTimeDataClient')
+    def test_unsubscribe_market_price_changes_token_filter(self, mock_rtds_class):
+        """unsubscribe_market_price_changes should construct the matching token filter."""
+        client = PolymarketClient()
+        mock_rtds = Mock()
+        client._rtds = mock_rtds
+
+        token_ids = ["12345", "67890"]
+        client.unsubscribe_market_price_changes(token_ids=token_ids)
+
+        call_kwargs = mock_rtds.unsubscribe.call_args[1]
+        assert call_kwargs['topic'] == 'clob_market'
+        assert call_kwargs['type'] == 'price_change'
         assert '"12345"' in call_kwargs['filters']
         assert '"67890"' in call_kwargs['filters']
 

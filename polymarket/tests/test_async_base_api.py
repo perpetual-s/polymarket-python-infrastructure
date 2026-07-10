@@ -198,6 +198,38 @@ class TestAsyncErrorHandling:
             assert "timeout" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
+    async def test_timeout_logs_at_warning_not_error(self, base_client, caplog):
+        """Transient request timeouts must log at WARNING, not ERROR.
+
+        ERROR-level logs gate marker eligibility via paper_evidence_report.
+        A 1-second network blip on `data-api.polymarket.com/activity`
+        should not block a paper-rehearsal marker, because the retry
+        strategy classifies these as retriable. Same pattern as the
+        WebSocket transient-close downgrade in Phase 2 (06bf0898).
+        """
+        import logging as stdlib_logging
+        with patch.object(base_client.session, 'request') as mock_request:
+            async def raise_timeout(*args, **kwargs):
+                raise asyncio.TimeoutError("Request timed out")
+            mock_request.return_value.__aenter__ = raise_timeout
+            mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            caplog.set_level(stdlib_logging.WARNING, logger="polymarket.api.base")
+            with pytest.raises(PolymarketTimeoutError):
+                await base_client._make_request("GET", "/test")
+
+        timeout_records = [
+            r for r in caplog.records
+            if "Request timeout" in r.getMessage()
+        ]
+        assert timeout_records, f"expected a Request timeout log; got {[r.getMessage() for r in caplog.records]}"
+        for r in timeout_records:
+            assert r.levelno == stdlib_logging.WARNING, (
+                f"Request timeout logged at {r.levelname}; must be WARNING "
+                "(blocks marker eligibility otherwise)"
+            )
+
+    @pytest.mark.asyncio
     async def test_aiohttp_client_error_raises_api_error(self, base_client):
         """Verify aiohttp.ClientError is converted to APIError."""
         with patch.object(base_client.session, 'request') as mock_request:
@@ -211,6 +243,35 @@ class TestAsyncErrorHandling:
                 await base_client._make_request("GET", "/test")
 
             assert "connection" in str(exc_info.value).lower() or "error" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_connection_error_logs_at_warning_not_error(self, base_client, caplog):
+        """Transient aiohttp connection errors must log at WARNING, not ERROR.
+
+        Same rationale as test_timeout_logs_at_warning_not_error: retriable
+        transient network failures should not block paper-rehearsal markers.
+        """
+        import logging as stdlib_logging
+        with patch.object(base_client.session, 'request') as mock_request:
+            async def raise_client_error(*args, **kwargs):
+                raise aiohttp.ClientError("Connection failed")
+            mock_request.return_value.__aenter__ = raise_client_error
+            mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            caplog.set_level(stdlib_logging.WARNING, logger="polymarket.api.base")
+            with pytest.raises(APIError):
+                await base_client._make_request("GET", "/test")
+
+        conn_records = [
+            r for r in caplog.records
+            if "Connection error" in r.getMessage()
+        ]
+        assert conn_records, f"expected a Connection error log; got {[r.getMessage() for r in caplog.records]}"
+        for r in conn_records:
+            assert r.levelno == stdlib_logging.WARNING, (
+                f"Connection error logged at {r.levelname}; must be WARNING "
+                "(blocks marker eligibility otherwise)"
+            )
 
     @pytest.mark.asyncio
     async def test_429_status_raises_rate_limit_error(self, base_client):
@@ -284,6 +345,33 @@ class TestAsyncCircuitBreaker:
 
             # Circuit breaker should have tracked the failure
             assert base_client.circuit_breaker._failures > 0
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_ignores_non_transient_4xx(self, base_client):
+        """Non-transient caller/data errors must not poison API health state."""
+        mock_response = AsyncMock()
+        mock_response.status = 404
+        mock_response.read = AsyncMock(
+            return_value=b'{"error": "No orderbook exists for the requested token id"}'
+        )
+        mock_response.headers = {}
+
+        with patch.object(base_client.retry_strategy, "_calculate_delay", return_value=0):
+            with patch.object(base_client.session, "request") as mock_request:
+                mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+                mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                with pytest.raises(APIError) as exc_info:
+                    await base_client.get(
+                        "/midpoint",
+                        params={"token_id": "stale-token"},
+                        retry=True,
+                    )
+
+        assert exc_info.value.status_code == 404
+        assert mock_request.call_count == 1
+        assert base_client.circuit_breaker.state == "CLOSED"
+        assert base_client.circuit_breaker.failures == 0
 
 
 class TestSessionLifecycle:

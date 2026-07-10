@@ -1,5 +1,5 @@
 """
-Performance benchmarks for polymarket.
+Performance benchmarks for shared/polymarket.
 
 Measures latency, throughput, and scalability.
 

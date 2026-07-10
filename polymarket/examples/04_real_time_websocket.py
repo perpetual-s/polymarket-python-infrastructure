@@ -13,8 +13,8 @@ v3.2 Note: Typed message models for type-safe WebSocket handling.
 import os
 import time
 import asyncio
-from polymarket import PolymarketClient, WalletConfig
-from polymarket.api.websocket_models import (
+from shared.polymarket import PolymarketClient, WalletConfig
+from shared.polymarket.api.websocket_models import (
     TradeMessage,
     OrderMessage,
     TradeStatus,

@@ -13,6 +13,7 @@ Tests RealTimeDataClient functionality:
 import pytest
 import time
 import json
+import logging
 from unittest.mock import Mock, patch, MagicMock
 from polymarket.api.real_time_data import (
     RealTimeDataClient,
@@ -507,6 +508,81 @@ class TestErrorHandling:
         # Should not crash
         client._on_message(None, raw_message)
         # Test passes if no exception propagates
+
+    def test_remote_host_lost_logs_warning_not_error(self, caplog):
+        """A recoverable RTDS remote close is WARNING, not ERROR."""
+        client = RealTimeDataClient(auto_reconnect=False)
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.real_time_data"):
+            client._on_error(None, Exception("Connection to remote host was lost."))
+
+        assert any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_connection_timed_out_logs_warning_not_error(self, caplog):
+        """A recoverable RTDS connection timeout is WARNING, not ERROR."""
+        client = RealTimeDataClient(auto_reconnect=False)
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.real_time_data"):
+            client._on_error(None, Exception("Connection timed out"))
+
+        assert any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno == logging.WARNING
+            and "Connection timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_handshake_429_logs_warning_not_error(self, caplog):
+        """A recoverable RTDS websocket rate-limit handshake is WARNING."""
+        client = RealTimeDataClient(auto_reconnect=False)
+        error = (
+            "Handshake status 429 Too Many Requests -+-+- "
+            "{'server': 'cloudflare'} -+-+- b'{\"message\":\"Too Many Requests\"}'"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.real_time_data"):
+            client._on_error(None, Exception(error))
+
+        assert any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno == logging.WARNING
+            and "Handshake status 429 Too Many Requests" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_non_transient_websocket_error_stays_error(self, caplog):
+        """Unknown RTDS WebSocket errors still poison marker evidence."""
+        client = RealTimeDataClient(auto_reconnect=False)
+
+        with caplog.at_level(logging.ERROR, logger="polymarket.api.real_time_data"):
+            client._on_error(None, Exception("unexpected protocol failure"))
+
+        assert any(
+            record.name == "polymarket.api.real_time_data"
+            and record.levelno >= logging.ERROR
+            and "unexpected protocol failure" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 class TestIntegration:

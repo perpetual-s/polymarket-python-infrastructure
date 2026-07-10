@@ -346,12 +346,20 @@ class BaseAPIClient:
                     raise APIError(f"Invalid JSON response: {e}")
 
         except asyncio.TimeoutError as e:
-            logger.error(f"Request timeout: {method} {url}")
+            # Transient: classified as retriable by RetryStrategy. The exception
+            # still propagates to the caller (which decides to retry or skip);
+            # the inner log is operator evidence noise unless it's terminal.
+            # Marker contract refuses ERROR; downgrade to WARNING (same pattern
+            # as Phase 2's WebSocket transient-close fix in 06bf0898/bf0645be).
+            logger.warning(f"Request timeout: {method} {url}")
             error = TimeoutError(f"Request timeout: {e}")
             raise error
 
         except aiohttp.ClientError as e:
-            logger.error(f"Connection error: {method} {url}")
+            # Transient: aiohttp.ClientError covers connection/socket/DNS
+            # failures that the retry strategy classifies as retriable. Same
+            # reasoning as the timeout branch above.
+            logger.warning(f"Connection error: {method} {url}")
             error = APIError(f"Connection error: {e}")
             raise error
 
