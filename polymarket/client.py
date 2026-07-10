@@ -2666,14 +2666,31 @@ class PolymarketClient:
     def _dispatch_rtds_message(self, client: "RealTimeDataClient", message: "Message") -> None:
         """
         Route an RTDS message to every handler registered for its (topic, type),
-        plus any (topic, "*") wildcard handlers. Handler exceptions are isolated
-        so one failing callback cannot break the others or the RTDS thread.
+        any (topic, "*") wildcard handlers, and any (topic, "prefix_*") handlers
+        whose prefix matches the message type. Each handler fires at most once
+        per message. Handler exceptions are isolated so one failing callback
+        cannot break the others or the RTDS thread.
         """
         with self._rtds_handlers_lock:
             handlers = list(self._rtds_handlers.get((message.topic, message.type), {}).values())
             if message.type != "*":
                 handlers += list(self._rtds_handlers.get((message.topic, "*"), {}).values())
+            # Prefix arm: keys like ("rfq", "request_*") are server-side filter
+            # patterns; messages arrive with concrete types ("request_created"),
+            # so match registry keys whose type ends with "*" by prefix.
+            for (topic_k, type_k), bucket in self._rtds_handlers.items():
+                if topic_k != message.topic or type_k == message.type or type_k == "*":
+                    continue
+                if type_k.endswith("*") and message.type.startswith(type_k[:-1]):
+                    handlers += list(bucket.values())
+        # A handler registered under multiple matching keys fires once per message
+        seen_ids: set = set()
+        unique_handlers = []
         for handler in handlers:
+            if id(handler) not in seen_ids:
+                seen_ids.add(id(handler))
+                unique_handlers.append(handler)
+        for handler in unique_handlers:
             try:
                 handler(message)
             except Exception as e:
