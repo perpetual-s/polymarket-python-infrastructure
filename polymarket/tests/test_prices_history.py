@@ -45,6 +45,17 @@ async def test_get_prices_history_time_range_excludes_interval_and_404_is_empty(
 
 
 @pytest.mark.asyncio
+async def test_get_prices_history_null_history_returns_empty():
+    api = _api()
+
+    async def fake_get(path, *, params=None, rate_limit_key=None, retry=True):
+        return {"history": None}
+
+    api.get = fake_get
+    assert await api.get_prices_history("t", interval="1h") == []
+
+
+@pytest.mark.asyncio
 async def test_prices_history_live_contract():
     """Guarded live-contract test (spec §8.1). Opt-in: RUN_LIVE_CONTRACT_TESTS=1."""
     import os
