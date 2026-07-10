@@ -3,7 +3,7 @@
 import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -76,7 +76,9 @@ def make_order(
 async def test_unsubscribe_market_price_changes_constructs_token_filter() -> None:
     client = build_test_client()
     try:
-        rtds = Mock()
+        # MagicMock: unsubscribe now inspects _subscriptions_lock/_active_subscriptions
+        rtds = MagicMock()
+        rtds._active_subscriptions = []
         client._rtds = rtds
 
         client.unsubscribe_market_price_changes(token_ids=["12345", "67890"])
