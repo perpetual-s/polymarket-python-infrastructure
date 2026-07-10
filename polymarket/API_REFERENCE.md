@@ -343,6 +343,7 @@ Top-level market-data methods use either `client.clob` or `client.public_clob`.
 | `async get_markets_full(next_cursor: str = "MA==") -> Dict[str, Any]` | `client.public_clob.get_markets` | full CLOB page | returns empty page on error |
 | `async get_market_by_condition(condition_id: str) -> Dict[str, Any]` | `client.public_clob.get_market` | market dict | `MarketNotFoundError` |
 | `async get_market_trades_events(condition_id: str) -> List[Dict[str, Any]]` | `client.public_clob.get_market_trades_events` | trade events | returns `[]` on error |
+| `async get_prices_history(token_id: str, interval: Optional[str] = None, start_ts: Optional[int] = None, end_ts: Optional[int] = None, fidelity: Optional[int] = None) -> List[PricePoint]` | `client.public_clob.get_prices_history` | historical price points (keyless, `GET:/prices-history` 1,000 req/10s) | 404 → `[]`; `ValueError` if `interval` combined with `start_ts`/`end_ts` |
 | `async is_order_scoring(order_id: str) -> bool` | `client.clob.is_order_scoring` | scoring flag | `TradingError` |
 | `async are_orders_scoring(order_ids: List[str]) -> Dict[str, bool]` | `client.clob.are_orders_scoring` | order id to scoring flag | `TradingError` |
 
@@ -412,6 +413,7 @@ Available as `client.public_clob.<method>`.
 | `async get_sampling_simplified_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | page | empty page |
 | `async get_market(condition_id: str) -> Dict[str, Any]` | market dict | `MarketNotFoundError` |
 | `async get_market_trades_events(condition_id: str) -> List[Dict[str, Any]]` | trade events | `[]` |
+| `async get_prices_history(token_id: str, interval: Optional[str] = None, start_ts: Optional[int] = None, end_ts: Optional[int] = None, fidelity: Optional[int] = None) -> List[PricePoint]` | historical price points | `[]` on 404; malformed points skipped |
 | `async get_last_trade_price(token_id: str) -> Optional[Decimal]` | last price | `None` |
 | `async get_last_trades_prices(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | token id to last price | None values |
 | `async get_best_bid_ask(token_id: str) -> Optional[Tuple[Decimal, Decimal]]` | bid/ask | `None` |
@@ -1704,7 +1706,7 @@ Configured values below are pre-margin. Runtime limiter applies `settings.rate_l
 
 ### Calls without a rate-limit key
 
-`PublicCLOBAPI` methods generally call `BaseAPIClient.get/post` without `rate_limit_key`, so the local limiter is not applied to those direct public methods. Top-level methods that delegate to `client.public_clob` inherit that behavior.
+`PublicCLOBAPI` methods generally call `BaseAPIClient.get/post` without `rate_limit_key`, so the local limiter is not applied to those direct public methods. Top-level methods that delegate to `client.public_clob` inherit that behavior. `get_prices_history` is the exception — it passes `rate_limit_key="GET:/prices-history"`, so the local limiter is applied to it (and to the top-level facade that delegates to it).
 
 ## 13. Verification
 

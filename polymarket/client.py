@@ -28,6 +28,7 @@ from .models import (
     Balance,
     Position,
     OrderBook,
+    PricePoint,
     Side,
     Trade,
     Activity,
@@ -782,6 +783,19 @@ class PolymarketClient:
             List of trade event dictionaries
         """
         return await self.public_clob.get_market_trades_events(condition_id)
+
+    async def get_prices_history(
+        self,
+        token_id: str,
+        interval: Optional[str] = None,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        fidelity: Optional[int] = None,
+    ) -> List[PricePoint]:
+        """Keyless historical prices for one outcome token (public CLOB)."""
+        return await self.public_clob.get_prices_history(
+            token_id, interval=interval, start_ts=start_ts, end_ts=end_ts, fidelity=fidelity
+        )
 
     async def is_order_scoring(self, order_id: str) -> bool:
         """

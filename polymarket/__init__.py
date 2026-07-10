@@ -25,6 +25,7 @@ from .models import (
     Balance,
     Market,
     OrderBook,
+    PricePoint,
     WalletConfig,
     LeaderboardTrader,
 )
@@ -103,6 +104,7 @@ __all__ = [
     "Balance",
     "Market",
     "OrderBook",
+    "PricePoint",
     "WalletConfig",
     "LeaderboardTrader",
 
