@@ -395,7 +395,7 @@ class PublicCLOBAPI(BaseAPIClient):
             raise
 
         points: List[PricePoint] = []
-        for item in response.get("history", []) if isinstance(response, dict) else []:
+        for item in (response.get("history") or []) if isinstance(response, dict) else []:
             try:
                 points.append(PricePoint(**item))
             except (KeyError, ValueError, TypeError) as e:
