@@ -98,6 +98,8 @@ class GammaAPI(BaseAPIClient):
             volume_24h=data.get("volume24hr"),
             volume_1wk=data.get("volume1wk"),
             volume_1mo=data.get("volume1mo"),
+            one_hour_price_change=data.get("oneHourPriceChange"),
+            one_day_price_change=data.get("oneDayPriceChange"),
             # Creator/resolver fields
             submitted_by=data.get("submitted_by"),
             resolved_by=data.get("resolvedBy"),
@@ -223,8 +225,9 @@ class GammaAPI(BaseAPIClient):
                 rate_limit_key="GET:/markets/keyset"
             )
 
+            raw_markets = response.get("markets", [])
             markets = []
-            for data in response.get("markets", []):
+            for data in raw_markets:
                 try:
                     markets.append(self._parse_market_payload(data))
                 except (KeyError, ValueError, TypeError) as e:
@@ -232,7 +235,11 @@ class GammaAPI(BaseAPIClient):
                     continue
 
             logger.info(f"Fetched {len(markets)} markets via keyset")
-            return {"markets": markets, "next_cursor": response.get("next_cursor")}
+            return {
+                "markets": markets,
+                "next_cursor": response.get("next_cursor"),
+                "raw_count": len(raw_markets),
+            }
 
         except MarketDataError:
             raise
@@ -840,8 +847,9 @@ class GammaAPI(BaseAPIClient):
 
             all_markets.extend(batch)
 
-            # Stop if we got fewer results than requested (last page)
-            if len(batch) < page_size or not next_cursor:
+            raw_count = result.get("raw_count", len(batch))
+            # Stop only when the RAW page was short — parse losses must not end pagination.
+            if raw_count < page_size or not next_cursor:
                 break
             if next_cursor in seen_cursors:
                 logger.warning("Gamma keyset returned a repeated cursor; stopping pagination")

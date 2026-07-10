@@ -118,3 +118,33 @@ async def test_get_all_current_markets_paginates_with_keyset_cursor():
 
     assert cursors == [None, "cursor-2"]
     assert [market.condition_id for market in markets] == ["0x1", "0x2"]
+
+
+@pytest.mark.asyncio
+async def test_keyset_reports_raw_count_and_full_pages_continue_despite_parse_losses():
+    gamma = object.__new__(GammaAPI)
+    good = {"id": "1", "question": "q", "slug": "s", "conditionId": "0xc", "category": "c",
+            "outcomes": '["Yes","No"]', "outcomePrices": '["0.5","0.5"]',
+            "volumeNum": 1, "liquidityNum": 1, "active": True, "closed": False}
+    bad = {"id": None}  # unparseable -> dropped by _parse_market_payload try/except
+
+    async def fake_get(path, *, params, rate_limit_key):
+        return {"markets": [good, bad], "next_cursor": "c2"}
+
+    gamma.get = fake_get
+    result = await gamma.get_markets_keyset(limit=2)
+    assert result["raw_count"] == 2 and len(result["markets"]) == 1
+
+    # get_markets_keyset returns already-parsed markets (parse losses dropped) plus the
+    # raw page size. Page 1: raw_count=2 but only 1 parsed market survives (1 parse loss).
+    pages = [
+        {"markets": [good], "next_cursor": "c2", "raw_count": 2},  # full raw page, 1 parse loss
+        {"markets": [good], "next_cursor": None, "raw_count": 1},
+    ]
+
+    async def fake_keyset(**kwargs):
+        return pages.pop(0)
+
+    gamma.get_markets_keyset = fake_keyset
+    all_markets = await gamma.get_all_current_markets(limit=2)
+    assert len(all_markets) == 2  # old code would stop after page 1 (len(batch)=1 < page_size=2)
