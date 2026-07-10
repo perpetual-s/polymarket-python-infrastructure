@@ -750,6 +750,27 @@ class OrderBook(BaseModel):
         return None
 
 
+class PricePoint(BaseModel):
+    """One point of CLOB /prices-history: unix-seconds timestamp + price."""
+
+    timestamp: int = Field(alias="t", description="Unix timestamp (seconds)")
+    price: Decimal = Field(alias="p", description="Outcome-token price")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("price", mode="before")
+    @classmethod
+    def validate_price(cls, v: Any) -> Decimal:
+        if isinstance(v, Decimal):
+            return v
+        elif isinstance(v, str):
+            return Decimal(v)
+        elif isinstance(v, (int, float)):
+            return Decimal(str(v))
+        else:
+            raise ValueError(f"Cannot convert {type(v)} to Decimal")
+
+
 # Configuration Models
 class WalletConfig(BaseModel):
     """Wallet configuration."""

@@ -35,6 +35,7 @@ from .base import BaseAPIClient
 from ..utils.numeric import to_decimal
 from ..config import PolymarketSettings
 from ..models import OrderBook as OrderBookType
+from ..models import PricePoint
 from ..exceptions import (
     APIError,
     PriceUnavailableError,
@@ -353,6 +354,54 @@ class PublicCLOBAPI(BaseAPIClient):
         except Exception as e:
             logger.error(f"Error fetching batch spreads: {e}")
             return {tid: None for tid in token_ids}
+
+    async def get_prices_history(
+        self,
+        token_id: str,
+        interval: Optional[str] = None,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        fidelity: Optional[int] = None,
+    ) -> List[PricePoint]:
+        """Historical prices for one outcome token via GET /prices-history.
+
+        interval: one of 1h/6h/1d/1w/1m/max — mutually exclusive with start_ts/end_ts.
+        fidelity: bucket size in minutes (advisory). 404 -> []. Malformed points skipped.
+        """
+        if interval and (start_ts is not None or end_ts is not None):
+            raise ValueError("interval is mutually exclusive with start_ts/end_ts")
+
+        params: Dict[str, Any] = {"market": token_id}
+        if interval:
+            params["interval"] = interval
+        if start_ts is not None:
+            params["startTs"] = start_ts
+        if end_ts is not None:
+            params["endTs"] = end_ts
+        if fidelity is not None:
+            params["fidelity"] = fidelity
+
+        try:
+            response = await self.get(
+                "/prices-history",
+                params=params,
+                rate_limit_key="GET:/prices-history",
+                retry=True,
+            )
+        except APIError as e:
+            if e.status_code == 404:
+                logger.warning(f"No price history for token {token_id}")
+                return []
+            raise
+
+        points: List[PricePoint] = []
+        for item in response.get("history", []) if isinstance(response, dict) else []:
+            try:
+                points.append(PricePoint(**item))
+            except (KeyError, ValueError, TypeError) as e:
+                logger.warning(f"Skipping malformed price point {item!r}: {e}")
+                continue
+        return points
 
     # ========== Order Books ==========
 
