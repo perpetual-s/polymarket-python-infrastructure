@@ -797,6 +797,57 @@ class PolymarketClient:
             token_id, interval=interval, start_ts=start_ts, end_ts=end_ts, fidelity=fidelity
         )
 
+    async def get_market_trades(
+        self,
+        market: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        taker_only: bool = True,
+        filter_type: Optional[str] = None,
+        filter_amount: Optional[float] = None,
+        side: Optional[Side] = None,
+    ) -> List[Trade]:
+        """Keyless market-wide recent trades (Data API /trades with user=None)."""
+        return await self.data.get_trades(
+            user=None, market=market, limit=limit, offset=offset, taker_only=taker_only,
+            filter_type=filter_type, filter_amount=filter_amount, side=side,
+        )
+
+    async def get_address_activity(self, address: str, **kwargs) -> List[Activity]:
+        """Keyless activity history for an arbitrary wallet address (no key_manager)."""
+        if not address or not address.startswith("0x"):
+            raise ValueError(f"Invalid wallet address: {address!r}")
+        return await self.data.get_activity(user=address, **kwargs)
+
+    async def get_market_trades_window(
+        self,
+        market: str,
+        start_ts: int,
+        *,
+        taker_only: bool = True,
+        filter_type: Optional[str] = None,
+        filter_amount: Optional[float] = None,
+        max_pages: int = 4,
+    ) -> Dict[str, Any]:
+        """Page /trades (newest-first) back to start_ts (spec §8.5 complete/truncated contract).
+
+        Returns {"trades": List[Trade], "complete": bool} — complete=False when the
+        page budget ran out before reaching start_ts (caller must treat window
+        flow features as truncated).
+        """
+        trades: List[Trade] = []
+        for page in range(max_pages):
+            batch = await self.get_market_trades(
+                market, limit=500, offset=page * 500, taker_only=taker_only,
+                filter_type=filter_type, filter_amount=filter_amount,
+            )
+            in_window = [t for t in batch if t.timestamp >= start_ts]
+            trades.extend(in_window)
+            if len(batch) < 500 or len(in_window) < len(batch):
+                return {"trades": trades, "complete": True}
+        return {"trades": trades, "complete": False}
+
     async def is_order_scoring(self, order_id: str) -> bool:
         """
         Check if order earns maker rebates (Strategy-4 enhancement).
