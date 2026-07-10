@@ -245,7 +245,7 @@ Failure to obtain all of `apiKey`, `secret`, and `passphrase` raises `Authentica
 | Method | Return | Raises |
 |---|---|---|
 | `async get_markets(limit: int = 100, offset: int = 0, active: Optional[bool] = None, closed: Optional[bool] = None, **kwargs) -> List[Market]` | markets | `MarketDataError` |
-| `async get_markets_keyset(limit: int = 100, after_cursor: Optional[str] = None, active: Optional[bool] = None, closed: Optional[bool] = None, archived: Optional[bool] = None, **kwargs) -> Dict[str, Any]` | `{"markets": List[Market], "next_cursor": Optional[str]}` | `MarketDataError` |
+| `async get_markets_keyset(limit: int = 100, after_cursor: Optional[str] = None, active: Optional[bool] = None, closed: Optional[bool] = None, archived: Optional[bool] = None, **kwargs) -> Dict[str, Any]` | `{"markets": List[Market], "next_cursor": Optional[str], "raw_count": int}` | `MarketDataError` |
 | `async get_market_by_slug(slug: str) -> Optional[Market]` | market or `None` | `MarketDataError` |
 | `async get_market_by_id(market_id: str) -> Optional[Market]` | market or `None` | `MarketDataError` |
 | `async search_markets(query: str, limit: int = 20) -> List[Market]` | markets | `MarketDataError` |
@@ -257,7 +257,9 @@ Failure to obtain all of `apiKey`, `secret`, and `passphrase` raises `Authentica
 
 `get_markets(..., **kwargs)` forwards extra filters to Gamma `/markets`.
 Use `get_markets_keyset` for full/deep market cache refreshes; Gamma rejects
-large offset pagination and returns `next_cursor` for the next page.
+large offset pagination and returns `next_cursor` for the next page. The return
+dict also carries `raw_count` (markets in the raw page before parse drops), so
+auto-pagination continues on full pages even when some rows fail to parse.
 
 Common extra filters accepted by `GammaAPI.get_markets`:
 
@@ -280,7 +282,7 @@ Available as `client.gamma.<method>`.
 | Method | Return | Raises |
 |---|---|---|
 | `async get_markets(limit: int = 100, offset: int = 0, active: Optional[bool] = None, closed: Optional[bool] = None, archived: Optional[bool] = None, tag_id: Optional[int] = None, slug: Optional[str] = None, **kwargs) -> List[Market]` | markets | `MarketDataError` |
-| `async get_markets_keyset(limit: int = 100, after_cursor: Optional[str] = None, active: Optional[bool] = None, closed: Optional[bool] = None, archived: Optional[bool] = None, tag_id: Optional[int] = None, slug: Optional[str] = None, **kwargs) -> Dict[str, Any]` | cursor page | `MarketDataError` |
+| `async get_markets_keyset(limit: int = 100, after_cursor: Optional[str] = None, active: Optional[bool] = None, closed: Optional[bool] = None, archived: Optional[bool] = None, tag_id: Optional[int] = None, slug: Optional[str] = None, **kwargs) -> Dict[str, Any]` | cursor page (`markets`, `next_cursor`, `raw_count`) | `MarketDataError` |
 | `async get_market_by_slug(slug: str) -> Optional[Market]` | market or `None` | `MarketDataError` |
 | `async get_market_by_id(market_id: str) -> Optional[Market]` | market or `None` | `MarketDataError` |
 | `async get_events(limit: int = 100, offset: int = 0, active: Optional[bool] = None, closed: Optional[bool] = None, archived: Optional[bool] = None, **kwargs) -> List[Event]` | events with nested markets | `MarketDataError` |
@@ -1370,6 +1372,8 @@ Key optional fields and aliases:
 | `volume_24h` | `volume24hr` | 24-hour volume |
 | `volume_1wk` | `volume1wk` | 1-week volume |
 | `volume_1mo` | `volume1mo` | 1-month volume |
+| `one_hour_price_change` | `oneHourPriceChange` | 1-hour price change (Decimal; invalid -> None) |
+| `one_day_price_change` | `oneDayPriceChange` | 1-day price change (Decimal; invalid -> None) |
 | `submitted_by` | `submitted_by` | submitter address |
 | `resolved_by` | `resolvedBy` | resolver address |
 | `has_reviewed_dates` | `hasReviewedDates` | date review flag |

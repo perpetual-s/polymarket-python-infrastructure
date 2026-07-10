@@ -555,6 +555,14 @@ class Market(BaseModel):
     volume_1wk: Optional[Decimal] = Field(None, alias="volume1wk", description="1-week trading volume")
     volume_1mo: Optional[Decimal] = Field(None, alias="volume1mo", description="1-month trading volume")
 
+    # Server-computed price changes (Gamma; used by the market monitor sweep channel)
+    one_hour_price_change: Optional[Decimal] = Field(
+        None, alias="oneHourPriceChange", description="1-hour price change"
+    )
+    one_day_price_change: Optional[Decimal] = Field(
+        None, alias="oneDayPriceChange", description="1-day price change"
+    )
+
     # Creator/resolver fields
     submitted_by: Optional[str] = Field(None, alias="submitted_by", description="Address that submitted the market")
     resolved_by: Optional[str] = Field(None, alias="resolvedBy", description="Address that resolves the market")
@@ -614,6 +622,7 @@ class Market(BaseModel):
         "order_min_size", "order_price_min_tick_size",
         "uma_bond", "uma_reward",
         "volume_24h", "volume_1wk", "volume_1mo",
+        "one_hour_price_change", "one_day_price_change",
         mode="before"
     )
     @classmethod
