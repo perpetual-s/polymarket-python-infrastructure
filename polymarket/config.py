@@ -121,7 +121,7 @@ class PolymarketSettings(BaseSettings):
 # Rate limit configurations per endpoint
 # Source: https://docs.polymarket.com/quickstart/introduction/rate-limits
 # Audited against official docs on 2026-04-23.
-# Every rate_limit_key passed from shared/polymarket/api/*.py is listed below;
+# Every rate_limit_key passed from the api/*.py modules is listed below;
 # unknown keys fall through to "default" which is intentionally conservative.
 RATE_LIMITS = {
     # === CLOB API - Trading (burst + sustained) ===

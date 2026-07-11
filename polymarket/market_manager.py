@@ -7,7 +7,7 @@ Replaces stale database-first market discovery with:
 - In-memory cache for fast queries (<10ms vs ~200ms DB)
 
 Usage:
-    from shared.polymarket import MarketManager, MarketManagerConfig
+    from . import MarketManager, MarketManagerConfig
 
     manager = MarketManager(clob_api, config)
     await manager.initialize()

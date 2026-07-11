@@ -15,7 +15,10 @@ Web research findings: https://docs.polymarket.com/
 import asyncio
 import os
 
-from shared.polymarket import PolymarketClient, WalletConfig
+try:
+    from polymarket import PolymarketClient, WalletConfig
+except ImportError:  # downstream project vendored path
+    from shared.polymarket import PolymarketClient, WalletConfig
 
 
 async def main():
