@@ -220,6 +220,14 @@ class PolymarketClient:
         self._rtds_handlers: Dict[Tuple[str, str], Dict[int, Callable]] = {}
         self._rtds_handlers_lock = threading.Lock()
 
+        # Serializes price_change handler registration + wire-record (subscribe)
+        # against the remaining-check + handler-pop (unsubscribe). Lock order:
+        # this lock FIRST, then any transport lock (_subscriptions_lock) or
+        # _rtds_handlers_lock — never the reverse. The dispatch hot path never
+        # takes this lock, so holding it across a transport send cannot stall
+        # message dispatch.
+        self._rtds_price_change_reg_lock = threading.Lock()
+
         # WebSocket client lock (thread-safe initialization)
         self._ws_lock = threading.Lock()
 
@@ -2944,8 +2952,16 @@ class PolymarketClient:
 
         rtds = self._ensure_rtds()
 
-        self._register_rtds_handler("clob_market", "price_change", callback)
-        rtds.subscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
+        # Handler registration and wire-subscription record must be atomic
+        # versus the remaining-check + handler-pop in
+        # unsubscribe_market_price_changes(): a subscriber landing in that gap
+        # would keep its wire subscription but lose its handler (silent dead
+        # stream). Holding the registration lock across rtds.subscribe() (a ws
+        # send) is safe: _dispatch_rtds_message only takes _rtds_handlers_lock,
+        # never this lock, so a blocked send cannot stall dispatch.
+        with self._rtds_price_change_reg_lock:
+            self._register_rtds_handler("clob_market", "price_change", callback)
+            rtds.subscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
 
         logger.info("Subscribed to price_changes", extra={"token_count": len(token_ids)})
 
@@ -2971,17 +2987,31 @@ class PolymarketClient:
             logger.debug("RTDS client not initialized; no price_changes subscription to remove")
             return
 
-        rtds.unsubscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
-
-        # Drop facade handlers once no price_change subscriptions remain on the wire
-        with rtds._subscriptions_lock:
-            remaining = any(
-                s["topic"] == "clob_market" and s["type"] == "price_change"
-                for s in rtds._active_subscriptions
+        # The registration lock makes [wire unsubscribe -> remaining-check ->
+        # handler-pop] atomic versus the [register handler -> record wire
+        # subscription] section of subscribe_market_price_changes(). Without
+        # it, a concurrent subscriber landing between the check and the pop
+        # gets its handler wiped while its subscription stays live (silent
+        # dead stream). Lock order: registration lock first, then transport
+        # _subscriptions_lock, then _rtds_handlers_lock (the latter two are
+        # never nested in each other here). rtds.unsubscribe() is never called
+        # while holding _subscriptions_lock, and the dispatch hot path never
+        # takes the registration lock, so neither deadlock nor dispatch
+        # stalls are possible.
+        with self._rtds_price_change_reg_lock:
+            rtds.unsubscribe(
+                topic="clob_market", type="price_change", filters=json.dumps(token_ids)
             )
-        if not remaining:
-            with self._rtds_handlers_lock:
-                self._rtds_handlers.pop(("clob_market", "price_change"), None)
+
+            # Drop facade handlers once no price_change subscriptions remain on the wire
+            with rtds._subscriptions_lock:
+                remaining = any(
+                    s["topic"] == "clob_market" and s["type"] == "price_change"
+                    for s in rtds._active_subscriptions
+                )
+            if not remaining:
+                with self._rtds_handlers_lock:
+                    self._rtds_handlers.pop(("clob_market", "price_change"), None)
 
         logger.info("Unsubscribed from price_changes", extra={"token_count": len(token_ids)})
 
