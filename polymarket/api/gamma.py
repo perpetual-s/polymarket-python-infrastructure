@@ -811,13 +811,15 @@ class GammaAPI(BaseAPIClient):
             )
             batch = result["markets"]
             next_cursor = result.get("next_cursor")
+            raw_count = result.get("raw_count", len(batch))
 
-            if not batch:
+            # Only a RAW-empty page ends pagination here — a page where every
+            # market failed to parse must not truncate the crawl.
+            if raw_count == 0:
                 break
 
             all_markets.extend(batch)
 
-            raw_count = result.get("raw_count", len(batch))
             # Stop only when the RAW page was short — parse losses must not end pagination.
             if raw_count < page_size or not next_cursor:
                 break
