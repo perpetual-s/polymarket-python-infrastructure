@@ -81,7 +81,6 @@ class BaseAPIClient:
             limit=pool_maxsize,  # Max total connections
             limit_per_host=pool_connections,  # Max connections per host
             ttl_dns_cache=300,  # DNS cache TTL
-            enable_cleanup_closed=True,  # Clean up closed connections
         )
 
         # HTTP headers for optimal API communication
