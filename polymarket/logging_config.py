@@ -9,6 +9,11 @@ import logging.config
 from typing import Optional
 
 
+# Root logger namespace for this package, derived from wherever the package is
+# installed (``polymarket`` in the source repo, ``shared.polymarket`` in Pelion).
+_PACKAGE = __name__.rpartition(".")[0]
+
+
 DEFAULT_LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -54,7 +59,7 @@ DEFAULT_LOGGING_CONFIG = {
         }
     },
     "loggers": {
-        "shared.polymarket": {
+        _PACKAGE: {
             "level": "INFO",
             "handlers": ["console", "file", "error_file"],
             "propagate": False
@@ -84,7 +89,7 @@ def setup_logging(
 
     # Override level
     if level:
-        config["loggers"]["shared.polymarket"]["level"] = level.upper()
+        config["loggers"][_PACKAGE]["level"] = level.upper()
 
     # Override log file
     if log_file:
@@ -111,4 +116,4 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger instance
     """
-    return logging.getLogger(f"shared.polymarket.{name}")
+    return logging.getLogger(f"{_PACKAGE}.{name}")
