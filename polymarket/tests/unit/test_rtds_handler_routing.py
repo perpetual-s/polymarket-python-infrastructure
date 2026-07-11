@@ -189,6 +189,23 @@ async def test_close_clears_rtds_handlers(mock_rtds_class):
 
 @pytest.mark.asyncio
 @patch("polymarket.client.RealTimeDataClient")
+async def test_close_nulls_rtds_even_when_disconnect_raises(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds.disconnect.side_effect = RuntimeError("socket already dead")
+    mock_rtds_class.return_value = mock_rtds
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
+    with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+        client.subscribe_activity_trades(lambda m: None)
+    assert client._rtds is not None
+    await client.close()
+    assert (
+        client._rtds is None
+    )  # broken handle must not survive close(), or _ensure_rtds skips reinit
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
 async def test_transport_constructed_with_dispatcher_as_on_message(mock_rtds_class):
     mock_rtds = MagicMock()
     mock_rtds.status = ConnectionStatus.CONNECTED

@@ -3392,10 +3392,13 @@ class PolymarketClient:
             if self._rtds:
                 try:
                     self._rtds.disconnect()
-                    self._rtds = None
                     logger.info("RTDS disconnected")
                 except Exception as e:
                     logger.error(f"Error disconnecting RTDS: {e}")
+                finally:
+                    # Always drop the handle: a broken transport left behind
+                    # would make a later _ensure_rtds() skip reinit.
+                    self._rtds = None
 
             # Drop the handler registry so a re-ensured client cannot fire
             # stale callbacks (mirrors unsubscribe_rtds_all)
