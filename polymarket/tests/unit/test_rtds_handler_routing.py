@@ -1,5 +1,6 @@
 """Facade RTDS routing: concurrent subscriptions must not clobber each other."""
 
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -202,6 +203,109 @@ async def test_close_nulls_rtds_even_when_disconnect_raises(mock_rtds_class):
     assert (
         client._rtds is None
     )  # broken handle must not survive close(), or _ensure_rtds skips reinit
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
+async def test_unsubscribe_rtds_all_nulls_rtds_even_when_disconnect_raises(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds.disconnect.side_effect = RuntimeError("socket already dead")
+    mock_rtds_class.return_value = mock_rtds
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
+    with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+        client.subscribe_activity_trades(lambda m: None)
+    assert client._rtds is not None
+    client.unsubscribe_rtds_all()
+    # Broken handle must not survive (mirrors close()); handlers must be cleared
+    assert client._rtds is None
+    assert client._rtds_handlers == {}
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
+async def test_subscribe_survives_concurrent_close_nulling_rtds(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds_class.return_value = mock_rtds
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
+    with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+        real_register = client._register_rtds_handler
+
+        def register_then_null(topic, type, callback):
+            real_register(topic, type, callback)
+            # Deterministic stand-in for a concurrent close() landing between
+            # _ensure_rtds() and the transport call inside the subscribe method
+            client._rtds = None
+
+        with patch.object(client, "_register_rtds_handler", side_effect=register_then_null):
+            client.subscribe_market_created(lambda m: None)  # must not raise AttributeError
+    # The captured strong reference still receives the subscribe (benign on teardown)
+    mock_rtds.subscribe.assert_called_once_with(topic="clob_market", type="market_created")
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
+async def test_unsubscribe_price_changes_survives_concurrent_close_nulling_rtds(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds._active_subscriptions = []
+    mock_rtds_class.return_value = mock_rtds
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
+    with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+        client.subscribe_market_price_changes(lambda m: None, token_ids=["1"])
+
+    def null_handle(**kwargs):
+        client._rtds = None  # concurrent close() lands mid-unsubscribe
+
+    mock_rtds.unsubscribe.side_effect = null_handle
+    client.unsubscribe_market_price_changes(token_ids=["1"])  # must not raise AttributeError
+    assert ("clob_market", "price_change") not in client._rtds_handlers
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
+async def test_concurrent_unsubscribe_all_and_subscribe_never_raises(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds_class.return_value = mock_rtds
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
+    errors = []
+    with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+
+        def subscriber():
+            for _ in range(200):
+                try:
+                    client.subscribe_market_created(lambda m: None)
+                except Exception as e:  # noqa: BLE001 - hammer collects everything
+                    errors.append(e)
+
+        def closer():
+            for _ in range(200):
+                try:
+                    client.unsubscribe_rtds_all()
+                except Exception as e:  # noqa: BLE001
+                    errors.append(e)
+
+        threads = [threading.Thread(target=subscriber), threading.Thread(target=closer)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert errors == []
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
+async def test_ensure_rtds_returns_the_installed_transport(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds_class.return_value = mock_rtds
+    async with PolymarketClient(settings=PolymarketSettings(enable_rtds=True)) as client:
+        with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+            rtds = client._ensure_rtds()
+        assert rtds is client._rtds
+        assert rtds is mock_rtds
 
 
 @pytest.mark.asyncio

@@ -2563,7 +2563,7 @@ class PolymarketClient:
             # Connection deferred until first subscription (lazy connect pattern)
             logger.info("WebSocket client initialized (will connect on first subscription)")
 
-    def _ensure_rtds(self) -> None:
+    def _ensure_rtds(self) -> "RealTimeDataClient":
         """
         Ensure RTDS client is initialized (thread-safe).
 
@@ -2572,6 +2572,11 @@ class PolymarketClient:
         - Thread-safe initialization with lock
         - Handles connection failures gracefully
         - Logs all state transitions
+
+        Returns:
+            The initialized transport. Callers must use this strong reference
+            for transport calls instead of re-reading self._rtds, which a
+            concurrent close() may null at any point.
 
         Raises:
             RuntimeError: If RTDS is disabled in settings
@@ -2635,6 +2640,9 @@ class PolymarketClient:
                             pass
                     self._rtds = None
                     raise RuntimeError(f"RTDS initialization failed: {e}") from e
+            # Returned under the lock so the handle is non-None even if a
+            # concurrent close() nulls self._rtds right after we release it
+            return self._rtds
 
     def _rtds_wait_connected(self, timeout: float) -> bool:
         """
@@ -2709,7 +2717,8 @@ class PolymarketClient:
 
     def get_rtds_stats(self) -> Optional[Dict[str, Any]]:
         """Transport stats for monitoring (None when RTDS not initialized)."""
-        return self._rtds.stats() if self._rtds else None
+        rtds = self._rtds  # snapshot: a concurrent close() may null between check and call
+        return rtds.stats() if rtds else None
 
     def _on_rtds_connect(self, client: RealTimeDataClient) -> None:
         """
@@ -2794,7 +2803,7 @@ class PolymarketClient:
             raise ValueError("Cannot specify both market_slug and event_slug")
 
         # Ensure RTDS initialized
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         # Build filters
         filters = None
@@ -2805,7 +2814,7 @@ class PolymarketClient:
 
         # Register handler and subscribe (dispatcher owns error isolation)
         self._register_rtds_handler("activity", "trades", callback)
-        self._rtds.subscribe(topic="activity", type="trades", filters=filters)
+        rtds.subscribe(topic="activity", type="trades", filters=filters)
 
         logger.info(
             "Subscribed to activity_trades",
@@ -2837,12 +2846,12 @@ class PolymarketClient:
         """
         import json
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         filters = json.dumps({"market_slug": market_slug}) if market_slug else None
 
         self._register_rtds_handler("activity", "orders_matched", callback)
-        self._rtds.subscribe(topic="activity", type="orders_matched", filters=filters)
+        rtds.subscribe(topic="activity", type="orders_matched", filters=filters)
 
         logger.info("Subscribed to orders_matched", extra={"market_slug": market_slug})
 
@@ -2866,10 +2875,10 @@ class PolymarketClient:
             ...     print(f"New market: {msg.payload.get('title')}")
             >>> client.subscribe_market_created(on_market_created)
         """
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "market_created", callback)
-        self._rtds.subscribe(topic="clob_market", type="market_created")
+        rtds.subscribe(topic="clob_market", type="market_created")
 
         logger.info("Subscribed to market_created")
 
@@ -2893,10 +2902,10 @@ class PolymarketClient:
             ...     print(f"Market resolved: {msg.payload}")
             >>> client.subscribe_market_resolved(on_resolved)
         """
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "market_resolved", callback)
-        self._rtds.subscribe(topic="clob_market", type="market_resolved")
+        rtds.subscribe(topic="clob_market", type="market_resolved")
 
         logger.info("Subscribed to market_resolved")
 
@@ -2933,12 +2942,10 @@ class PolymarketClient:
         if not token_ids:
             raise ValueError("token_ids cannot be empty")
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "price_change", callback)
-        self._rtds.subscribe(
-            topic="clob_market", type="price_change", filters=json.dumps(token_ids)
-        )
+        rtds.subscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
 
         logger.info("Subscribed to price_changes", extra={"token_count": len(token_ids)})
 
@@ -2957,19 +2964,20 @@ class PolymarketClient:
         if not token_ids:
             raise ValueError("token_ids cannot be empty")
 
-        if self._rtds is None:
+        # Snapshot the handle: a concurrent close() may null self._rtds between
+        # the None check and the transport calls below
+        rtds = self._rtds
+        if rtds is None:
             logger.debug("RTDS client not initialized; no price_changes subscription to remove")
             return
 
-        self._rtds.unsubscribe(
-            topic="clob_market", type="price_change", filters=json.dumps(token_ids)
-        )
+        rtds.unsubscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
 
         # Drop facade handlers once no price_change subscriptions remain on the wire
-        with self._rtds._subscriptions_lock:
+        with rtds._subscriptions_lock:
             remaining = any(
                 s["topic"] == "clob_market" and s["type"] == "price_change"
-                for s in self._rtds._active_subscriptions
+                for s in rtds._active_subscriptions
             )
         if not remaining:
             with self._rtds_handlers_lock:
@@ -3013,12 +3021,10 @@ class PolymarketClient:
         if not token_ids:
             raise ValueError("token_ids cannot be empty")
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "agg_orderbook", callback)
-        self._rtds.subscribe(
-            topic="clob_market", type="agg_orderbook", filters=json.dumps(token_ids)
-        )
+        rtds.subscribe(topic="clob_market", type="agg_orderbook", filters=json.dumps(token_ids))
 
         logger.info("Subscribed to orderbook_rtds", extra={"token_count": len(token_ids)})
 
@@ -3052,7 +3058,7 @@ class PolymarketClient:
         """
         import json
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         filters = None
         if parent_entity_id is not None:
@@ -3061,7 +3067,7 @@ class PolymarketClient:
             )
 
         self._register_rtds_handler("comments", "*", callback)
-        self._rtds.subscribe(topic="comments", type="*", filters=filters)  # All comment events
+        rtds.subscribe(topic="comments", type="*", filters=filters)  # All comment events
 
         logger.info("Subscribed to comments", extra={"parent_entity_id": parent_entity_id})
 
@@ -3090,14 +3096,12 @@ class PolymarketClient:
         """
         import json
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         filters = json.dumps({"parentEntityID": parent_entity_id}) if parent_entity_id else None
 
         self._register_rtds_handler("comments", "reaction_*", callback)
-        self._rtds.subscribe(
-            topic="comments", type="reaction_*", filters=filters  # All reaction events
-        )
+        rtds.subscribe(topic="comments", type="reaction_*", filters=filters)  # All reaction events
 
         logger.info("Subscribed to reactions", extra={"parent_entity_id": parent_entity_id})
 
@@ -3126,12 +3130,12 @@ class PolymarketClient:
         """
         import json
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         filters = json.dumps({"market": market}) if market else None
 
         self._register_rtds_handler("rfq", "request_*", callback)
-        self._rtds.subscribe(topic="rfq", type="request_*", filters=filters)  # All request events
+        rtds.subscribe(topic="rfq", type="request_*", filters=filters)  # All request events
 
         logger.info("Subscribed to rfq_requests", extra={"market": market})
 
@@ -3160,12 +3164,12 @@ class PolymarketClient:
         """
         import json
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         filters = json.dumps({"requestId": request_id}) if request_id else None
 
         self._register_rtds_handler("rfq", "quote_*", callback)
-        self._rtds.subscribe(topic="rfq", type="quote_*", filters=filters)  # All quote events
+        rtds.subscribe(topic="rfq", type="quote_*", filters=filters)  # All quote events
 
         logger.info("Subscribed to rfq_quotes", extra={"request_id": request_id})
 
@@ -3202,10 +3206,10 @@ class PolymarketClient:
         if symbol_lower not in valid_symbols:
             raise ValueError(f"Invalid symbol: {symbol}. Must be one of {valid_symbols}")
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("crypto_prices", "update", callback)
-        self._rtds.subscribe(
+        rtds.subscribe(
             topic="crypto_prices", type="update", filters=json.dumps({"symbol": symbol_lower})
         )
 
@@ -3246,10 +3250,10 @@ class PolymarketClient:
         if symbol_lower not in valid_symbols:
             raise ValueError(f"Invalid symbol: {symbol}. Must be one of {valid_symbols}")
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("crypto_prices_chainlink", "update", callback)
-        self._rtds.subscribe(
+        rtds.subscribe(
             topic="crypto_prices_chainlink",
             type="update",
             filters=json.dumps({"symbol": symbol_lower}),
@@ -3290,12 +3294,10 @@ class PolymarketClient:
         if not token_ids:
             raise ValueError("token_ids cannot be empty")
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "last_trade_price", callback)
-        self._rtds.subscribe(
-            topic="clob_market", type="last_trade_price", filters=json.dumps(token_ids)
-        )
+        rtds.subscribe(topic="clob_market", type="last_trade_price", filters=json.dumps(token_ids))
 
         logger.info("Subscribed to last_trade_price", extra={"token_count": len(token_ids)})
 
@@ -3334,12 +3336,10 @@ class PolymarketClient:
         if not token_ids:
             raise ValueError("token_ids cannot be empty")
 
-        self._ensure_rtds()
+        rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "tick_size_change", callback)
-        self._rtds.subscribe(
-            topic="clob_market", type="tick_size_change", filters=json.dumps(token_ids)
-        )
+        rtds.subscribe(topic="clob_market", type="tick_size_change", filters=json.dumps(token_ids))
 
         logger.info("Subscribed to tick_size_change", extra={"token_count": len(token_ids)})
 
@@ -3355,13 +3355,17 @@ class PolymarketClient:
         Example:
             >>> client.unsubscribe_rtds_all()
         """
-        if self._rtds:
-            try:
-                self._rtds.disconnect()
-                self._rtds = None
-                logger.info("Unsubscribed from all RTDS streams")
-            except Exception as e:
-                logger.error(f"Error unsubscribing from RTDS: {e}", exc_info=True)
+        with self._rtds_lock:
+            if self._rtds:
+                try:
+                    self._rtds.disconnect()
+                    logger.info("Unsubscribed from all RTDS streams")
+                except Exception as e:
+                    logger.error(f"Error unsubscribing from RTDS: {e}", exc_info=True)
+                finally:
+                    # Always drop the handle (mirrors close()): a broken
+                    # transport left behind would make _ensure_rtds skip reinit
+                    self._rtds = None
         with self._rtds_handlers_lock:
             self._rtds_handlers.clear()
 
@@ -3388,17 +3392,19 @@ class PolymarketClient:
                 except Exception as e:
                     logger.error(f"Error disconnecting WebSocket: {e}")
 
-            # Disconnect RTDS
-            if self._rtds:
-                try:
-                    self._rtds.disconnect()
-                    logger.info("RTDS disconnected")
-                except Exception as e:
-                    logger.error(f"Error disconnecting RTDS: {e}")
-                finally:
-                    # Always drop the handle: a broken transport left behind
-                    # would make a later _ensure_rtds() skip reinit.
-                    self._rtds = None
+            # Disconnect RTDS (under _rtds_lock: blocks a concurrent
+            # _ensure_rtds re-init until teardown completes)
+            with self._rtds_lock:
+                if self._rtds:
+                    try:
+                        self._rtds.disconnect()
+                        logger.info("RTDS disconnected")
+                    except Exception as e:
+                        logger.error(f"Error disconnecting RTDS: {e}")
+                    finally:
+                        # Always drop the handle: a broken transport left behind
+                        # would make a later _ensure_rtds() skip reinit.
+                        self._rtds = None
 
             # Drop the handler registry so a re-ensured client cannot fire
             # stale callbacks (mirrors unsubscribe_rtds_all)
