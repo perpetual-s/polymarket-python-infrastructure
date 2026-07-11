@@ -10,16 +10,18 @@ v3.2 Note: Typed message models for type-safe WebSocket handling.
 - OrderMessage: Order events (PLACEMENT, UPDATE, CANCELLATION)
 """
 
+import asyncio
 import os
 import time
-import asyncio
-from polymarket import PolymarketClient, WalletConfig
-from polymarket.api.websocket_models import (
-    TradeMessage,
+
+from shared.polymarket import PolymarketClient, WalletConfig
+from shared.polymarket.api.websocket_models import (
+    OrderEventType,
     OrderMessage,
+    TradeMessage,
     TradeStatus,
-    OrderEventType
 )
+
 
 async def main():
     """WebSocket real-time updates example with typed messages."""
@@ -31,10 +33,7 @@ async def main():
     # 2. Add wallet
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     if private_key:
-        client.add_wallet(
-            WalletConfig(private_key=private_key),
-            wallet_id="strategy1"
-        )
+        client.add_wallet(WalletConfig(private_key=private_key), wallet_id="strategy1")
 
     # 3. Get market to track
     print("\nFinding market...")
@@ -66,7 +65,9 @@ async def main():
         update_count += 1
 
         # Show update
-        print(f"[{update_count:04d}] Best Bid: {book.best_bid:.4f} | Best Ask: {book.best_ask:.4f} | Spread: {book.spread:.4f}")
+        print(
+            f"[{update_count:04d}] Best Bid: {book.best_bid:.4f} | Best Ask: {book.best_ask:.4f} | Spread: {book.spread:.4f}"
+        )
 
         # Example: Trading logic
         if book.spread and book.spread < 0.01:
@@ -129,7 +130,7 @@ async def main():
         print("  (All messages are type-safe with validation!)\n")
 
         # Show WebSocket health stats
-        if hasattr(client._ws, 'stats'):
+        if hasattr(client._ws, "stats"):
             stats = client._ws.stats()
             print("WebSocket Stats:")
             print(f"  Status: {stats['status']}")
@@ -150,6 +151,7 @@ async def main():
 
     finally:
         await client.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

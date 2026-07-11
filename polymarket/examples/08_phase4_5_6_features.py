@@ -9,17 +9,18 @@ Demonstrates:
 Run: python examples/08_phase4_5_6_features.py
 """
 
-import time
 import asyncio
+import time
 from datetime import datetime
-from polymarket import PolymarketClient
+
+from shared.polymarket import PolymarketClient
 
 
 async def example_1_health_check():
     """Example 1: CLOB health check (Phase 5)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 1: CLOB Health Check")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -48,9 +49,9 @@ async def example_1_health_check():
 
 async def example_2_fast_price_checks():
     """Example 2: Fast price checks without orderbooks (Phase 5)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 2: Fast Price Checks")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -79,15 +80,15 @@ async def example_2_fast_price_checks():
     print(f"NEW (last trade):     {last_price:.3f} ({new_time:.1f}ms)")
 
     # Performance improvement
-    speedup = old_time / new_time if new_time > 0 else float('inf')
+    speedup = old_time / new_time if new_time > 0 else float("inf")
     print(f"\n⚡ Speedup: {speedup:.1f}x faster")
 
 
 async def example_3_batch_last_prices():
     """Example 3: Batch last trade prices (Phase 5)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 3: Batch Last Trade Prices")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -121,9 +122,9 @@ async def example_3_batch_last_prices():
 
 async def example_4_batch_orderbooks():
     """Example 4: Native batch orderbooks (Phase 4 - 10x faster)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 4: Native Batch Orderbooks (10x Faster)")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -167,9 +168,9 @@ async def example_4_batch_orderbooks():
 
 async def example_5_simplified_markets():
     """Example 5: Lightweight market list (Phase 5)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 5: Simplified Markets (Lightweight)")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -194,9 +195,9 @@ async def example_5_simplified_markets():
 
 async def example_6_tick_size_validation():
     """Example 6: Automatic tick size validation (Phase 6)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 6: Automatic Tick Size Validation")
-    print("="*60)
+    print("=" * 60)
 
     # NOTE: This requires wallet configuration
     print("Phase 6 Enhancement: Automatic tick size validation")
@@ -232,9 +233,9 @@ async def example_6_tick_size_validation():
 
 async def example_7_integration_demo():
     """Example 7: All features together (realistic use case)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 7: Integration Demo (All Features)")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -290,14 +291,14 @@ async def example_7_integration_demo():
 
 async def main():
     """Run all examples."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("POLYMARKET API PHASES 4-6 ENHANCEMENTS")
-    print("="*60)
+    print("=" * 60)
     print("\nEnhancements:")
     print("  Phase 4: Native batch orderbooks (10x performance)")
     print("  Phase 5: Missing CLOB endpoints (health, prices)")
     print("  Phase 6: Automatic tick size validation")
-    print("="*60)
+    print("=" * 60)
 
     examples = [
         ("Health Check", example_1_health_check),
@@ -317,9 +318,9 @@ async def main():
 
         input("\nPress Enter to continue to next example...")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("All examples complete!")
-    print("="*60)
+    print("=" * 60)
 
 
 if __name__ == "__main__":

@@ -8,8 +8,8 @@ Copy this pattern for your Strategy-3 dashboard backend.
 import asyncio
 from typing import List
 
-from polymarket import PolymarketClient
-from polymarket.config import PolymarketSettings
+from shared.polymarket import PolymarketClient
+from shared.polymarket.config import PolymarketSettings
 
 
 async def main():
@@ -18,9 +18,9 @@ async def main():
     # 1. Initialize client optimized for 100+ wallets
     print("Initializing client for multi-wallet...")
     settings = PolymarketSettings(
-        pool_connections=100,      # Handle 100+ concurrent requests
-        pool_maxsize=200,          # Max connections
-        batch_max_workers=20,      # Parallel batch operations
+        pool_connections=100,  # Handle 100+ concurrent requests
+        pool_maxsize=200,  # Max connections
+        batch_max_workers=20,  # Parallel batch operations
     )
     client = PolymarketClient(settings=settings)
     print("✓ Client initialized for 100+ wallets")
@@ -41,13 +41,14 @@ async def main():
     print("(This takes ~10s for 100 wallets with batch operations)")
 
     import time
+
     start = time.time()
 
     # CRITICAL: Use batch operation - 10x faster than sequential
     positions_by_wallet = await client.get_positions_batch(
         wallet_addresses,
         size_threshold=1.0,  # Only positions > $1
-        limit=100            # Max 100 positions per wallet
+        limit=100,  # Max 100 positions per wallet
     )
 
     elapsed = time.time() - start
@@ -60,12 +61,10 @@ async def main():
     active_wallets = len([w for w, p in positions_by_wallet.items() if p])
     total_positions = sum(len(p) for p in positions_by_wallet.values())
     total_value = sum(
-        sum(pos.current_value for pos in positions)
-        for positions in positions_by_wallet.values()
+        sum(pos.current_value for pos in positions) for positions in positions_by_wallet.values()
     )
     total_pnl = sum(
-        sum(pos.cash_pnl for pos in positions)
-        for positions in positions_by_wallet.values()
+        sum(pos.cash_pnl for pos in positions) for positions in positions_by_wallet.values()
     )
 
     print(f"   Total Wallets: {total_wallets}")
@@ -93,9 +92,9 @@ async def main():
 
     signals = await client.detect_signals(
         wallet_addresses,
-        min_wallets=5,           # At least 5 wallets in position
-        min_agreement=0.7,       # 70% agree on direction
-        size_threshold=100.0     # Position size > $100
+        min_wallets=5,  # At least 5 wallets in position
+        min_agreement=0.7,  # 70% agree on direction
+        size_threshold=100.0,  # Position size > $100
     )
 
     if signals:
@@ -131,6 +130,7 @@ async def main():
     conn.commit()
     conn.close()
     """)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,5 +1,5 @@
 """
-Performance benchmarks for polymarket.
+Performance benchmarks for shared/polymarket.
 
 Measures latency, throughput, and scalability.
 
@@ -7,17 +7,20 @@ Run with: pytest tests/benchmarks/ -v -s
 """
 
 import asyncio
-import time
 import statistics
-from typing import List, Dict, Any
+import time
+from typing import Any, Dict, List
 from unittest.mock import Mock, patch
+
 import pytest
 
 # Skip all benchmark tests - mock setup needs rework for current client API
-pytestmark = pytest.mark.skip(reason="Benchmark tests need mock setup rework for current client API")
+pytestmark = pytest.mark.skip(
+    reason="Benchmark tests need mock setup rework for current client API"
+)
 
-from polymarket import PolymarketClient, WalletConfig, OrderRequest, Side
-from polymarket.models import OrderResponse, OrderStatus, Position, OrderBook
+from polymarket import OrderRequest, PolymarketClient, Side, WalletConfig
+from polymarket.models import OrderBook, OrderResponse, OrderStatus, Position
 
 
 def pytest_configure(config):
@@ -28,7 +31,7 @@ def pytest_configure(config):
 @pytest.fixture
 def mock_client():
     """Create mocked client for benchmarks."""
-    with patch('polymarket.client.get_settings') as mock_settings:
+    with patch("polymarket.client.get_settings") as mock_settings:
         settings = Mock()
         settings.enable_rate_limiting = False
         settings.enable_metrics = False
@@ -38,12 +41,9 @@ def mock_client():
         settings.chain_id = 137  # Add chain_id to avoid mock issues
         mock_settings.return_value = settings
 
-        with patch('polymarket.auth.authenticator.Authenticator.create_l1_headers'):
-            with patch('polymarket.auth.authenticator.Authenticator.create_l2_headers'):
-                client = PolymarketClient(
-                    enable_rate_limiting=False,
-                    enable_circuit_breaker=False
-                )
+        with patch("polymarket.auth.authenticator.Authenticator.create_l1_headers"):
+            with patch("polymarket.auth.authenticator.Authenticator.create_l2_headers"):
+                client = PolymarketClient(enable_rate_limiting=False, enable_circuit_breaker=False)
 
                 yield client
 
@@ -64,7 +64,7 @@ def measure_time(func, iterations: int = 10) -> Dict[str, float]:
         "avg_ms": statistics.mean(times),
         "median_ms": statistics.median(times),
         "stddev_ms": statistics.stdev(times) if len(times) > 1 else 0,
-        "iterations": iterations
+        "iterations": iterations,
     }
 
 
@@ -72,8 +72,8 @@ def measure_time(func, iterations: int = 10) -> Dict[str, float]:
 class TestOrderOperationBenchmarks:
     """Benchmark order operations."""
 
-    @patch('polymarket.client.PolymarketClient._build_signed_order')
-    @patch('polymarket.api.clob.CLOBAPI.post_order')
+    @patch("polymarket.client.PolymarketClient._build_signed_order")
+    @patch("polymarket.api.clob.CLOBAPI.post_order")
     def test_single_order_placement(self, mock_post, mock_build, mock_client):
         """Benchmark single order placement."""
         # Setup
@@ -84,19 +84,12 @@ class TestOrderOperationBenchmarks:
 
         mock_build.return_value = {"order": "signed"}
         mock_post.return_value = OrderResponse(
-            success=True,
-            order_id="test_123",
-            status=OrderStatus.LIVE
+            success=True, order_id="test_123", status=OrderStatus.LIVE
         )
 
         # Benchmark
         def place_order():
-            order = OrderRequest(
-                token_id="123",
-                price=0.55,
-                size=10.0,
-                side=Side.BUY
-            )
+            order = OrderRequest(token_id="123", price=0.55, size=10.0, side=Side.BUY)
             asyncio.run(mock_client.place_order(order, wallet_id="bench", skip_balance_check=True))
 
         results = measure_time(place_order, iterations=50)
@@ -114,10 +107,10 @@ class TestOrderOperationBenchmarks:
         print(f"{'='*60}\n")
 
         # Assert reasonable performance (mocked should be < 10ms)
-        assert results['avg_ms'] < 100, f"Average latency too high: {results['avg_ms']:.2f}ms"
+        assert results["avg_ms"] < 100, f"Average latency too high: {results['avg_ms']:.2f}ms"
 
-    @patch('polymarket.client.PolymarketClient._build_signed_order')
-    @patch('polymarket.api.clob.CLOBAPI.post_orders_batch')
+    @patch("polymarket.client.PolymarketClient._build_signed_order")
+    @patch("polymarket.api.clob.CLOBAPI.post_orders_batch")
     def test_batch_order_placement(self, mock_post_batch, mock_build, mock_client):
         """Benchmark batch order placement."""
         # Setup
@@ -160,7 +153,7 @@ class TestOrderOperationBenchmarks:
 class TestDataFetchingBenchmarks:
     """Benchmark data fetching operations."""
 
-    @patch('polymarket.api.data_api.DataAPI.get_positions')
+    @patch("polymarket.api.data_api.DataAPI.get_positions")
     def test_single_wallet_positions(self, mock_get_positions, mock_client):
         """Benchmark fetching positions for single wallet."""
         # Setup
@@ -173,7 +166,7 @@ class TestDataFetchingBenchmarks:
                 current_value=55.0,
                 cash_pnl=5.0,
                 percent_pnl=0.1,
-                realized_pnl=0.0
+                realized_pnl=0.0,
             )
             for i in range(10)
         ]
@@ -194,7 +187,7 @@ class TestDataFetchingBenchmarks:
         print(f"  Median:  {results['median_ms']:.2f}ms")
         print(f"{'='*60}\n")
 
-    @patch('polymarket.api.data_api.DataAPI.get_positions')
+    @patch("polymarket.api.data_api.DataAPI.get_positions")
     def test_batch_wallet_positions(self, mock_get_positions, mock_client):
         """Benchmark batch position fetching for 100 wallets."""
         # Setup
@@ -207,7 +200,7 @@ class TestDataFetchingBenchmarks:
                 current_value=55.0,
                 cash_pnl=5.0,
                 percent_pnl=0.1,
-                realized_pnl=0.0
+                realized_pnl=0.0,
             )
             for i in range(5)
         ]
@@ -221,7 +214,7 @@ class TestDataFetchingBenchmarks:
         results = measure_time(fetch_batch, iterations=10)
 
         # Calculate vs sequential
-        sequential_estimate = results['avg_ms'] * 10  # Would take 10x longer sequential
+        sequential_estimate = results["avg_ms"] * 10  # Would take 10x longer sequential
 
         # Report
         print(f"\n{'='*60}")
@@ -240,14 +233,12 @@ class TestDataFetchingBenchmarks:
 class TestOrderbookBenchmarks:
     """Benchmark orderbook operations."""
 
-    @patch('polymarket.api.clob.CLOBAPI.get_orderbook')
+    @patch("polymarket.api.clob.CLOBAPI.get_orderbook")
     def test_single_orderbook_fetch(self, mock_get_orderbook, mock_client):
         """Benchmark single orderbook fetch."""
         # Setup
         mock_get_orderbook.return_value = OrderBook(
-            token_id="123",
-            bids=[(0.55, 100.0)] * 10,
-            asks=[(0.56, 100.0)] * 10
+            token_id="123", bids=[(0.55, 100.0)] * 10, asks=[(0.56, 100.0)] * 10
         )
 
         # Benchmark
@@ -266,14 +257,12 @@ class TestOrderbookBenchmarks:
         print(f"  Median:  {results['median_ms']:.2f}ms")
         print(f"{'='*60}\n")
 
-    @patch('polymarket.api.clob.CLOBAPI.get_orderbook')
+    @patch("polymarket.api.clob.CLOBAPI.get_orderbook")
     def test_batch_orderbook_fetch(self, mock_get_orderbook, mock_client):
         """Benchmark batch orderbook fetching."""
         # Setup
         mock_get_orderbook.return_value = OrderBook(
-            token_id="123",
-            bids=[(0.55, 100.0)] * 10,
-            asks=[(0.56, 100.0)] * 10
+            token_id="123", bids=[(0.55, 100.0)] * 10, asks=[(0.56, 100.0)] * 10
         )
 
         token_ids = [f"token_{i}" for i in range(20)]
@@ -327,6 +316,7 @@ class TestNonceManagerBenchmarks:
     def test_nonce_concurrent(self):
         """Benchmark concurrent nonce operations."""
         import threading
+
         from polymarket.utils.cache import AtomicNonceManager
 
         manager = AtomicNonceManager()
@@ -373,18 +363,13 @@ class TestMemoryBenchmarks:
         import sys
 
         # Measure base client
-        client = PolymarketClient(
-            enable_rate_limiting=False,
-            enable_circuit_breaker=False
-        )
+        client = PolymarketClient(enable_rate_limiting=False, enable_circuit_breaker=False)
 
         base_size = sys.getsizeof(client)
 
         # Add wallets
         for i in range(10):
-            wallet = WalletConfig(
-                private_key=f"0x{'1234567890abcdef' * 4}"
-            )
+            wallet = WalletConfig(private_key=f"0x{'1234567890abcdef' * 4}")
             client.add_wallet(wallet, wallet_id=f"wallet_{i}")
 
         with_wallets_size = sys.getsizeof(client)

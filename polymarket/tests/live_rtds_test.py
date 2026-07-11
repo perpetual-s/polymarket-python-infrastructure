@@ -1,148 +1,121 @@
 #!/usr/bin/env python
 """
-Live RTDS Connection Test
+Live RTDS operator smoke.
 
-Tests real connection to Polymarket's RTDS service.
-This is NOT a unit test - it connects to production servers.
+Connects to PRODUCTION Polymarket RTDS (no API keys required) and proves:
+
+  1. ACTIVE phase  — the transport connects and receives real traffic on a
+     busy stream (activity/trades, platform-wide, many messages per second).
+  2. QUIET phase   — a connection subscribed only to a near-silent stream
+     (clob_market/market_created) survives >= 120 s with ZERO reconnections.
+     Freshness comes from protocol pongs (last_pong_seconds_ago keeps
+     resetting) while last_message_age_seconds may climb freely.
+  3. Clean shutdown after each phase.
+
+This is a __main__ operator script, NOT a pytest module: pytest.ini sets
+python_files = test_*.py, so this file is never collected. Keep it that way.
 
 Usage:
     python tests/live_rtds_test.py
 """
 
+import asyncio
 import sys
-import time
 from pathlib import Path
 
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
+# Add repository root to path so local `polymarket` imports resolve
+repo_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(repo_root))
 
-from polymarket import PolymarketClient
-from polymarket.api.real_time_data import Message
+from polymarket import PolymarketClient  # noqa: E402
+from polymarket.config import PolymarketSettings  # noqa: E402
+
+ACTIVE_PHASE_TIMEOUT = 60  # seconds to wait for the first trade message
+QUIET_PHASE_DURATION = 120  # seconds the quiet stream must hold
+SAMPLE_INTERVAL = 5  # seconds between stat samples in the quiet phase
 
 
-def test_crypto_prices_live():
-    """Test live crypto price subscription."""
+async def phase_active_traffic() -> bool:
+    """Connect and receive real traffic on a busy stream.
+
+    Uses activity/trades (unfiltered, platform-wide) — as of 2026-07 the
+    server ignores the {"symbol": ...} filter on crypto_prices, so the
+    filtered crypto subscription receives no updates and cannot serve as
+    the active-traffic proof.
+    """
     print("=" * 60)
-    print("RTDS LIVE CONNECTION TEST")
+    print("PHASE 1: active stream (activity/trades)")
     print("=" * 60)
-    print()
 
-    received_messages = []
-
-    def on_crypto_price(msg: Message):
-        """Callback for crypto price updates."""
-        print("✅ Received crypto price update:")
-        print(f"   Topic: {msg.topic}")
-        print(f"   Type: {msg.type}")
-        print(f"   Timestamp: {msg.timestamp}")
-        print(f"   Payload: {msg.payload}")
-        print()
-        received_messages.append(msg)
-
-    print("1. Initializing PolymarketClient...")
-    client = PolymarketClient()
-
-    print("2. Subscribing to BTC price updates...")
-    client.subscribe_crypto_prices(on_crypto_price, symbol="btcusdt")
-
-    print("3. Waiting for messages (30 seconds)...")
-    print("   Press Ctrl+C to stop early")
-    print()
-
+    received = []
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
     try:
-        for i in range(30):
-            time.sleep(1)
-            if received_messages:
-                # Got at least one message
-                print(f"✅ SUCCESS: Received {len(received_messages)} message(s)")
+        client.subscribe_activity_trades(received.append)
+        for elapsed in range(ACTIVE_PHASE_TIMEOUT):
+            await asyncio.sleep(1)
+            if received:
+                print(f"received first message after ~{elapsed + 1}s")
                 break
-        else:
-            print("⚠️  WARNING: No messages received after 30 seconds")
-            print("   This might be normal if BTC price hasn't changed")
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        ok = bool(received)
+        print(f"PHASE 1: {'PASS' if ok else 'FAIL'} ({len(received)} message(s))")
+        return ok
+    finally:
+        await client.close()
+        print("phase 1 shutdown complete\n")
 
-    print()
-    print("4. Cleaning up...")
-    client.unsubscribe_rtds_all()
-    client.close()
 
-    print()
+async def phase_quiet_hold() -> bool:
+    """Hold a near-silent stream without watchdog churn."""
     print("=" * 60)
-    if received_messages:
-        print("✅ RTDS LIVE TEST: PASSED")
-        print(f"   Messages received: {len(received_messages)}")
-    else:
-        print("⚠️  RTDS LIVE TEST: INCONCLUSIVE")
-        print("   No messages received (price may not have changed)")
+    print(f"PHASE 2: quiet stream hold ({QUIET_PHASE_DURATION}s, clob_market/market_created)")
     print("=" * 60)
 
-    return len(received_messages) > 0
-
-
-def test_market_created_live():
-    """Test live market creation events."""
-    print()
-    print("=" * 60)
-    print("TESTING: Market Creation Events")
-    print("=" * 60)
-    print()
-
-    received_messages = []
-
-    def on_market_created(msg: Message):
-        """Callback for market created events."""
-        print("✅ New market created:")
-        print(f"   Payload: {msg.payload}")
-        print()
-        received_messages.append(msg)
-
-    print("1. Subscribing to market creation events...")
-    client = PolymarketClient()
-    client.subscribe_market_created(on_market_created)
-
-    print("2. Waiting for new markets (60 seconds)...")
-    print("   (New markets are created sporadically)")
-    print()
-
+    created = []
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
     try:
-        for i in range(60):
-            time.sleep(1)
-            if received_messages:
-                print(f"✅ Received {len(received_messages)} market creation(s)")
-                break
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        client.subscribe_market_created(created.append)
+        rtds = client._rtds
+        print(f"config: ping_interval={rtds.ping_interval}s max_staleness={rtds.max_staleness}s")
 
-    client.unsubscribe_rtds_all()
-    client.close()
+        pong_ages, reconnects = [], []
+        for i in range(QUIET_PHASE_DURATION // SAMPLE_INTERVAL):
+            await asyncio.sleep(SAMPLE_INTERVAL)
+            s = client.get_rtds_stats()
+            pong_ages.append(s["last_pong_seconds_ago"])
+            reconnects.append(s["total_reconnections"])
+            print(
+                f"t+{(i + 1) * SAMPLE_INTERVAL:>3}s status={s['status']} "
+                f"msgs={s['total_messages_received']} age={s['last_message_age_seconds']} "
+                f"reconn={s['total_reconnections']} pong_ago={s['last_pong_seconds_ago']}"
+            )
 
+        no_churn = reconnects[-1] == 0
+        # Protocol-pong proof: freshness must keep resetting on a quiet stream.
+        pong_fresh = max(pong_ages) <= rtds.ping_interval * 3
+        print(f"\nstream messages received: {len(created)} (quiet as intended)")
+        print(f"max observed pong age: {max(pong_ages)}s (limit {rtds.ping_interval * 3:g}s)")
+        print(f"total_reconnections: {reconnects[-1]}")
+        ok = no_churn and pong_fresh
+        print(f"PHASE 2: {'PASS' if ok else 'FAIL'}")
+        return ok
+    finally:
+        await client.close()
+        print("phase 2 shutdown complete\n")
+
+
+async def main() -> int:
     print()
-    if received_messages:
-        print("✅ Market creation events: WORKING")
-    else:
-        print("ℹ️  No new markets created during test period")
-
-    return received_messages
+    print("POLYMARKET RTDS LIVE OPERATOR SMOKE (production servers, ~3 min)")
+    print()
+    active_ok = await phase_active_traffic()
+    quiet_ok = await phase_quiet_hold()
+    print("=" * 60)
+    print(f"RTDS LIVE SMOKE: {'PASS' if active_ok and quiet_ok else 'FAIL'}")
+    print(f"  active traffic: {'PASS' if active_ok else 'FAIL'}")
+    print(f"  quiet hold:     {'PASS' if quiet_ok else 'FAIL'}")
+    print("=" * 60)
+    return 0 if active_ok and quiet_ok else 1
 
 
 if __name__ == "__main__":
-    print()
-    print("╔════════════════════════════════════════════════════════════╗")
-    print("║        POLYMARKET RTDS LIVE CONNECTION TEST               ║")
-    print("║                                                            ║")
-    print("║  This connects to PRODUCTION Polymarket servers           ║")
-    print("║  No API keys required (RTDS is public)                    ║")
-    print("╚════════════════════════════════════════════════════════════╝")
-    print()
-
-    # Test 1: Crypto prices (most reliable - updates frequently)
-    test_crypto_prices_live()
-
-    # Uncomment to test market creation (rare events)
-    # test_market_created_live()
-
-    print()
-    print("Test complete!")
-    print()
+    raise SystemExit(asyncio.run(main()))

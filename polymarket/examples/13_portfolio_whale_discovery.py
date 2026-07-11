@@ -12,9 +12,10 @@ Web research findings: https://docs.polymarket.com/
 - /activity endpoint tracks all onchain operations
 """
 
-import os
 import asyncio
-from polymarket import PolymarketClient, WalletConfig
+import os
+
+from shared.polymarket import PolymarketClient, WalletConfig
 
 
 async def main():
@@ -39,10 +40,7 @@ async def main():
         private_key = f"0x{private_key}"
 
     if private_key:
-        client.add_wallet(
-            wallet=WalletConfig(private_key=private_key),
-            wallet_id="demo"
-        )
+        client.add_wallet(wallet=WalletConfig(private_key=private_key), wallet_id="demo")
 
         # Get portfolio value with breakdown
         portfolio = await client.get_portfolio_value(wallet_id="demo")
@@ -75,19 +73,17 @@ async def main():
         # Find whales with significant positions (>$1000)
         print("\n--- Top Whales (>$1000 positions) ---")
         whales = await client.get_market_holders(
-            market=market.condition_id,
-            limit=10,
-            min_balance=1000
+            market=market.condition_id, limit=10, min_balance=1000
         )
 
         if whales:
             print(f"\nFound {len(whales)} whales:")
             for i, whale in enumerate(whales[:10], 1):
                 # Safely access attributes
-                pseudonym = getattr(whale, 'pseudonym', 'Unknown')
-                amount = getattr(whale, 'amount', 0)
-                token_id = getattr(whale, 'token_id', 'Unknown')
-                proxy_wallet = getattr(whale, 'proxy_wallet', 'Unknown')
+                pseudonym = getattr(whale, "pseudonym", "Unknown")
+                amount = getattr(whale, "amount", 0)
+                token_id = getattr(whale, "token_id", "Unknown")
+                proxy_wallet = getattr(whale, "proxy_wallet", "Unknown")
 
                 print(
                     f"  {i:2d}. {pseudonym:20s} "
@@ -101,16 +97,14 @@ async def main():
         # Compare with smaller holders
         print("\n--- All Holders (>$10 positions) ---")
         all_holders = await client.get_market_holders(
-            market=market.condition_id,
-            limit=20,
-            min_balance=10
+            market=market.condition_id, limit=20, min_balance=10
         )
         print(f"Total holders with >$10: {len(all_holders)}")
 
         # Calculate whale concentration
         if whales and all_holders:
-            whale_value = sum(getattr(w, 'amount', 0) for w in whales)
-            total_value = sum(getattr(h, 'amount', 0) for h in all_holders)
+            whale_value = sum(getattr(w, "amount", 0) for w in whales)
+            total_value = sum(getattr(h, "amount", 0) for h in all_holders)
             if total_value > 0:
                 concentration = (whale_value / total_value) * 100
                 print(f"Whale concentration: {concentration:.1f}% of market")
@@ -123,20 +117,17 @@ async def main():
 
     if private_key:
         # Get recent activity for our wallet
-        activities = await client.get_activity(
-            wallet_id="demo",
-            limit=10
-        )
+        activities = await client.get_activity(wallet_id="demo", limit=10)
 
         if activities:
             print(f"\nRecent Activity ({len(activities)} records):")
             for activity in activities[:5]:
                 # Safely access attributes
-                activity_type = getattr(activity, 'type', 'UNKNOWN')
-                market_title = getattr(activity, 'market_title', 'Unknown Market')
-                outcome = getattr(activity, 'outcome', 'Unknown')
-                tokens = getattr(activity, 'tokens', 0)
-                timestamp = getattr(activity, 'timestamp', 0)
+                activity_type = getattr(activity, "type", "UNKNOWN")
+                market_title = getattr(activity, "market_title", "Unknown Market")
+                outcome = getattr(activity, "outcome", "Unknown")
+                tokens = getattr(activity, "tokens", 0)
+                timestamp = getattr(activity, "timestamp", 0)
 
                 print(
                     f"  [{activity_type:10s}] "
@@ -150,9 +141,7 @@ async def main():
 
         # Get trade-only activity
         trade_activities = await client.get_activity(
-            wallet_id="demo",
-            activity_type="TRADE",
-            limit=5
+            wallet_id="demo", activity_type="TRADE", limit=5
         )
         print(f"\nRecent Trades: {len(trade_activities)} trades")
 
@@ -165,8 +154,8 @@ async def main():
     if whales:
         # Pick top whale
         top_whale = whales[0]
-        whale_address = getattr(top_whale, 'address', None)
-        pseudonym = getattr(top_whale, 'pseudonym', 'Unknown')
+        whale_address = getattr(top_whale, "address", None)
+        pseudonym = getattr(top_whale, "pseudonym", "Unknown")
 
         if whale_address:
             print(f"\nTracking whale: {pseudonym}")
@@ -175,13 +164,12 @@ async def main():
             # Get whale's portfolio value
             try:
                 whale_portfolio = await client.data.get_portfolio_value(user=whale_address)
-                print(f"Total portfolio: ${whale_portfolio.equity_total or whale_portfolio.value:.2f}")
+                print(
+                    f"Total portfolio: ${whale_portfolio.equity_total or whale_portfolio.value:.2f}"
+                )
 
                 # Get whale's recent activity
-                whale_activities = await client.data.get_activity(
-                    user=whale_address,
-                    limit=5
-                )
+                whale_activities = await client.data.get_activity(user=whale_address, limit=5)
                 print(f"Recent activity: {len(whale_activities)} records")
 
                 # This is how Strategy-3 tracks wallets!

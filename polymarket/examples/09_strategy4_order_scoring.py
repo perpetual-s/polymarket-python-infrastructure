@@ -8,14 +8,14 @@ Run: python examples/09_strategy4_order_scoring.py
 
 import asyncio
 
-from polymarket import PolymarketClient
+from shared.polymarket import PolymarketClient
 
 
 async def example_1_check_single_order():
     """Example 1: Check if a single order earns maker rebates."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 1: Check Single Order for Maker Rebates")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -40,9 +40,9 @@ async def example_1_check_single_order():
 
 async def example_2_batch_check_orders():
     """Example 2: Batch check multiple orders for rebates."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 2: Batch Check Order Scoring")
-    print("="*60)
+    print("=" * 60)
 
     client = PolymarketClient()
 
@@ -53,7 +53,7 @@ async def example_2_batch_check_orders():
         "0x456...",
         "0x789...",
         "0xabc...",
-        "0xdef..."
+        "0xdef...",
     ]
 
     print(f"\nChecking {len(order_ids)} orders for maker rebate eligibility...\n")
@@ -73,7 +73,7 @@ async def example_2_batch_check_orders():
             rebate = "2% rebate" if is_scoring else "No rebate"
             print(f"{order_id[:20]:<25} {status:<15} {rebate}")
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Summary:")
         print(f"  Earning rebates: {earning_count} orders (2% maker rebate)")
         print(f"  Not earning:     {not_earning_count} orders")
@@ -85,16 +85,16 @@ async def example_2_batch_check_orders():
 
 def example_3_active_orders_scoring():
     """Example 3: Check all active orders for scoring status."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 3: Analyze Active Orders for Rebate Earnings")
-    print("="*60)
+    print("=" * 60)
 
     # NOTE: Requires wallet configuration
     print("\nThis example requires wallet configuration.")
     print("Code demonstration:\n")
 
     print("""
-from polymarket import PolymarketClient, WalletConfig
+from shared.polymarket import PolymarketClient, WalletConfig
 
 # Setup
 client = PolymarketClient()
@@ -128,9 +128,9 @@ print(f"Potential rebate earnings: ${potential_rebate:.2f}")
 
 def example_4_strategy4_optimization():
     """Example 4: Strategy-4 optimization - maximize scoring orders."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 4: Strategy-4 Optimization")
-    print("="*60)
+    print("=" * 60)
 
     print("\nOptimizing for 2% maker rebates:\n")
 
@@ -169,9 +169,9 @@ Strategy-4 monitors scoring status and adjusts orders to maximize rebates.
 
 def example_5_rebate_analytics():
     """Example 5: Analytics - track rebate earnings over time."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Example 5: Rebate Earnings Analytics")
-    print("="*60)
+    print("=" * 60)
 
     print("\nTracking maker rebate earnings:\n")
 
@@ -214,12 +214,12 @@ print(f"Annualized Rebate Income: ${annual_rebate:.2f}")
 
 async def main():
     """Run all examples."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("STRATEGY-4: ORDER SCORING FOR LIQUIDITY MINING")
-    print("="*60)
+    print("=" * 60)
     print("\nPolymarket offers 2% maker rebates for liquidity providers.")
     print("This example shows how to check which orders earn rebates.")
-    print("="*60)
+    print("=" * 60)
 
     examples = [
         ("Check Single Order", example_1_check_single_order),
@@ -240,16 +240,16 @@ async def main():
 
         input("\nPress Enter to continue to next example...")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Key Takeaways:")
-    print("="*60)
+    print("=" * 60)
     print("1. Use is_order_scoring() to check single orders")
     print("2. Use are_orders_scoring() for batch checking (more efficient)")
     print("3. Only MAKER orders earn 2% rebates (not takers)")
     print("4. Place limit orders inside spread to maximize maker fills")
     print("5. Monitor scoring status to optimize Strategy-4 performance")
     print("\n✅ Strategy-4 can earn consistent 2% on maker volume!")
-    print("="*60)
+    print("=" * 60)
 
 
 if __name__ == "__main__":

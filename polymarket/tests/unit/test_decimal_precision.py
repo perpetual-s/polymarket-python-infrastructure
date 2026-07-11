@@ -1,5 +1,5 @@
 """
-Unit tests for Decimal precision in polymarket.
+Unit tests for Decimal precision in shared/polymarket.
 
 Validates the financial-grade precision guarantees of Decimal migration.
 
@@ -11,11 +11,12 @@ Tests:
 - Financial calculation accuracy
 """
 
+from decimal import ROUND_HALF_UP, Decimal
+
 import pytest
-from decimal import Decimal, ROUND_HALF_UP
 from pydantic import ValidationError
 
-from polymarket.models import OrderRequest, Side, OrderType, Position, Balance
+from polymarket.models import Balance, OrderRequest, OrderType, Position, Side
 from polymarket.utils.fees import (
     calculate_net_cost,
     calculate_profit_after_fees,
@@ -23,8 +24,8 @@ from polymarket.utils.fees import (
     get_effective_spread,
 )
 from polymarket.utils.validation import (
-    validate_balance,
     check_order_profitability,
+    validate_balance,
 )
 
 
@@ -103,9 +104,9 @@ class TestWeiConversions:
         """Wei to USDC conversion is exact."""
         wei_amounts = [
             Decimal("1000000"),  # 1.0 USDC
-            Decimal("10000"),    # 0.01 USDC
+            Decimal("10000"),  # 0.01 USDC
             Decimal("100500000"),  # 100.50 USDC
-            Decimal("123456"),   # 0.123456 USDC
+            Decimal("123456"),  # 0.123456 USDC
         ]
 
         for wei in wei_amounts:
@@ -329,9 +330,7 @@ class TestFinancialCalculationAccuracy:
         entry_price = Decimal("0.60")
         size = Decimal("100.0")
 
-        breakeven, total_fees = estimate_breakeven_exit(
-            Side.BUY, entry_price, size, 0, 0
-        )
+        breakeven, total_fees = estimate_breakeven_exit(Side.BUY, entry_price, size, 0, 0)
 
         assert isinstance(breakeven, Decimal)
         assert isinstance(total_fees, Decimal)
@@ -363,9 +362,7 @@ class TestFinancialCalculationAccuracy:
         size = Decimal("100.0")
         available_usdc = Decimal("100.0")
 
-        valid, error = validate_balance(
-            Side.BUY, price, size, available_usdc, Decimal("0.0"), 0
-        )
+        valid, error = validate_balance(Side.BUY, price, size, available_usdc, Decimal("0.0"), 0)
 
         # Should pass with exact balance
         assert valid is True
@@ -373,9 +370,7 @@ class TestFinancialCalculationAccuracy:
 
         # Fail with insufficient balance (even by tiny amount)
         available_usdc = Decimal("99.999999")
-        valid, error = validate_balance(
-            Side.BUY, price, size, available_usdc, Decimal("0.0"), 0
-        )
+        valid, error = validate_balance(Side.BUY, price, size, available_usdc, Decimal("0.0"), 0)
         assert valid is False
         assert "Insufficient USDC" in error
 
@@ -386,9 +381,7 @@ class TestFinancialCalculationAccuracy:
         size = Decimal("100.0")
         min_profit = Decimal("1.0")
 
-        profitable, profit = check_order_profitability(
-            entry_price, exit_price, size, 0, min_profit
-        )
+        profitable, profit = check_order_profitability(entry_price, exit_price, size, 0, min_profit)
 
         assert isinstance(profit, Decimal)
         assert profitable is True
@@ -422,9 +415,7 @@ class TestEdgeCases:
     def test_zero_values(self):
         """Handle zero values correctly."""
         # Zero size
-        net_cost, fee = calculate_net_cost(
-            Side.BUY, Decimal("0.50"), Decimal("0.0"), 0
-        )
+        net_cost, fee = calculate_net_cost(Side.BUY, Decimal("0.50"), Decimal("0.0"), 0)
         assert net_cost == Decimal("0.0")
         assert fee == Decimal("0.0")
 
@@ -437,17 +428,14 @@ class TestEdgeCases:
                 Decimal("0.0"),  # Zero entry price
                 Decimal("0.70"),
                 Decimal("100.0"),
-                0, 0
+                0,
+                0,
             )
 
         # Zero entry price in profitability check
         with pytest.raises(ZeroDivisionError):
             check_order_profitability(
-                Decimal("0.0"),  # Zero entry
-                Decimal("0.70"),
-                Decimal("100.0"),
-                0,
-                Decimal("1.0")
+                Decimal("0.0"), Decimal("0.70"), Decimal("100.0"), 0, Decimal("1.0")  # Zero entry
             )
 
     def test_negative_values_rejected(self):
@@ -459,7 +447,7 @@ class TestEdgeCases:
             Decimal("100.0"),
             Decimal("100.0"),
             Decimal("0.0"),
-            0
+            0,
         )
         assert valid is False
         assert "outside valid range" in error
@@ -471,7 +459,7 @@ class TestEdgeCases:
             Decimal("-100.0"),  # Negative size
             Decimal("100.0"),
             Decimal("0.0"),
-            0
+            0,
         )
         assert valid is False
         assert "below minimum" in error
@@ -483,7 +471,7 @@ class TestEdgeCases:
             Decimal("100.0"),
             Decimal("-50.0"),  # Negative balance
             Decimal("0.0"),
-            0
+            0,
         )
         assert valid is False
         assert "cannot be negative" in error
@@ -495,7 +483,7 @@ class TestEdgeCases:
             Decimal("100.0"),
             Decimal("100.0"),
             Decimal("-10.0"),  # Negative tokens
-            0
+            0,
         )
         assert valid is False
         assert "cannot be negative" in error
@@ -504,15 +492,11 @@ class TestEdgeCases:
         """ROI calculation handles zero entry cost safely."""
         # SELL with zero exit price → zero entry cost
         result = calculate_profit_after_fees(
-            Side.SELL,
-            Decimal("0.50"),
-            Decimal("0.0"),  # Exit at 0
-            Decimal("100.0"),
-            0, 0
+            Side.SELL, Decimal("0.50"), Decimal("0.0"), Decimal("100.0"), 0, 0  # Exit at 0
         )
         # Should return ROI = 0 when entry cost is 0 (not divide by zero)
-        assert result['entry_cost'] == Decimal("0.0")
-        assert result['roi_pct'] == Decimal("0.0")
+        assert result["entry_cost"] == Decimal("0.0")
+        assert result["roi_pct"] == Decimal("0.0")
 
 
 if __name__ == "__main__":

@@ -25,25 +25,33 @@ Benefits of using public endpoints:
 Adapted from py-clob-client (MIT License).
 """
 
-from typing import Optional, List, Dict, Any, Tuple
-import logging
-from decimal import Decimal
 import hashlib
 import json
+import logging
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
 
-from .base import BaseAPIClient
-from ..utils.numeric import to_decimal
 from ..config import PolymarketSettings
-from ..models import OrderBook as OrderBookType
-from ..exceptions import (
-    PriceUnavailableError,
-    OrderBookError,
-    MarketNotFoundError
-)
+from ..exceptions import APIError, MarketNotFoundError, OrderBookError, PriceUnavailableError
+from ..models import OrderBook as OrderBookType, PricePoint
+from ..utils.numeric import to_decimal
 from ..utils.rate_limiter import RateLimiter
 from ..utils.retry import CircuitBreaker
+from .base import BaseAPIClient
 
 logger = logging.getLogger(__name__)
+
+
+def _is_no_orderbook_404(error: Exception) -> bool:
+    """Return True when Polymarket reports a token has no CLOB orderbook."""
+    if not isinstance(error, APIError) or error.status_code != 404:
+        return False
+    response = error.response if isinstance(error.response, dict) else {}
+    detail = str(response.get("error", ""))
+    return (
+        "No orderbook exists for the requested token id" in str(error)
+        or "No orderbook exists for the requested token id" in detail
+    )
 
 
 class PublicCLOBAPI(BaseAPIClient):
@@ -54,8 +62,8 @@ class PublicCLOBAPI(BaseAPIClient):
     API credentials or wallet signatures.
 
     Usage:
-        >>> from polymarket.api.clob_public import PublicCLOBAPI
-        >>> from polymarket.config import PolymarketSettings
+        >>> from shared.polymarket.api.clob_public import PublicCLOBAPI
+        >>> from shared.polymarket.config import PolymarketSettings
         >>>
         >>> settings = PolymarketSettings()
         >>> client = PublicCLOBAPI(settings)
@@ -74,7 +82,7 @@ class PublicCLOBAPI(BaseAPIClient):
         self,
         settings: PolymarketSettings,
         rate_limiter: Optional[RateLimiter] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize Public CLOB API client.
@@ -88,7 +96,7 @@ class PublicCLOBAPI(BaseAPIClient):
             base_url=settings.clob_url,
             settings=settings,
             rate_limiter=rate_limiter,
-            circuit_breaker=circuit_breaker
+            circuit_breaker=circuit_breaker,
         )
 
     # ========== Health & System ==========
@@ -137,10 +145,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Midpoint price, or None if unavailable
         """
         try:
-            response = await self.get(
-                "/midpoint",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/midpoint", params={"token_id": token_id})
 
             mid = response.get("mid")
             if mid is None:
@@ -172,10 +177,7 @@ class PublicCLOBAPI(BaseAPIClient):
             # Build request body with BookParams format
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = await self.post(
-                "/midpoints",
-                json_data=params
-            )
+            response = await self.post("/midpoints", json_data=params)
 
             # Parse response into dict
             # API returns either:
@@ -225,10 +227,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Price for the specified side, or None if unavailable
         """
         try:
-            response = await self.get(
-                "/price",
-                params={"token_id": token_id, "side": side}
-            )
+            response = await self.get("/price", params={"token_id": token_id, "side": side})
 
             price = response.get("price")
             if price is None:
@@ -257,10 +256,7 @@ class PublicCLOBAPI(BaseAPIClient):
             return {}
 
         try:
-            response = await self.post(
-                "/prices",
-                json_data=params
-            )
+            response = await self.post("/prices", json_data=params)
 
             # Parse response into dict with composite key
             result = {}
@@ -291,10 +287,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Spread (ask - bid), or None if unavailable
         """
         try:
-            response = await self.get(
-                "/spread",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/spread", params={"token_id": token_id})
 
             spread = response.get("spread")
             if spread is None:
@@ -325,10 +318,7 @@ class PublicCLOBAPI(BaseAPIClient):
         try:
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = await self.post(
-                "/spreads",
-                json_data=params
-            )
+            response = await self.post("/spreads", json_data=params)
 
             # API returns dict: {"token_id": "spread_value", ...}
             result = {}
@@ -340,6 +330,54 @@ class PublicCLOBAPI(BaseAPIClient):
         except Exception as e:
             logger.error(f"Error fetching batch spreads: {e}")
             return {tid: None for tid in token_ids}
+
+    async def get_prices_history(
+        self,
+        token_id: str,
+        interval: Optional[str] = None,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        fidelity: Optional[int] = None,
+    ) -> List[PricePoint]:
+        """Historical prices for one outcome token via GET /prices-history.
+
+        interval: one of 1h/6h/1d/1w/1m/max — mutually exclusive with start_ts/end_ts.
+        fidelity: bucket size in minutes (advisory). 404 -> []. Malformed points skipped.
+        """
+        if interval and (start_ts is not None or end_ts is not None):
+            raise ValueError("interval is mutually exclusive with start_ts/end_ts")
+
+        params: Dict[str, Any] = {"market": token_id}
+        if interval:
+            params["interval"] = interval
+        if start_ts is not None:
+            params["startTs"] = start_ts
+        if end_ts is not None:
+            params["endTs"] = end_ts
+        if fidelity is not None:
+            params["fidelity"] = fidelity
+
+        try:
+            response = await self.get(
+                "/prices-history",
+                params=params,
+                rate_limit_key="GET:/prices-history",
+                retry=True,
+            )
+        except APIError as e:
+            if e.status_code == 404:
+                logger.warning(f"No price history for token {token_id}")
+                return []
+            raise
+
+        points: List[PricePoint] = []
+        for item in (response.get("history") or []) if isinstance(response, dict) else []:
+            try:
+                points.append(PricePoint(**item))
+            except (KeyError, ValueError, TypeError) as e:
+                logger.warning(f"Skipping malformed price point {item!r}: {e}")
+                continue
+        return points
 
     # ========== Order Books ==========
 
@@ -359,10 +397,7 @@ class PublicCLOBAPI(BaseAPIClient):
             OrderBookError: If orderbook unavailable
         """
         try:
-            response = await self.get(
-                "/book",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/book", params={"token_id": token_id})
 
             # Parse bids and asks - MUST be tuples (price, size) per OrderBookType model
             # CRITICAL: Polymarket API returns bids LOW→HIGH and asks HIGH→LOW
@@ -404,17 +439,19 @@ class PublicCLOBAPI(BaseAPIClient):
                 market=response.get("market"),
                 tick_size=to_decimal(response.get("tick_size", "0.01")),
                 neg_risk=response.get("neg_risk", False),
-                timestamp=response.get("timestamp")
+                timestamp=response.get("timestamp"),
             )
 
         except Exception as e:
+            if _is_no_orderbook_404(e):
+                raise OrderBookError(
+                    f"No orderbook exists for token {token_id}: {e}",
+                    token_id=token_id,
+                ) from e
             logger.error(f"Error fetching orderbook for {token_id}: {e}")
             raise OrderBookError(f"Orderbook unavailable: {e}")
 
-    async def get_orderbooks_batch(
-        self,
-        token_ids: List[str]
-    ) -> List[OrderBookType]:
+    async def get_orderbooks_batch(self, token_ids: List[str]) -> List[OrderBookType]:
         """
         Get orderbooks for multiple tokens (batch operation).
 
@@ -432,10 +469,7 @@ class PublicCLOBAPI(BaseAPIClient):
         try:
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = await self.post(
-                "/books",
-                json_data=params
-            )
+            response = await self.post("/books", json_data=params)
 
             orderbooks = []
             for book_data in response:
@@ -472,15 +506,17 @@ class PublicCLOBAPI(BaseAPIClient):
                     # Get token_id from book_data (should be in response)
                     token_id = book_data.get("asset_id", "")
 
-                    orderbooks.append(OrderBookType(
-                        token_id=token_id,
-                        bids=bids,
-                        asks=asks,
-                        market=book_data.get("market"),
-                        tick_size=to_decimal(book_data.get("tick_size", "0.01")),
-                        neg_risk=book_data.get("neg_risk", False),
-                        timestamp=book_data.get("timestamp")
-                    ))
+                    orderbooks.append(
+                        OrderBookType(
+                            token_id=token_id,
+                            bids=bids,
+                            asks=asks,
+                            market=book_data.get("market"),
+                            tick_size=to_decimal(book_data.get("tick_size", "0.01")),
+                            neg_risk=book_data.get("neg_risk", False),
+                            timestamp=book_data.get("timestamp"),
+                        )
+                    )
                 except Exception as e:
                     logger.warning(f"Error parsing orderbook in batch: {e}")
                     continue
@@ -506,13 +542,16 @@ class PublicCLOBAPI(BaseAPIClient):
         """
         # Create deterministic string representation
         # Note: bids and asks are tuples (price, size)
-        book_str = json.dumps({
-            "market": orderbook.market,
-            "token_id": orderbook.token_id,
-            "bids": [[str(b[0]), str(b[1])] for b in orderbook.bids],  # b[0]=price, b[1]=size
-            "asks": [[str(a[0]), str(a[1])] for a in orderbook.asks],  # a[0]=price, a[1]=size
-            "timestamp": str(orderbook.timestamp) if orderbook.timestamp else ""
-        }, sort_keys=True)
+        book_str = json.dumps(
+            {
+                "market": orderbook.market,
+                "token_id": orderbook.token_id,
+                "bids": [[str(b[0]), str(b[1])] for b in orderbook.bids],  # b[0]=price, b[1]=size
+                "asks": [[str(a[0]), str(a[1])] for a in orderbook.asks],  # a[0]=price, a[1]=size
+                "timestamp": str(orderbook.timestamp) if orderbook.timestamp else "",
+            },
+            sort_keys=True,
+        )
 
         return hashlib.sha256(book_str.encode()).hexdigest()
 
@@ -531,10 +570,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Tick size (usually Decimal("0.01"))
         """
         try:
-            response = await self.get(
-                "/tick_size",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/tick_size", params={"token_id": token_id})
 
             tick_size = response.get("minimum_tick_size", "0.01")
             return to_decimal(tick_size)
@@ -556,10 +592,7 @@ class PublicCLOBAPI(BaseAPIClient):
             True if neg-risk enabled, False otherwise
         """
         try:
-            response = await self.get(
-                "/neg_risk",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/neg_risk", params={"token_id": token_id})
 
             return bool(response.get("neg_risk", False))
 
@@ -582,10 +615,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Fee rate in basis points (0 for Polymarket)
         """
         try:
-            response = await self.get(
-                "/fee_rate",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/fee_rate", params={"token_id": token_id})
 
             return int(response.get("fee_rate_bps", 0))
 
@@ -611,10 +641,7 @@ class PublicCLOBAPI(BaseAPIClient):
             }
         """
         try:
-            response = await self.get(
-                "/simplified-markets",
-                params={"next_cursor": next_cursor}
-            )
+            response = await self.get("/simplified-markets", params={"next_cursor": next_cursor})
 
             return response
 
@@ -638,10 +665,7 @@ class PublicCLOBAPI(BaseAPIClient):
             }
         """
         try:
-            response = await self.get(
-                "/markets",
-                params={"next_cursor": next_cursor}
-            )
+            response = await self.get("/markets", params={"next_cursor": next_cursor})
 
             return response
 
@@ -662,10 +686,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Market data with pagination
         """
         try:
-            response = await self.get(
-                "/sampling-markets",
-                params={"next_cursor": next_cursor}
-            )
+            response = await self.get("/sampling-markets", params={"next_cursor": next_cursor})
 
             return response
 
@@ -687,8 +708,7 @@ class PublicCLOBAPI(BaseAPIClient):
         """
         try:
             response = await self.get(
-                "/sampling-simplified-markets",
-                params={"next_cursor": next_cursor}
+                "/sampling-simplified-markets", params={"next_cursor": next_cursor}
             )
 
             return response
@@ -713,9 +733,7 @@ class PublicCLOBAPI(BaseAPIClient):
             MarketNotFoundError: If market doesn't exist
         """
         try:
-            response = await self.get(
-                f"/markets/{condition_id}"
-            )
+            response = await self.get(f"/markets/{condition_id}")
 
             return response
 
@@ -736,9 +754,7 @@ class PublicCLOBAPI(BaseAPIClient):
             List of trade event dictionaries
         """
         try:
-            response = await self.get(
-                f"/market_trades_events/{condition_id}"
-            )
+            response = await self.get(f"/market_trades_events/{condition_id}")
 
             # Response is a list of trade events
             return response if isinstance(response, list) else []
@@ -762,10 +778,7 @@ class PublicCLOBAPI(BaseAPIClient):
             Last trade price, or None if no trades
         """
         try:
-            response = await self.get(
-                "/last_trade_price",
-                params={"token_id": token_id}
-            )
+            response = await self.get("/last_trade_price", params={"token_id": token_id})
 
             price = response.get("price")
             if price is None:
@@ -795,10 +808,7 @@ class PublicCLOBAPI(BaseAPIClient):
         try:
             params = [{"token_id": tid} for tid in token_ids]
 
-            response = await self.post(
-                "/last_trades_prices",
-                json_data=params
-            )
+            response = await self.post("/last_trades_prices", json_data=params)
 
             result = {}
             for item in response:
@@ -840,14 +850,18 @@ class PublicCLOBAPI(BaseAPIClient):
 
             return (best_bid, best_ask)
 
+        except OrderBookError as e:
+            if "No orderbook exists" in str(e):
+                logger.warning(f"No orderbook exists for token {token_id}; bid/ask unavailable")
+                return None
+            logger.error(f"Error getting best bid/ask for {token_id}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Error getting best bid/ask for {token_id}: {e}")
             return None
 
     async def get_liquidity_depth(
-        self,
-        token_id: str,
-        price_range: Decimal = Decimal("0.05")
+        self, token_id: str, price_range: Decimal = Decimal("0.05")
     ) -> Dict[str, Any]:
         """
         Calculate liquidity depth within price range.
@@ -877,7 +891,7 @@ class PublicCLOBAPI(BaseAPIClient):
                     "ask_depth": Decimal("0"),
                     "bid_levels": 0,
                     "ask_levels": 0,
-                    "total_depth": Decimal("0")
+                    "total_depth": Decimal("0"),
                 }
 
             # Bids and asks are tuples (price, size)
@@ -912,7 +926,7 @@ class PublicCLOBAPI(BaseAPIClient):
                 "ask_depth": ask_depth,
                 "bid_levels": bid_levels,
                 "ask_levels": ask_levels,
-                "total_depth": bid_depth + ask_depth
+                "total_depth": bid_depth + ask_depth,
             }
 
         except Exception as e:
@@ -922,5 +936,5 @@ class PublicCLOBAPI(BaseAPIClient):
                 "ask_depth": Decimal("0"),
                 "bid_levels": 0,
                 "ask_levels": 0,
-                "total_depth": Decimal("0")
+                "total_depth": Decimal("0"),
             }

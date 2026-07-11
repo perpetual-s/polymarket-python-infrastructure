@@ -8,11 +8,14 @@ Tests:
 - L3: WebSocket compression
 """
 
-import pytest
 import asyncio
-import time
+import logging
 import threading
-from unittest.mock import Mock, patch, MagicMock
+import time
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
 from polymarket.api.websocket import WebSocketClient
 
 
@@ -24,7 +27,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         data = {
@@ -32,7 +35,7 @@ class TestMessageDeduplication:
             "asset_id": "123",
             "market": "0xabc",
             "timestamp": "1234567890",
-            "hash": "0xdef123"
+            "hash": "0xdef123",
         }
 
         hash1 = ws._compute_message_hash(data)
@@ -47,7 +50,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         data = {
@@ -55,7 +58,7 @@ class TestMessageDeduplication:
             "asset_id": "456",
             "market": "0xdef",
             "timestamp": "1234567890",
-            "id": "trade_123"
+            "id": "trade_123",
         }
 
         hash1 = ws._compute_message_hash(data)
@@ -71,7 +74,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         data = {
@@ -79,7 +82,7 @@ class TestMessageDeduplication:
             "asset_id": "789",
             "market": "0xghi",
             "timestamp": "1234567890",
-            "id": "order_123"
+            "id": "order_123",
         }
 
         hash_value = ws._compute_message_hash(data)
@@ -90,17 +93,14 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         data = {
             "event_type": "price_change",
             "market": "0xjkl",
             "timestamp": "1234567890",
-            "price_changes": [
-                {"hash": "0xabc123"},
-                {"hash": "0xdef456"}
-            ]
+            "price_changes": [{"hash": "0xabc123"}, {"hash": "0xdef456"}],
         }
 
         hash_value = ws._compute_message_hash(data)
@@ -111,7 +111,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         message_hash = "abc123def456"
@@ -132,7 +132,7 @@ class TestMessageDeduplication:
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
             enable_deduplication=True,
-            dedup_window_seconds=1  # 1 second TTL for testing
+            dedup_window_seconds=1,  # 1 second TTL for testing
         )
 
         message_hash = "old_hash_123"
@@ -149,7 +149,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         # Track some messages
@@ -168,7 +168,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=False
+            enable_deduplication=False,
         )
 
         stats = ws.stats()
@@ -182,7 +182,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         errors = []
@@ -211,7 +211,7 @@ class TestMessageDeduplication:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_deduplication=True
+            enable_deduplication=True,
         )
 
         # The deque has maxlen=10000
@@ -230,8 +230,7 @@ class TestMultiTokenSubscription:
     def test_subscribe_markets_multi_registers_callbacks(self):
         """Test subscribe_markets_multi registers all callbacks."""
         ws = WebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
         callback = Mock()
@@ -241,6 +240,7 @@ class TestMultiTokenSubscription:
 
         # Check all tokens registered
         from polymarket.api.websocket import ChannelType
+
         for token_id in token_ids:
             channel = f"{ChannelType.MARKET}:{token_id}"
             assert channel in ws._subscriptions
@@ -249,8 +249,7 @@ class TestMultiTokenSubscription:
     def test_subscribe_markets_multi_sends_single_message(self):
         """Test subscribe_markets_multi sends single WebSocket message."""
         ws = WebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
         # Mock WebSocket connection
@@ -267,6 +266,7 @@ class TestMultiTokenSubscription:
 
         # Check message format
         import json
+
         sent_message = json.loads(mock_ws.send.call_args[0][0])
         assert sent_message["type"] == "MARKET"
         assert sent_message["asset_ids"] == token_ids
@@ -274,8 +274,7 @@ class TestMultiTokenSubscription:
     def test_subscribe_markets_multi_empty_list(self):
         """Test subscribe_markets_multi with empty list."""
         ws = WebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
         mock_ws = Mock()
@@ -290,8 +289,7 @@ class TestMultiTokenSubscription:
     def test_subscribe_markets_multi_no_connection(self):
         """Test subscribe_markets_multi without active connection."""
         ws = WebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
         # No WebSocket connection
@@ -305,6 +303,7 @@ class TestMultiTokenSubscription:
 
         # Callbacks should still be registered
         from polymarket.api.websocket import ChannelType
+
         channel = f"{ChannelType.MARKET}:token1"
         assert channel in ws._subscriptions
 
@@ -323,7 +322,7 @@ class TestGracefulShutdownCallbacks:
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
             on_failure_callback=on_failure,
-            max_reconnects=2
+            max_reconnects=2,
         )
 
         # Simulate max reconnects exceeded
@@ -339,7 +338,7 @@ class TestGracefulShutdownCallbacks:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            on_failure_callback=None
+            on_failure_callback=None,
         )
 
         # Should not raise error
@@ -347,13 +346,14 @@ class TestGracefulShutdownCallbacks:
 
     def test_failure_callback_exception_handling(self):
         """Test callback exceptions are caught and logged."""
+
         def bad_callback(reason: str):
             raise ValueError("Callback error")
 
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            on_failure_callback=bad_callback
+            on_failure_callback=bad_callback,
         )
 
         # Should not raise exception (caught and logged)
@@ -372,14 +372,14 @@ class TestGracefulShutdownCallbacks:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            on_failure_callback=on_failure
+            on_failure_callback=on_failure,
         )
 
         # Test different failure reasons
         reasons = [
             "Max reconnects exceeded (5 attempts)",
             "Connection permanently failed",
-            "Circuit breaker opened"
+            "Circuit breaker opened",
         ]
 
         for reason in reasons:
@@ -389,14 +389,252 @@ class TestGracefulShutdownCallbacks:
         assert received_reasons == reasons
 
 
+class TestTransientConnectionLogging:
+    """Transient WebSocket disconnects should not poison paper evidence."""
+
+    def test_remote_host_lost_logs_warning_not_error(self, caplog):
+        """A recoverable remote close is WARNING, not ERROR."""
+        from websocket import WebSocketConnectionClosedException
+
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(
+                None, WebSocketConnectionClosedException("Connection to remote host was lost.")
+            )
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_run_forever_remote_host_lost_logs_warning_not_error(self, monkeypatch, caplog):
+        """A recoverable run_forever disconnect is WARNING, not ERROR."""
+        import websocket
+
+        from polymarket.api.websocket import ChannelType
+
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        ws._running = True
+        ws._channel_type = ChannelType.USER
+
+        class DisconnectingWebSocketApp:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_forever(self, **kwargs):
+                ws._running = False
+                raise Exception("Connection to remote host was lost.")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(websocket, "WebSocketApp", DisconnectingWebSocketApp)
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._run()
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_websocket_library_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for remote closes is also WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("Connection to remote host was lost. - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "Connection to remote host was lost" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_ping_pong_timeout_logs_warning_not_error(self, caplog):
+        """A recoverable ping/pong timeout is WARNING, not ERROR."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, Exception("ping/pong timed out"))
+
+        assert any(
+            record.levelno == logging.WARNING and "ping/pong timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_connection_timed_out_logs_warning_not_error(self, caplog):
+        """A recoverable connection timeout is WARNING, not ERROR."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, Exception("Connection timed out"))
+
+        assert any(
+            record.levelno == logging.WARNING and "Connection timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_websocket_library_ping_timeout_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for ping/pong timeouts is also WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("ping/pong timed out - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "ping/pong timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_websocket_library_connection_timeout_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for connection timeouts is also WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("Connection timed out - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "Connection timed out" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_websocket_library_close_frame_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for close frame 1001 is WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error("fin=1 opcode=8 data=b'\\x03\\xe9' - goodbye")
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "opcode=8" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_connection_reset_logs_warning_not_error(self, caplog):
+        """A recoverable peer reset is WARNING."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, OSError(54, "Connection reset by peer"))
+
+        assert any(
+            record.levelno == logging.WARNING and "Connection reset by peer" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    def test_handshake_429_logs_warning_not_error(self, caplog):
+        """A websocket rate-limit handshake refusal is a transient disconnect."""
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        error = (
+            "Handshake status 429 Too Many Requests -+-+- "
+            "{'server': 'cloudflare'} -+-+- b'{\"message\":\"Too Many Requests\"}'"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
+            ws._on_error(None, Exception(error))
+
+        assert any(
+            record.name == "polymarket.api.websocket"
+            and record.levelno == logging.WARNING
+            and "Handshake status 429 Too Many Requests" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "polymarket.api.websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+    def test_websocket_library_handshake_429_goodbye_is_not_error(self, caplog):
+        """The websocket-client goodbye log for 429 handshakes is WARNING."""
+        WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        message = (
+            "Handshake status 429 Too Many Requests -+-+- "
+            "{'server': 'cloudflare'} -+-+- b'{\"message\":\"Too Many Requests\"}' - goodbye"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="websocket"):
+            logging.getLogger("websocket").error(message)
+
+        assert any(
+            record.name == "websocket"
+            and record.levelno == logging.WARNING
+            and "Handshake status 429 Too Many Requests" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "websocket" and record.levelno >= logging.ERROR
+            for record in caplog.records
+        )
+
+
 class TestWebSocketCompression:
     """Test WebSocket compression (L3)."""
 
     def test_compression_enabled_by_default(self):
         """Test compression is enabled by default."""
         ws = WebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
         assert ws.enable_compression is True
@@ -406,18 +644,18 @@ class TestWebSocketCompression:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_compression=False
+            enable_compression=False,
         )
 
         assert ws.enable_compression is False
 
-    @patch('websocket.WebSocketApp')
+    @patch("websocket.WebSocketApp")
     def test_compression_parameter_passed_to_run_forever(self, mock_ws_app):
         """Test compression parameter passed to run_forever()."""
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_compression=True
+            enable_compression=True,
         )
 
         # Mock WebSocketApp instance
@@ -425,7 +663,7 @@ class TestWebSocketCompression:
         mock_ws_app.return_value = mock_instance
 
         # Start connection (without actually connecting)
-        with patch('threading.Thread'):
+        with patch("threading.Thread"):
             ws.connect()
 
         # Check run_forever was called with compression
@@ -439,7 +677,7 @@ class TestWebSocketCompression:
         ws_enabled = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_compression=True
+            enable_compression=True,
         )
         assert ws_enabled.enable_compression is True
 
@@ -447,7 +685,7 @@ class TestWebSocketCompression:
         ws_disabled = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_compression=False
+            enable_compression=False,
         )
         assert ws_disabled.enable_compression is False
 
@@ -458,11 +696,10 @@ class TestConfigurablePingIntervals:
     def test_default_ping_intervals(self):
         """Test default ping interval and timeout."""
         ws = WebSocketClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
-        assert ws.ping_interval == 30
+        assert ws.ping_interval == 20
         assert ws.ping_timeout == 10
 
     def test_custom_ping_intervals(self):
@@ -471,7 +708,7 @@ class TestConfigurablePingIntervals:
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
             ping_interval=60,
-            ping_timeout=20
+            ping_timeout=20,
         )
 
         assert ws.ping_interval == 60
@@ -486,7 +723,7 @@ class TestQueueDropCircuitBreaker:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=True
+            enable_queue=True,
         )
 
         assert ws.queue_drop_threshold == 1000
@@ -497,7 +734,7 @@ class TestQueueDropCircuitBreaker:
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
             enable_queue=True,
-            queue_drop_threshold=500
+            queue_drop_threshold=500,
         )
 
         assert ws.queue_drop_threshold == 500
