@@ -116,7 +116,8 @@ class RealTimeDataClient:
             on_message: Callback for incoming messages
             on_status_change: Callback for connection status changes
             auto_reconnect: Automatically reconnect on disconnect
-            ping_interval: Ping interval in seconds (default: 5.0)
+            ping_interval: Ping interval in seconds (default: 5.0); drives both
+                the protocol PING loop and the text "ping" keepalive
             max_staleness: Max seconds without any pong/message before the
                 watchdog forces a socket close (default: 30.0)
         """
@@ -201,10 +202,23 @@ class RealTimeDataClient:
             on_pong=self._on_pong,
         )
 
-        # Run in separate thread
+        # Run in separate thread. run_forever's builtin ping loop sends
+        # protocol PINGs; RFC 6455 §5.5.2-5.5.3 obliges the server to answer
+        # with protocol PONGs, which _on_pong stamps — so a healthy-but-quiet
+        # stream stays fresh for the staleness watchdog, and a dead socket is
+        # torn down by ping_timeout (auto-reconnect then takes over). The text
+        # "ping" timer stays as an application-level keepalive on top.
+        # websocket-client requires 0 < ping_timeout < ping_interval.
+        if self.ping_interval > 0:
+            run_forever_kwargs = {
+                "ping_interval": self.ping_interval,
+                "ping_timeout": max(self.ping_interval - 1.0, self.ping_interval / 2.0),
+            }
+        else:
+            run_forever_kwargs = {"ping_interval": 0}  # protocol pings disabled
         self._ws_thread = threading.Thread(
             target=self.ws.run_forever,
-            kwargs={"ping_interval": 0},  # We handle pings manually
+            kwargs=run_forever_kwargs,
             daemon=True,
         )
         self._ws_thread.start()
@@ -384,6 +398,10 @@ class RealTimeDataClient:
 
     def _on_open(self, ws):
         """WebSocket open handler."""
+        # Stamp freshness FIRST so a stale armed timer can never observe
+        # pre-connect timestamps and instantly kill the fresh socket
+        self._last_pong = self._last_message_time = time.time()
+
         logger.info("WebSocket connected")
 
         # CRITICAL: Reset _connecting flag so future reconnects can proceed
@@ -399,10 +417,6 @@ class RealTimeDataClient:
 
         # Track connection start time for uptime monitoring
         self._connection_start_time = time.time()
-
-        # Reset freshness stamps so the watchdog does not instantly kill
-        # a connection that was stale before this (re)connect
-        self._last_pong = self._last_message_time = time.time()
 
         # CRITICAL: Resubscribe to all active subscriptions after reconnect - THREAD-SAFE
         with self._subscriptions_lock:

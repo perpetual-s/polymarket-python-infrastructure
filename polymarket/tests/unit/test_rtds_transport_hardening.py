@@ -49,6 +49,33 @@ def test_ping_rearms_without_pong():
     re_arm.assert_called_once()  # unconditional re-arm, no pong needed
 
 
+def test_connect_arms_protocol_ping_on_run_forever():
+    client = RealTimeDataClient(auto_reconnect=False)
+    with (
+        patch("polymarket.api.real_time_data.websocket.WebSocketApp") as app_cls,
+        patch("polymarket.api.real_time_data.threading.Thread") as thread_cls,
+    ):
+        client.connect()
+    run_kwargs = thread_cls.call_args.kwargs["kwargs"]
+    assert run_kwargs["ping_interval"] == client.ping_interval
+    assert 0 < run_kwargs["ping_timeout"] < run_kwargs["ping_interval"]
+    # on_pong must be wired on the app so protocol pongs stamp freshness
+    assert app_cls.call_args.kwargs["on_pong"] == client._on_pong
+
+
+def test_registered_on_pong_callback_stamps_last_pong():
+    client = RealTimeDataClient(auto_reconnect=False)
+    with (
+        patch("polymarket.api.real_time_data.websocket.WebSocketApp") as app_cls,
+        patch("polymarket.api.real_time_data.threading.Thread"),
+    ):
+        client.connect()
+    on_pong = app_cls.call_args.kwargs["on_pong"]
+    client._last_pong = 0.0
+    on_pong(MagicMock(), b"")
+    assert time.time() - client._last_pong < 1.0
+
+
 def test_staleness_watchdog_forces_socket_close():
     client, mock_ws = _connected_client()
     client.max_staleness = 30.0
@@ -64,3 +91,28 @@ def test_fresh_connection_not_closed_by_watchdog():
     client._last_message_time = time.time()
     client._check_staleness()
     mock_ws.close.assert_not_called()
+
+
+def test_pong_fresh_idle_connection_not_closed_by_watchdog():
+    # Live-reproduced regression: a quiet stream has no messages for minutes,
+    # but protocol pongs keep arriving — the watchdog must NOT churn it.
+    client, mock_ws = _connected_client()
+    client.max_staleness = 30.0
+    client._last_pong = time.time()
+    client._last_message_time = time.time() - 120
+    client._check_staleness()
+    mock_ws.close.assert_not_called()
+
+
+def test_on_open_stamps_freshness_before_status_notify():
+    # A stale armed timer must never observe pre-connect timestamps on a
+    # fresh socket, so _on_open stamps freshness before anything else runs.
+    client = RealTimeDataClient(auto_reconnect=False)
+    client._last_pong = client._last_message_time = 0.0
+    observed = []
+    client.on_status_change_callback = lambda status: observed.append(
+        (client._last_pong, client._last_message_time)
+    )
+    with patch.object(client, "_schedule_ping"):
+        client._on_open(MagicMock())
+    assert observed and observed[0][0] > 0 and observed[0][1] > 0
