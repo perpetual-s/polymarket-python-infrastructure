@@ -15,22 +15,19 @@ Tests verify:
 """
 
 import asyncio
-from typing import Dict, Any
 from decimal import Decimal
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from typing import Any, Dict
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
 import aiohttp
-from aiohttp import ClientSession, ClientTimeout
 import pytest
 import pytest_asyncio
+from aiohttp import ClientSession, ClientTimeout
 
 from polymarket.api.base import BaseAPIClient
 from polymarket.config import PolymarketSettings
-from polymarket.exceptions import (
-    APIError,
-    TimeoutError as PolymarketTimeoutError,
-    RateLimitError,
-    AuthenticationError
-)
+from polymarket.exceptions import APIError, AuthenticationError, RateLimitError
+from polymarket.exceptions import TimeoutError as PolymarketTimeoutError
 from polymarket.utils.rate_limiter import RateLimiter
 from polymarket.utils.retry import CircuitBreaker
 
@@ -56,20 +53,13 @@ def settings():
 @pytest.fixture
 def rate_limiter():
     """Create test rate limiter."""
-    return RateLimiter(
-        enabled=True,
-        margin=0.8
-    )
+    return RateLimiter(enabled=True, margin=0.8)
 
 
 @pytest.fixture
 def circuit_breaker():
     """Create test circuit breaker."""
-    return CircuitBreaker(
-        failure_threshold=5,
-        timeout=60.0,
-        name="test_circuit"
-    )
+    return CircuitBreaker(failure_threshold=5, timeout=60.0, name="test_circuit")
 
 
 @pytest_asyncio.fixture
@@ -79,7 +69,7 @@ async def base_client(settings, rate_limiter, circuit_breaker):
         base_url="https://clob.polymarket.com",
         settings=settings,
         rate_limiter=rate_limiter,
-        circuit_breaker=circuit_breaker
+        circuit_breaker=circuit_breaker,
     )
     yield client
     # Cleanup
@@ -92,9 +82,10 @@ class TestAsyncClientSession:
     @pytest.mark.asyncio
     async def test_client_has_async_session(self, base_client):
         """Verify BaseAPIClient has aiohttp.ClientSession."""
-        assert hasattr(base_client, 'session'), "Client should have session attribute"
-        assert isinstance(base_client.session, ClientSession), \
-            f"Session should be aiohttp.ClientSession, got {type(base_client.session)}"
+        assert hasattr(base_client, "session"), "Client should have session attribute"
+        assert isinstance(
+            base_client.session, ClientSession
+        ), f"Session should be aiohttp.ClientSession, got {type(base_client.session)}"
 
     @pytest.mark.asyncio
     async def test_session_timeout_configured(self, base_client, settings):
@@ -102,8 +93,9 @@ class TestAsyncClientSession:
         assert base_client.session.timeout.total is not None, "Timeout should be configured"
         # aiohttp uses ClientTimeout object
         expected_total = settings.connect_timeout + settings.request_timeout
-        assert base_client.session.timeout.total == expected_total, \
-            f"Total timeout should be {expected_total}s"
+        assert (
+            base_client.session.timeout.total == expected_total
+        ), f"Total timeout should be {expected_total}s"
 
     @pytest.mark.asyncio
     async def test_session_connection_limit_configured(self, base_client):
@@ -127,7 +119,7 @@ class TestAsyncHTTPMethods:
         mock_response.read = AsyncMock(return_value=b'{"test": "data"}')
 
         # Patch session.request to return an async context manager
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -149,7 +141,7 @@ class TestAsyncHTTPMethods:
         mock_response.status = 201
         mock_response.read = AsyncMock(return_value=b'{"created": true}')
 
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -160,16 +152,16 @@ class TestAsyncHTTPMethods:
             # Verify request was called with json parameter
             mock_request.assert_called_once()
             call_kwargs = mock_request.call_args.kwargs
-            assert 'json' in call_kwargs, "POST should include json parameter"
+            assert "json" in call_kwargs, "POST should include json parameter"
 
     @pytest.mark.asyncio
     async def test_delete_request_is_async(self, base_client):
         """Verify DELETE requests work with async."""
         mock_response = AsyncMock()
         mock_response.status = 204
-        mock_response.read = AsyncMock(return_value=b'{}')
+        mock_response.read = AsyncMock(return_value=b"{}")
 
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -185,10 +177,11 @@ class TestAsyncErrorHandling:
     @pytest.mark.asyncio
     async def test_timeout_raises_polymarket_timeout_error(self, base_client):
         """Verify asyncio.TimeoutError is converted to PolymarketTimeoutError."""
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             # Make the context manager itself raise the error
             async def raise_timeout(*args, **kwargs):
                 raise asyncio.TimeoutError("Request timed out")
+
             mock_request.return_value.__aenter__ = raise_timeout
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -208,9 +201,12 @@ class TestAsyncErrorHandling:
         WebSocket transient-close downgrade in Phase 2 (06bf0898).
         """
         import logging as stdlib_logging
-        with patch.object(base_client.session, 'request') as mock_request:
+
+        with patch.object(base_client.session, "request") as mock_request:
+
             async def raise_timeout(*args, **kwargs):
                 raise asyncio.TimeoutError("Request timed out")
+
             mock_request.return_value.__aenter__ = raise_timeout
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -218,11 +214,10 @@ class TestAsyncErrorHandling:
             with pytest.raises(PolymarketTimeoutError):
                 await base_client._make_request("GET", "/test")
 
-        timeout_records = [
-            r for r in caplog.records
-            if "Request timeout" in r.getMessage()
-        ]
-        assert timeout_records, f"expected a Request timeout log; got {[r.getMessage() for r in caplog.records]}"
+        timeout_records = [r for r in caplog.records if "Request timeout" in r.getMessage()]
+        assert (
+            timeout_records
+        ), f"expected a Request timeout log; got {[r.getMessage() for r in caplog.records]}"
         for r in timeout_records:
             assert r.levelno == stdlib_logging.WARNING, (
                 f"Request timeout logged at {r.levelname}; must be WARNING "
@@ -232,17 +227,21 @@ class TestAsyncErrorHandling:
     @pytest.mark.asyncio
     async def test_aiohttp_client_error_raises_api_error(self, base_client):
         """Verify aiohttp.ClientError is converted to APIError."""
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             # Make the context manager itself raise the error
             async def raise_client_error(*args, **kwargs):
                 raise aiohttp.ClientError("Connection failed")
+
             mock_request.return_value.__aenter__ = raise_client_error
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with pytest.raises(APIError) as exc_info:
                 await base_client._make_request("GET", "/test")
 
-            assert "connection" in str(exc_info.value).lower() or "error" in str(exc_info.value).lower()
+            assert (
+                "connection" in str(exc_info.value).lower()
+                or "error" in str(exc_info.value).lower()
+            )
 
     @pytest.mark.asyncio
     async def test_connection_error_logs_at_warning_not_error(self, base_client, caplog):
@@ -252,9 +251,12 @@ class TestAsyncErrorHandling:
         transient network failures should not block paper-rehearsal markers.
         """
         import logging as stdlib_logging
-        with patch.object(base_client.session, 'request') as mock_request:
+
+        with patch.object(base_client.session, "request") as mock_request:
+
             async def raise_client_error(*args, **kwargs):
                 raise aiohttp.ClientError("Connection failed")
+
             mock_request.return_value.__aenter__ = raise_client_error
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -262,11 +264,10 @@ class TestAsyncErrorHandling:
             with pytest.raises(APIError):
                 await base_client._make_request("GET", "/test")
 
-        conn_records = [
-            r for r in caplog.records
-            if "Connection error" in r.getMessage()
-        ]
-        assert conn_records, f"expected a Connection error log; got {[r.getMessage() for r in caplog.records]}"
+        conn_records = [r for r in caplog.records if "Connection error" in r.getMessage()]
+        assert (
+            conn_records
+        ), f"expected a Connection error log; got {[r.getMessage() for r in caplog.records]}"
         for r in conn_records:
             assert r.levelno == stdlib_logging.WARNING, (
                 f"Connection error logged at {r.levelname}; must be WARNING "
@@ -281,7 +282,7 @@ class TestAsyncErrorHandling:
         mock_response.read = AsyncMock(return_value=b"Rate limit exceeded")
         mock_response.headers = {"Retry-After": "60"}  # Regular dict, not AsyncMock
 
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -295,7 +296,7 @@ class TestAsyncErrorHandling:
         mock_response.status = 401
         mock_response.read = AsyncMock(return_value=b"Unauthorized")
 
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -311,10 +312,12 @@ class TestAsyncRateLimiting:
         """Verify rate limiter is consulted before making request."""
         mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.read = AsyncMock(return_value=b'{}')
+        mock_response.read = AsyncMock(return_value=b"{}")
 
-        with patch.object(base_client.rate_limiter, 'acquire_async', new_callable=AsyncMock) as mock_acquire:
-            with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(
+            base_client.rate_limiter, "acquire_async", new_callable=AsyncMock
+        ) as mock_acquire:
+            with patch.object(base_client.session, "request") as mock_request:
                 mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
                 mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -330,10 +333,11 @@ class TestAsyncCircuitBreaker:
     @pytest.mark.asyncio
     async def test_circuit_breaker_tracks_failures(self, base_client):
         """Verify circuit breaker tracks failures via retry strategy."""
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             # Make the context manager itself raise the error
             async def raise_client_error(*args, **kwargs):
                 raise aiohttp.ClientError("Simulated failure")
+
             mock_request.return_value.__aenter__ = raise_client_error
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -380,10 +384,7 @@ class TestSessionLifecycle:
     @pytest.mark.asyncio
     async def test_session_cleanup_on_close(self, settings):
         """Verify session is properly closed."""
-        client = BaseAPIClient(
-            base_url="https://clob.polymarket.com",
-            settings=settings
-        )
+        client = BaseAPIClient(base_url="https://clob.polymarket.com", settings=settings)
 
         # Session should exist
         assert client.session is not None
@@ -398,10 +399,7 @@ class TestSessionLifecycle:
     @pytest.mark.asyncio
     async def test_multiple_close_calls_safe(self, settings):
         """Verify multiple close() calls don't raise errors."""
-        client = BaseAPIClient(
-            base_url="https://clob.polymarket.com",
-            settings=settings
-        )
+        client = BaseAPIClient(base_url="https://clob.polymarket.com", settings=settings)
 
         await client.close()
         # Should not raise
@@ -418,7 +416,7 @@ class TestConnectionPooling:
         mock_response.status = 200
         mock_response.read = AsyncMock(return_value=b'{"test": "data"}')
 
-        with patch.object(base_client.session, 'request') as mock_request:
+        with patch.object(base_client.session, "request") as mock_request:
             mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 

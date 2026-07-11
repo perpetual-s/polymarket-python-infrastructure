@@ -26,8 +26,7 @@ from shared.polymarket.api.real_time_data import Message
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -55,8 +54,8 @@ def on_price_change(msg: Message):
 def on_crypto_price(msg: Message):
     """Handle crypto price updates."""
     payload = msg.payload
-    symbol = payload.get('symbol', 'unknown')
-    price = payload.get('price', 0)
+    symbol = payload.get("symbol", "unknown")
+    price = payload.get("price", 0)
     logger.info(f"CRYPTO: {symbol.upper()} = ${price:,.2f}")
 
 

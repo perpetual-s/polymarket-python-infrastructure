@@ -26,7 +26,7 @@ from loguru import logger
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 from shared.polymarket import PolymarketClient, WalletConfig
-from shared.polymarket.models import SignatureType, OrderRequest
+from shared.polymarket.models import OrderRequest, SignatureType
 
 # Market details
 MARKET_CONDITION_ID = "0xcb111226a8271fed0c71bb5ec1bd67b2a4fd72f1eb08466e2180b9efa99d3f32"
@@ -59,7 +59,7 @@ async def main():
     wallet_config = WalletConfig(
         private_key=private_key,
         address=proxy_address if proxy_address else eoa_address,
-        signature_type=SignatureType.PROXY if proxy_address else SignatureType.EOA
+        signature_type=SignatureType.PROXY if proxy_address else SignatureType.EOA,
     )
     await client.add_wallet(wallet_config, wallet_id="WALLET_1")
 
@@ -115,7 +115,9 @@ async def main():
         order_cost = min_size * order_price
 
         if order_cost > balance.collateral:
-            logger.error(f"Insufficient balance: need ${order_cost:.2f} for minimum order, have ${balance.collateral:.2f}")
+            logger.error(
+                f"Insufficient balance: need ${order_cost:.2f} for minimum order, have ${balance.collateral:.2f}"
+            )
             return
 
         order_size = min_size
@@ -124,12 +126,7 @@ async def main():
         logger.info(f"Total cost: ~${order_size * order_price:.2f}")
 
         # Create order request
-        order = OrderRequest(
-            token_id=YES_TOKEN_ID,
-            price=order_price,
-            size=order_size,
-            side="BUY"
-        )
+        order = OrderRequest(token_id=YES_TOKEN_ID, price=order_price, size=order_size, side="BUY")
 
         # Place order
         logger.info("\nPlacing order...")

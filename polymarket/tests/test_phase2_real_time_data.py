@@ -10,18 +10,20 @@ Tests RealTimeDataClient functionality:
 - Stream helpers
 """
 
-import pytest
-import time
 import json
 import logging
-from unittest.mock import Mock, patch, MagicMock
+import time
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
 from polymarket.api.real_time_data import (
-    RealTimeDataClient,
-    ConnectionStatus,
     ClobApiKeyCreds,
-    Subscription,
+    ConnectionStatus,
     Message,
-    StreamHelpers
+    RealTimeDataClient,
+    StreamHelpers,
+    Subscription,
 )
 
 
@@ -48,9 +50,7 @@ class TestRealTimeDataClientInit:
         on_status = Mock()
 
         client = RealTimeDataClient(
-            on_connect=on_connect,
-            on_message=on_message,
-            on_status_change=on_status
+            on_connect=on_connect, on_message=on_message, on_status_change=on_status
         )
 
         assert client.on_connect == on_connect
@@ -102,7 +102,7 @@ class TestConnectionManagement:
 class TestSubscriptionHandling:
     """Test subscription methods."""
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_basic(self, mock_ws_class):
         """Test basic subscription."""
         mock_ws = MagicMock()
@@ -124,7 +124,7 @@ class TestSubscriptionHandling:
         assert data["subscriptions"][0]["topic"] == "activity"
         assert data["subscriptions"][0]["type"] == "trades"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_with_filters(self, mock_ws_class):
         """Test subscription with filters."""
         mock_ws = MagicMock()
@@ -142,7 +142,7 @@ class TestSubscriptionHandling:
 
         assert data["subscriptions"][0]["filters"] == filters
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_with_clob_auth(self, mock_ws_class):
         """Test subscription with CLOB auth."""
         mock_ws = MagicMock()
@@ -152,11 +152,7 @@ class TestSubscriptionHandling:
         client = RealTimeDataClient()
         client.ws = mock_ws
 
-        clob_auth = ClobApiKeyCreds(
-            key="test-key",
-            secret="test-secret",
-            passphrase="test-pass"
-        )
+        clob_auth = ClobApiKeyCreds(key="test-key", secret="test-secret", passphrase="test-pass")
 
         client.subscribe(topic="clob_user", type="order", clob_auth=clob_auth)
 
@@ -166,7 +162,7 @@ class TestSubscriptionHandling:
         assert "clob_auth" in data["subscriptions"][0]
         assert data["subscriptions"][0]["clob_auth"]["key"] == "test-key"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_unsubscribe(self, mock_ws_class):
         """Test unsubscribe."""
         mock_ws = MagicMock()
@@ -194,7 +190,7 @@ class TestMessageParsing:
             type="trades",
             timestamp=1234567890,
             payload={"price": 0.55},
-            connection_id="conn-123"
+            connection_id="conn-123",
         )
 
         assert message.topic == "activity"
@@ -212,13 +208,15 @@ class TestMessageParsing:
 
         client = RealTimeDataClient(on_message=on_message)
 
-        raw_message = json.dumps({
-            "topic": "activity",
-            "type": "trades",
-            "timestamp": 1234567890,
-            "payload": {"price": 0.55, "size": 100},
-            "connection_id": "conn-123"
-        })
+        raw_message = json.dumps(
+            {
+                "topic": "activity",
+                "type": "trades",
+                "timestamp": 1234567890,
+                "payload": {"price": 0.55, "size": 100},
+                "connection_id": "conn-123",
+            }
+        )
 
         client._on_message(None, raw_message)
 
@@ -252,10 +250,7 @@ class TestMessageParsing:
         client = RealTimeDataClient(on_message=on_message)
 
         # System message (no payload)
-        raw_message = json.dumps({
-            "status": "subscribed",
-            "topic": "activity"
-        })
+        raw_message = json.dumps({"status": "subscribed", "topic": "activity"})
 
         client._on_message(None, raw_message)
 
@@ -265,7 +260,7 @@ class TestMessageParsing:
 class TestStreamHelpers:
     """Test StreamHelpers convenience methods."""
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_market_trades(self, mock_ws_class):
         """Test market trades helper."""
         mock_ws = MagicMock()
@@ -285,7 +280,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters["market_slug"] == "trump-2024"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_event_trades(self, mock_ws_class):
         """Test event trades helper."""
         mock_ws = MagicMock()
@@ -303,7 +298,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters["event_slug"] == "election-2024"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_event_comments(self, mock_ws_class):
         """Test event comments helper."""
         mock_ws = MagicMock()
@@ -323,7 +318,7 @@ class TestStreamHelpers:
         assert filters["parentEntityID"] == 100
         assert filters["parentEntityType"] == "Event"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_crypto_price(self, mock_ws_class):
         """Test crypto price helper."""
         mock_ws = MagicMock()
@@ -343,7 +338,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters["symbol"] == "btcusdt"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_market_orderbook(self, mock_ws_class):
         """Test market orderbook helper."""
         mock_ws = MagicMock()
@@ -364,7 +359,7 @@ class TestStreamHelpers:
         filters = json.loads(data["subscriptions"][0]["filters"])
         assert filters == token_ids
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_price_changes(self, mock_ws_class):
         """Test price changes helper."""
         mock_ws = MagicMock()
@@ -383,7 +378,7 @@ class TestStreamHelpers:
         assert data["subscriptions"][0]["topic"] == "clob_market"
         assert data["subscriptions"][0]["type"] == "price_change"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_new_markets(self, mock_ws_class):
         """Test new markets helper."""
         mock_ws = MagicMock()
@@ -401,7 +396,7 @@ class TestStreamHelpers:
         assert data["subscriptions"][0]["topic"] == "clob_market"
         assert data["subscriptions"][0]["type"] == "market_created"
 
-    @patch('polymarket.api.real_time_data.websocket.WebSocketApp')
+    @patch("polymarket.api.real_time_data.websocket.WebSocketApp")
     def test_subscribe_to_market_resolutions(self, mock_ws_class):
         """Test market resolutions helper."""
         mock_ws = MagicMock()
@@ -425,11 +420,7 @@ class TestDataTypes:
 
     def test_clob_api_key_creds(self):
         """Test ClobApiKeyCreds dataclass."""
-        creds = ClobApiKeyCreds(
-            key="test-key",
-            secret="test-secret",
-            passphrase="test-pass"
-        )
+        creds = ClobApiKeyCreds(key="test-key", secret="test-secret", passphrase="test-pass")
 
         assert creds.key == "test-key"
         assert creds.secret == "test-secret"
@@ -438,10 +429,7 @@ class TestDataTypes:
     def test_subscription_dataclass(self):
         """Test Subscription dataclass."""
         sub = Subscription(
-            topic="activity",
-            type="trades",
-            filters='{"market_slug":"test"}',
-            clob_auth=None
+            topic="activity", type="trades", filters='{"market_slug":"test"}', clob_auth=None
         )
 
         assert sub.topic == "activity"
@@ -492,18 +480,21 @@ class TestErrorHandling:
 
     def test_on_message_callback_exception_handled(self):
         """Test exception in message callback is caught."""
+
         def bad_callback(client, message):
             raise ValueError("Test error")
 
         client = RealTimeDataClient(on_message=bad_callback)
 
-        raw_message = json.dumps({
-            "topic": "activity",
-            "type": "trades",
-            "timestamp": 1234567890,
-            "payload": {"price": 0.55},
-            "connection_id": "conn-123"
-        })
+        raw_message = json.dumps(
+            {
+                "topic": "activity",
+                "type": "trades",
+                "timestamp": 1234567890,
+                "payload": {"price": 0.55},
+                "connection_id": "conn-123",
+            }
+        )
 
         # Should not crash
         client._on_message(None, raw_message)
@@ -523,8 +514,7 @@ class TestErrorHandling:
             for record in caplog.records
         )
         assert not any(
-            record.name == "polymarket.api.real_time_data"
-            and record.levelno >= logging.ERROR
+            record.name == "polymarket.api.real_time_data" and record.levelno >= logging.ERROR
             for record in caplog.records
         )
 
@@ -542,8 +532,7 @@ class TestErrorHandling:
             for record in caplog.records
         )
         assert not any(
-            record.name == "polymarket.api.real_time_data"
-            and record.levelno >= logging.ERROR
+            record.name == "polymarket.api.real_time_data" and record.levelno >= logging.ERROR
             for record in caplog.records
         )
 
@@ -565,8 +554,7 @@ class TestErrorHandling:
             for record in caplog.records
         )
         assert not any(
-            record.name == "polymarket.api.real_time_data"
-            and record.levelno >= logging.ERROR
+            record.name == "polymarket.api.real_time_data" and record.levelno >= logging.ERROR
             for record in caplog.records
         )
 
@@ -620,7 +608,7 @@ class TestIntegration:
 
         client = RealTimeDataClient(
             on_connect=lambda c: StreamHelpers.subscribe_to_crypto_price(c, "btcusdt"),
-            on_message=on_message
+            on_message=on_message,
         )
 
         client.connect()

@@ -40,9 +40,8 @@ class _TransientDisconnectSeverityFilter(logging.Filter):
     """Downgrade websocket-client's recoverable disconnect goodbye logs."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if (
-            record.levelno >= logging.ERROR
-            and is_transient_websocket_disconnect(record.getMessage())
+        if record.levelno >= logging.ERROR and is_transient_websocket_disconnect(
+            record.getMessage()
         ):
             record.levelno = logging.WARNING
             record.levelname = logging.getLevelName(logging.WARNING)

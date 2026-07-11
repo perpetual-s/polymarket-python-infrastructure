@@ -5,13 +5,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ..api.data_api import DataAPI
-from ..api.gamma import GammaAPI
 from ..api.clob import CLOBAPI
 from ..api.clob_public import PublicCLOBAPI
+from ..api.data_api import DataAPI
+from ..api.gamma import GammaAPI
 from ..auth.authenticator import Authenticator
 from ..config import PolymarketSettings
-from ..exceptions import APIError, MarketDataError, TimeoutError as PolymarketTimeoutError
+from ..exceptions import APIError, MarketDataError
+from ..exceptions import TimeoutError as PolymarketTimeoutError
 from ..models import Activity, LeaderboardTrader
 
 
@@ -220,7 +221,6 @@ async def test_public_get_best_bid_ask_returns_none_on_no_orderbook_404_without_
         for record in caplog.records
     )
     assert not any(
-        record.name == "polymarket.api.clob_public"
-        and record.levelno >= logging.ERROR
+        record.name == "polymarket.api.clob_public" and record.levelno >= logging.ERROR
         for record in caplog.records
     )

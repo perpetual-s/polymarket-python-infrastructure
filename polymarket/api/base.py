@@ -9,24 +9,20 @@ when multiple threads request the same data concurrently (2-10x reduction).
 PERFORMANCE OPTIMIZATION: orjson for JSON parsing (30-50% faster, releases GIL)
 """
 
-import orjson  # Fast JSON parser (30-50% faster than stdlib, releases GIL)
-import aiohttp
 import asyncio
-import time
 import hashlib
-from typing import Optional, Any, Dict, Tuple
-from urllib.parse import urljoin
 import logging
+import time
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urljoin
+
+import aiohttp
+import orjson  # Fast JSON parser (30-50% faster than stdlib, releases GIL)
 
 from ..config import PolymarketSettings
-from ..exceptions import (
-    APIError,
-    TimeoutError,
-    RateLimitError,
-    AuthenticationError
-)
+from ..exceptions import APIError, AuthenticationError, RateLimitError, TimeoutError
 from ..utils.rate_limiter import RateLimiter
-from ..utils.retry import RetryStrategy, CircuitBreaker
+from ..utils.retry import CircuitBreaker, RetryStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +39,7 @@ class BaseAPIClient:
         base_url: str,
         settings: PolymarketSettings,
         rate_limiter: Optional[RateLimiter] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize base API client.
@@ -65,19 +61,19 @@ class BaseAPIClient:
             base_delay=1.0,
             max_delay=settings.retry_backoff_max,
             exponential_base=settings.retry_backoff_base,
-            circuit_breaker=circuit_breaker
+            circuit_breaker=circuit_breaker,
         )
 
         # Create aiohttp session with optimized connection pooling
         # Production-tuned pool sizes for high-concurrency trading
-        pool_connections = getattr(settings, 'pool_connections', 50)
-        pool_maxsize = getattr(settings, 'pool_maxsize', 100)
+        pool_connections = getattr(settings, "pool_connections", 50)
+        pool_maxsize = getattr(settings, "pool_maxsize", 100)
 
         # Configure timeout
         timeout = aiohttp.ClientTimeout(
             total=settings.connect_timeout + settings.request_timeout,
             connect=settings.connect_timeout,
-            sock_read=settings.request_timeout
+            sock_read=settings.request_timeout,
         )
 
         # Configure TCP connector for connection pooling
@@ -85,7 +81,7 @@ class BaseAPIClient:
             limit=pool_maxsize,  # Max total connections
             limit_per_host=pool_connections,  # Max connections per host
             ttl_dns_cache=300,  # DNS cache TTL
-            enable_cleanup_closed=True  # Clean up closed connections
+            enable_cleanup_closed=True,  # Clean up closed connections
         )
 
         # HTTP headers for optimal API communication
@@ -112,13 +108,10 @@ class BaseAPIClient:
                     return data
 
             converted = convert_large_ints(obj)
-            return orjson.dumps(converted).decode('utf-8')
+            return orjson.dumps(converted).decode("utf-8")
 
         self.session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers=headers,
-            json_serialize=serialize_json
+            connector=connector, timeout=timeout, headers=headers, json_serialize=serialize_json
         )
 
         # Request ID tracking
@@ -136,7 +129,7 @@ class BaseAPIClient:
         method: str,
         path: str,
         params: Optional[Dict[str, Any]] = None,
-        json_data: Optional[Dict[str, Any]] = None
+        json_data: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate unique cache key for request deduplication.
@@ -156,13 +149,13 @@ class BaseAPIClient:
         if params:
             # Sort params for deterministic ordering
             # orjson.dumps() returns bytes, decode to str for cache key
-            sorted_params = orjson.dumps(params, option=orjson.OPT_SORT_KEYS).decode('utf-8')
+            sorted_params = orjson.dumps(params, option=orjson.OPT_SORT_KEYS).decode("utf-8")
             key_parts.append(sorted_params)
 
         if json_data:
             # Sort json_data for deterministic ordering
             # orjson.dumps() returns bytes, decode to str for cache key
-            sorted_json = orjson.dumps(json_data, option=orjson.OPT_SORT_KEYS).decode('utf-8')
+            sorted_json = orjson.dumps(json_data, option=orjson.OPT_SORT_KEYS).decode("utf-8")
             key_parts.append(sorted_json)
 
         # Hash for efficiency (instead of storing full string)
@@ -196,7 +189,7 @@ class BaseAPIClient:
         params: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
         data: Optional[str] = None,
-        rate_limit_key: Optional[str] = None
+        rate_limit_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Make async HTTP request with error handling and deduplication.
@@ -316,7 +309,11 @@ class BaseAPIClient:
                         error_msg += f": {error_data}"
                     except (ValueError, TypeError, orjson.JSONDecodeError) as e:
                         logger.debug(f"Could not parse error response as JSON: {e}")
-                        response_text = response_bytes.decode('utf-8', errors='ignore') if 'response_bytes' in locals() else ""
+                        response_text = (
+                            response_bytes.decode("utf-8", errors="ignore")
+                            if "response_bytes" in locals()
+                            else ""
+                        )
                         error_msg += f": {response_text[:200]}"
 
                     if response.status == 401 or response.status == 403:
@@ -326,13 +323,13 @@ class BaseAPIClient:
                         raise RateLimitError(
                             error_msg,
                             endpoint=rate_limit_key or path,
-                            retry_after=float(retry_after) if retry_after else None
+                            retry_after=float(retry_after) if retry_after else None,
                         )
                     else:
                         raise APIError(
                             error_msg,
                             status_code=response.status,
-                            response=error_data if 'error_data' in locals() else None
+                            response=error_data if "error_data" in locals() else None,
                         )
 
                 # Parse JSON response with orjson (30-50% faster)
@@ -341,7 +338,7 @@ class BaseAPIClient:
                     result = orjson.loads(response_bytes)
                     return result
                 except (ValueError, orjson.JSONDecodeError) as e:
-                    response_text = response_bytes.decode('utf-8', errors='ignore')
+                    response_text = response_bytes.decode("utf-8", errors="ignore")
                     logger.error(f"Invalid JSON response: {response_text[:200]}")
                     raise APIError(f"Invalid JSON response: {e}")
 
@@ -394,7 +391,7 @@ class BaseAPIClient:
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         rate_limit_key: Optional[str] = None,
-        retry: bool = True
+        retry: bool = True,
     ) -> Dict[str, Any]:
         """
         Make GET request.
@@ -416,15 +413,11 @@ class BaseAPIClient:
                 path,
                 headers=headers,
                 params=params,
-                rate_limit_key=rate_limit_key
+                rate_limit_key=rate_limit_key,
             )
         else:
             return await self._make_request(
-                "GET",
-                path,
-                headers=headers,
-                params=params,
-                rate_limit_key=rate_limit_key
+                "GET", path, headers=headers, params=params, rate_limit_key=rate_limit_key
             )
 
     async def post(
@@ -434,7 +427,7 @@ class BaseAPIClient:
         data: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
         rate_limit_key: Optional[str] = None,
-        retry: bool = True
+        retry: bool = True,
     ) -> Dict[str, Any]:
         """
         Make POST request.
@@ -458,7 +451,7 @@ class BaseAPIClient:
                 headers=headers,
                 json_data=json_data,
                 data=data,
-                rate_limit_key=rate_limit_key
+                rate_limit_key=rate_limit_key,
             )
         else:
             return await self._make_request(
@@ -467,7 +460,7 @@ class BaseAPIClient:
                 headers=headers,
                 json_data=json_data,
                 data=data,
-                rate_limit_key=rate_limit_key
+                rate_limit_key=rate_limit_key,
             )
 
     async def delete(
@@ -477,7 +470,7 @@ class BaseAPIClient:
         json_data: Optional[Dict[str, Any]] = None,
         data: Optional[str] = None,
         rate_limit_key: Optional[str] = None,
-        retry: bool = True
+        retry: bool = True,
     ) -> Dict[str, Any]:
         """
         Make DELETE request.
@@ -501,7 +494,7 @@ class BaseAPIClient:
                 headers=headers,
                 json_data=json_data,
                 data=data,
-                rate_limit_key=rate_limit_key
+                rate_limit_key=rate_limit_key,
             )
         else:
             return await self._make_request(
@@ -510,7 +503,7 @@ class BaseAPIClient:
                 headers=headers,
                 json_data=json_data,
                 data=data,
-                rate_limit_key=rate_limit_key
+                rate_limit_key=rate_limit_key,
             )
 
     async def health_check(self) -> Dict[str, Any]:
@@ -529,14 +522,10 @@ class BaseAPIClient:
             return {
                 "status": "healthy",
                 "latency_ms": round(latency * 1000, 2),
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
         except Exception as e:
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": time.time()
-            }
+            return {"status": "unhealthy", "error": str(e), "timestamp": time.time()}
 
     async def close(self) -> None:
         """Close session and cleanup resources."""

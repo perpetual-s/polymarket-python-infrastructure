@@ -1,4 +1,5 @@
 """Facade RTDS routing: concurrent subscriptions must not clobber each other."""
+
 import time
 from unittest.mock import MagicMock, patch
 
@@ -10,8 +11,13 @@ from polymarket.config import PolymarketSettings
 
 
 def _msg(topic, type_, payload):
-    return Message(topic=topic, type=type_, timestamp=int(time.time() * 1000),
-                   payload=payload, connection_id="test")
+    return Message(
+        topic=topic,
+        type=type_,
+        timestamp=int(time.time() * 1000),
+        payload=payload,
+        connection_id="test",
+    )
 
 
 @pytest.mark.asyncio
@@ -42,8 +48,9 @@ async def test_same_callback_multi_token_delivers_once(mock_rtds_class):
             got = []
             client.subscribe_market_price_changes(got.append, token_ids=["1"])
             client.subscribe_market_price_changes(got.append, token_ids=["2"])
-        client._dispatch_rtds_message(mock_rtds, _msg("clob_market", "price_change",
-                                                      {"price_changes": []}))
+        client._dispatch_rtds_message(
+            mock_rtds, _msg("clob_market", "price_change", {"price_changes": []})
+        )
         assert len(got) == 1  # id(callback)-keyed registry: one delivery, no duplicate
 
 
@@ -55,8 +62,10 @@ async def test_callback_exception_does_not_break_other_handlers(mock_rtds_class)
     mock_rtds_class.return_value = mock_rtds
     async with PolymarketClient(settings=PolymarketSettings(enable_rtds=True)) as client:
         with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+
             def boom(_msg):
                 raise RuntimeError("boom")
+
             got = []
             client.subscribe_activity_trades(boom)
             client.subscribe_activity_orders_matched(got.append)

@@ -6,13 +6,14 @@ Run with: pytest shared/polymarket/tests/integration/test_market_manager.py -v
 """
 
 import asyncio
-import pytest
-from decimal import Decimal
 import time
+from decimal import Decimal
 
-from polymarket.market_manager import MarketManager, MarketManagerConfig
+import pytest
+
 from polymarket.api.clob_public import PublicCLOBAPI
 from polymarket.config import PolymarketSettings
+from polymarket.market_manager import MarketManager, MarketManagerConfig
 
 
 @pytest.fixture
@@ -41,7 +42,7 @@ def manager_config():
         bootstrap_timeout=60.0,  # 1 minute timeout for tests
         enable_periodic_sync=False,  # Disable for tests
         enable_websocket=False,  # Disable for unit tests
-        max_markets=1000  # Limit for faster tests
+        max_markets=1000,  # Limit for faster tests
     )
 
 
@@ -117,8 +118,7 @@ class TestMarketManagerQueries:
         """Test volume filtering."""
         # Get markets with high volume
         high_volume_markets = initialized_manager.get_tradeable_markets(
-            min_volume=Decimal("10000"),
-            limit=10
+            min_volume=Decimal("10000"), limit=10
         )
 
         for market in high_volume_markets:
@@ -129,16 +129,10 @@ class TestMarketManagerQueries:
     async def test_get_tradeable_markets_filters_by_rewards(self, initialized_manager):
         """Test reward filtering."""
         # Get only reward markets
-        reward_markets = initialized_manager.get_tradeable_markets(
-            has_rewards=True,
-            limit=50
-        )
+        reward_markets = initialized_manager.get_tradeable_markets(has_rewards=True, limit=50)
 
         # Should have fewer or equal markets than total
-        all_markets = initialized_manager.get_tradeable_markets(
-            has_rewards=False,
-            limit=1000
-        )
+        all_markets = initialized_manager.get_tradeable_markets(has_rewards=False, limit=1000)
 
         assert len(reward_markets) <= len(all_markets)
 
@@ -165,9 +159,7 @@ class TestMarketManagerQueries:
         start = time.time()
         for _ in range(100):
             initialized_manager.get_tradeable_markets(
-                min_volume=Decimal("10000"),
-                has_rewards=True,
-                limit=50
+                min_volume=Decimal("10000"), has_rewards=True, limit=50
             )
         elapsed = time.time() - start
 
@@ -187,9 +179,9 @@ class TestMarketManagerQueries:
 
         # Verify descending order
         for i in range(len(volumes) - 1):
-            assert volumes[i] >= volumes[i + 1], (
-                f"Results not sorted: volume[{i}]={volumes[i]} < volume[{i+1}]={volumes[i+1]}"
-            )
+            assert (
+                volumes[i] >= volumes[i + 1]
+            ), f"Results not sorted: volume[{i}]={volumes[i]} < volume[{i+1}]={volumes[i+1]}"
 
         print(f"Top 5 volumes: {volumes[:5]}")
 
@@ -198,8 +190,7 @@ class TestMarketManagerQueries:
         """Test graceful handling when no markets match filters."""
         # Use impossibly high volume filter
         markets = initialized_manager.get_tradeable_markets(
-            min_volume=Decimal("999999999999"),  # $999 billion
-            limit=50
+            min_volume=Decimal("999999999999"), limit=50  # $999 billion
         )
 
         assert markets == [], f"Expected empty list, got {len(markets)} markets"
@@ -268,7 +259,7 @@ if __name__ == "__main__":
             use_sampling_markets=True,
             enable_websocket=False,
             enable_periodic_sync=False,
-            max_markets=500  # Limit for quick test
+            max_markets=500,  # Limit for quick test
         )
 
         manager = MarketManager(clob_api, config)
@@ -287,9 +278,7 @@ if __name__ == "__main__":
             print("\n2. Testing queries...")
             start = time.time()
             markets = manager.get_tradeable_markets(
-                min_volume=Decimal("10000"),
-                has_rewards=True,
-                limit=20
+                min_volume=Decimal("10000"), has_rewards=True, limit=20
             )
             elapsed = (time.time() - start) * 1000
             print(f"   Query: {len(markets)} markets in {elapsed:.2f}ms")

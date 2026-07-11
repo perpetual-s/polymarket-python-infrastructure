@@ -23,10 +23,10 @@ import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional, Dict, List, Set, Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .api.clob_public import PublicCLOBAPI
-from .api.real_time_data import RealTimeDataClient, StreamHelpers, Message, ConnectionStatus
+from .api.real_time_data import ConnectionStatus, Message, RealTimeDataClient, StreamHelpers
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ class MarketManager:
                 on_connect=self._on_ws_connect,
                 on_message=self._on_ws_message,
                 on_status_change=self._on_ws_status_change,
-                auto_reconnect=self.config.auto_reconnect
+                auto_reconnect=self.config.auto_reconnect,
             )
             self._ws_client.connect()
 
@@ -305,7 +305,7 @@ class MarketManager:
         min_volume: Optional[Decimal] = None,
         min_liquidity: Optional[Decimal] = None,
         has_rewards: bool = False,
-        limit: int = 50
+        limit: int = 50,
     ) -> List[Dict[str, Any]]:
         """
         Get tradeable markets from cache (thread-safe snapshot).
@@ -315,7 +315,9 @@ class MarketManager:
         # Take snapshot under lock
         with self._lock:
             if has_rewards:
-                candidates = [self._markets[cid] for cid in self._reward_markets if cid in self._markets]
+                candidates = [
+                    self._markets[cid] for cid in self._reward_markets if cid in self._markets
+                ]
             else:
                 candidates = list(self._markets.values())
 
@@ -430,7 +432,7 @@ class MarketManager:
         with self._lock:
             last_update = self._stats.last_sync_at or self._stats.last_bootstrap_at
             if last_update is None:
-                return float('inf')
+                return float("inf")
             return time.time() - last_update
 
     # ========== WebSocket Callbacks ==========
@@ -672,7 +674,7 @@ class MarketManager:
             batch_size = self.config.database_sync_batch_size
 
             for i in range(0, len(markets_snapshot), batch_size):
-                batch = markets_snapshot[i:i + batch_size]
+                batch = markets_snapshot[i : i + batch_size]
 
                 for market in batch:
                     try:
@@ -714,6 +716,7 @@ class MarketManager:
         end_date = None
         if market.get("end_date_iso") or market.get("endDateIso"):
             from datetime import datetime
+
             date_str = market.get("end_date_iso") or market.get("endDateIso")
             try:
                 end_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
@@ -778,8 +781,16 @@ class MarketManager:
             self._to_decimal(market.get("spread")),
             self._to_decimal(market.get("lastTradePrice") or market.get("last_trade_price")),
             self._to_decimal(market.get("competitive")),
-            self._to_decimal(market.get("rewards", {}).get("min_size") if isinstance(market.get("rewards"), dict) else None),
-            self._to_decimal(market.get("rewards", {}).get("max_spread") if isinstance(market.get("rewards"), dict) else None),
+            self._to_decimal(
+                market.get("rewards", {}).get("min_size")
+                if isinstance(market.get("rewards"), dict)
+                else None
+            ),
+            self._to_decimal(
+                market.get("rewards", {}).get("max_spread")
+                if isinstance(market.get("rewards"), dict)
+                else None
+            ),
             end_date,
             market.get("groupItemTitle") or market.get("group_item_title"),
             market.get("groupItemThreshold") or market.get("group_item_threshold"),

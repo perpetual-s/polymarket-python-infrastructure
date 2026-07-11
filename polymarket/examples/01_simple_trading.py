@@ -18,17 +18,13 @@ This example shows:
 - Balance checking
 """
 
+import asyncio
 import os
 import time
-import asyncio
 from decimal import Decimal
-from shared.polymarket import (
-    PolymarketClient,
-    WalletConfig,
-    OrderRequest,
-    Side,
-    OrderType
-)
+
+from shared.polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
+
 
 async def main():
     """Simple trading bot example."""
@@ -38,7 +34,7 @@ async def main():
     client = PolymarketClient(
         # Optional: Configure for your needs
         pool_connections=20,  # For single wallet, 20 is plenty
-        pool_maxsize=50
+        pool_maxsize=50,
     )
 
     # 2. Add your wallet
@@ -49,7 +45,7 @@ async def main():
     client.add_wallet(
         WalletConfig(private_key=private_key),
         wallet_id="strategy1",
-        set_default=True  # Makes this the default wallet
+        set_default=True,  # Makes this the default wallet
     )
     print("✓ Wallet added")
 
@@ -92,9 +88,9 @@ async def main():
     order = OrderRequest(
         token_id=token_id,
         price=Decimal("0.50"),  # Buy at $0.50
-        size=Decimal("10.0"),   # Spend $10 USDC
+        size=Decimal("10.0"),  # Spend $10 USDC
         side=Side.BUY,
-        order_type=OrderType.GTC  # Good-til-cancelled
+        order_type=OrderType.GTC,  # Good-til-cancelled
     )
 
     try:
@@ -135,6 +131,7 @@ async def main():
             print(f"   P&L: ${pos.cash_pnl:.2f} ({pos.percent_pnl:.1f}%)")
     else:
         print("  No open positions")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

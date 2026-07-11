@@ -1,4 +1,5 @@
 """RTDS transport: registry-when-disconnected, unconditional keepalive, staleness watchdog."""
+
 import json
 import time
 from unittest.mock import MagicMock, patch

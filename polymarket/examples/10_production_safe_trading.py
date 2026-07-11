@@ -12,27 +12,28 @@ This is the RECOMMENDED pattern for all production trading.
 Copy this for your Strategy-1 and Strategy-3 bots.
 """
 
-import os
 import asyncio
+import os
 from decimal import Decimal
-from shared.polymarket import (
-    PolymarketClient,
-    WalletConfig,
+
+from shared.polymarket import (  # NEW: Import validation and fee utilities
     OrderRequest,
-    Side,
     OrderType,
-    # NEW: Import validation and fee utilities
-    validate_order,
-    validate_balance,
+    PolymarketClient,
+    Side,
+    WalletConfig,
     calculate_net_cost,
     calculate_profit_after_fees,
     check_order_profitability,
+    validate_balance,
+    validate_order,
 )
 from shared.polymarket.exceptions import (
-    ValidationError,
     InsufficientBalanceError,
     OrderRejectedError,
+    ValidationError,
 )
+
 
 async def main():
     """Production-safe trading example with all validations."""
@@ -50,9 +51,7 @@ async def main():
         raise ValueError("Set POLYMARKET_PRIVATE_KEY environment variable")
 
     client.add_wallet(
-        WalletConfig(private_key=private_key),
-        wallet_id="strategy1",
-        set_default=True
+        WalletConfig(private_key=private_key), wallet_id="strategy1", set_default=True
     )
     print("✓ Wallet added\n")
 
@@ -85,7 +84,7 @@ async def main():
 
     # Define order parameters
     entry_price = orderbook.best_ask  # Buy at best ask (already Decimal from orderbook)
-    exit_price = entry_price + Decimal("0.05")   # Target 5 cent profit
+    exit_price = entry_price + Decimal("0.05")  # Target 5 cent profit
     size = Decimal("50.0")  # $50 USDC order
     fee_rate_bps = 0  # Polymarket charges 0% fees (officially confirmed)
 
@@ -95,11 +94,7 @@ async def main():
 
     # 1.1: Create order request
     order = OrderRequest(
-        token_id=token_id,
-        price=entry_price,
-        size=size,
-        side=Side.BUY,
-        order_type=OrderType.GTC
+        token_id=token_id, price=entry_price, size=size, side=Side.BUY, order_type=OrderType.GTC
     )
 
     # 1.2: Validate order parameters
@@ -113,10 +108,7 @@ async def main():
     # 1.3: Calculate fees BEFORE placing order
     print("\n[2/4] Calculating fees...")
     net_cost, fee = calculate_net_cost(
-        side=Side.BUY,
-        price=entry_price,
-        size=size,
-        fee_rate_bps=fee_rate_bps
+        side=Side.BUY, price=entry_price, size=size, fee_rate_bps=fee_rate_bps
     )
 
     token_count = size / entry_price
@@ -131,7 +123,7 @@ async def main():
         price=entry_price,
         size=size,
         available_usdc=balance.collateral,
-        fee_rate_bps=fee_rate_bps
+        fee_rate_bps=fee_rate_bps,
     )
 
     if not valid:
@@ -148,7 +140,7 @@ async def main():
         exit_price=exit_price,
         size=size,
         fee_rate_bps=fee_rate_bps,
-        min_profit_usdc=Decimal("1.0")  # Require at least $1 profit
+        min_profit_usdc=Decimal("1.0"),  # Require at least $1 profit
     )
 
     if not profitable:
@@ -167,7 +159,7 @@ async def main():
         exit_price=exit_price,
         size=size,
         entry_fee_rate_bps=fee_rate_bps,
-        exit_fee_rate_bps=fee_rate_bps
+        exit_fee_rate_bps=fee_rate_bps,
     )
 
     print("\n  P&L Breakdown:")

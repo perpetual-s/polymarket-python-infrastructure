@@ -18,9 +18,7 @@ def test_macos_dns_resolution_failure_is_transient():
 
 def test_linux_dns_resolution_failures_are_transient():
     assert is_transient_websocket_disconnect("[Errno -2] Name or service not known")
-    assert is_transient_websocket_disconnect(
-        "[Errno -3] Temporary failure in name resolution"
-    )
+    assert is_transient_websocket_disconnect("[Errno -3] Temporary failure in name resolution")
 
 
 def test_unrelated_error_is_not_transient():

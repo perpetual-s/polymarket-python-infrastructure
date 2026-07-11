@@ -181,7 +181,9 @@ async def test_place_orders_batch_fails_closed_when_balance_lookup_errors() -> N
 async def test_place_orders_batch_reserves_only_successful_buy_notional() -> None:
     client = build_test_client()
     try:
-        client.get_balances = AsyncMock(return_value=Balance(collateral=Decimal("100.00"), tokens={}))
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
         client.get_position_balance = AsyncMock(return_value=Decimal("0"))
         client.clob.post_orders_batch = AsyncMock(
             return_value=[
@@ -207,7 +209,9 @@ async def test_place_orders_batch_reserves_only_successful_buy_notional() -> Non
 async def test_place_orders_batch_supports_mixed_buy_and_sell_preflight() -> None:
     client = build_test_client()
     try:
-        client.get_balances = AsyncMock(return_value=Balance(collateral=Decimal("100.00"), tokens={}))
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
         client.get_position_balance = AsyncMock(return_value=Decimal("3.00"))
         client.clob.post_orders_batch = AsyncMock(
             return_value=[
@@ -225,7 +229,9 @@ async def test_place_orders_batch_supports_mixed_buy_and_sell_preflight() -> Non
 
         assert [response.order_id for response in responses] == ["buy-order", "sell-order"]
         assert await client.get_reserved_balance("test-wallet") == Decimal("5.00")
-        client.get_position_balance.assert_awaited_once_with(token_id="67890", wallet_id="test-wallet")
+        client.get_position_balance.assert_awaited_once_with(
+            token_id="67890", wallet_id="test-wallet"
+        )
     finally:
         await client.close()
 
@@ -234,7 +240,9 @@ async def test_place_orders_batch_supports_mixed_buy_and_sell_preflight() -> Non
 async def test_place_orders_batch_returns_responses_when_reservation_update_fails() -> None:
     client = build_test_client()
     try:
-        client.get_balances = AsyncMock(return_value=Balance(collateral=Decimal("100.00"), tokens={}))
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
         client.get_position_balance = AsyncMock(return_value=Decimal("0"))
         client.clob.post_orders_batch = AsyncMock(
             return_value=[
@@ -307,7 +315,9 @@ async def test_concurrent_buy_orders_fail_closed_after_first_tentative_reservati
         return OrderResponse(success=True, order_id="order-1", status=OrderStatus.LIVE)
 
     try:
-        client.get_balances = AsyncMock(return_value=Balance(collateral=Decimal("10.00"), tokens={}))
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("10.00"), tokens={})
+        )
         client.clob.post_order = AsyncMock(side_effect=slow_post_order)
 
         first_order = make_order(price="0.60", size="10")
@@ -348,7 +358,9 @@ async def test_get_positions_batch_returns_materialized_results() -> None:
 async def test_place_market_order_buy_reserves_usd_amount() -> None:
     client = build_test_client()
     try:
-        client.get_balances = AsyncMock(return_value=Balance(collateral=Decimal("100.00"), tokens={}))
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
         client.get_orderbook = AsyncMock(
             return_value=SimpleNamespace(
                 asks=[SimpleNamespace(price=Decimal("0.40"), size=Decimal("100"))],
@@ -356,7 +368,9 @@ async def test_place_market_order_buy_reserves_usd_amount() -> None:
             )
         )
         client.clob.post_order = AsyncMock(
-            return_value=OrderResponse(success=True, order_id="market-order", status=OrderStatus.LIVE)
+            return_value=OrderResponse(
+                success=True, order_id="market-order", status=OrderStatus.LIVE
+            )
         )
 
         response = await client.place_market_order(
@@ -391,7 +405,9 @@ async def test_health_check_awaits_async_clob_probe() -> None:
 
 
 def test_unknown_settings_override_raises_type_error() -> None:
-    settings = PolymarketSettings(enable_rate_limiting=False, enable_metrics=False, enable_rtds=False)
+    settings = PolymarketSettings(
+        enable_rate_limiting=False, enable_metrics=False, enable_rtds=False
+    )
 
     with patch("polymarket.client.signal.signal"), patch("polymarket.client.atexit.register"):
         with pytest.raises(TypeError, match="Unknown PolymarketClient setting override"):
