@@ -8,6 +8,7 @@ Thread-safe, multi-wallet, production-ready.
 import asyncio
 import atexit
 import logging
+import re
 import secrets  # For cryptographically secure random nonces
 import signal
 import sys
@@ -832,8 +833,15 @@ class PolymarketClient:
 
     async def get_address_activity(self, address: str, **kwargs) -> List[Activity]:
         """Keyless activity history for an arbitrary wallet address (no key_manager)."""
-        if not address or not address.startswith("0x"):
-            raise ValueError(f"Invalid wallet address: {address!r}")
+        if "user" in kwargs:
+            raise TypeError(
+                "get_address_activity() does not accept 'user'; it is derived from "
+                "'address' — pass the wallet address as the 'address' argument"
+            )
+        if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            raise ValueError(
+                f"Invalid wallet address: {address!r} (expected '0x' followed by 40 hex characters)"
+            )
         return await self.data.get_activity(user=address, **kwargs)
 
     async def get_market_trades_window(

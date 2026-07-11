@@ -30,8 +30,37 @@ async def test_get_address_activity_uses_raw_address_not_key_manager():
 @pytest.mark.asyncio
 async def test_get_address_activity_rejects_non_address():
     async with PolymarketClient() as client:
-        with pytest.raises(ValueError):
-            await client.get_address_activity("not-an-address")
+        client.data.get_activity = AsyncMock(return_value=[])
+        for bad in (
+            "not-an-address",
+            "0x123",  # too short
+            "0x" + "a" * 39,
+            "0x" + "a" * 41,
+            "0x" + "g" * 40,  # non-hex characters
+            "a" * 42,  # missing 0x prefix
+            "",
+        ):
+            with pytest.raises(ValueError, match="Invalid wallet address"):
+                await client.get_address_activity(bad)
+        client.data.get_activity.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_address_activity_accepts_mixed_case_hex():
+    async with PolymarketClient() as client:
+        client.data.get_activity = AsyncMock(return_value=[])
+        addr = "0x" + "AbCdEf0123" * 4
+        await client.get_address_activity(addr)
+        assert client.data.get_activity.await_args.kwargs["user"] == addr
+
+
+@pytest.mark.asyncio
+async def test_get_address_activity_rejects_user_kwarg_with_clear_message():
+    async with PolymarketClient() as client:
+        client.data.get_activity = AsyncMock(return_value=[])
+        with pytest.raises(TypeError, match="does not accept 'user'"):
+            await client.get_address_activity("0x" + "a" * 40, user="0x" + "b" * 40)
+        client.data.get_activity.assert_not_awaited()
 
 
 @pytest.mark.asyncio
