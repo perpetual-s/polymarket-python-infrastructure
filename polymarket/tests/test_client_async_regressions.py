@@ -1,6 +1,7 @@
 """Regression tests for async PolymarketClient behavior and trading safety."""
 
 import asyncio
+import threading
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -98,6 +99,127 @@ async def test_unsubscribe_market_price_changes_rejects_empty_tokens() -> None:
     try:
         with pytest.raises(ValueError, match="cannot be empty"):
             client.unsubscribe_market_price_changes(token_ids=[])
+    finally:
+        await client.close()
+
+
+class _FakeRtds:
+    """Minimal transport double: tracks subscription records under its own lock."""
+
+    def __init__(self) -> None:
+        self._subscriptions_lock = threading.RLock()
+        self._active_subscriptions: list = []
+
+    def subscribe(self, topic, type, filters=None, clob_auth=None) -> bool:
+        with self._subscriptions_lock:
+            self._active_subscriptions.append({"topic": topic, "type": type, "filters": filters})
+        return True
+
+    def unsubscribe(self, topic, type="*", filters=None) -> None:
+        key = (topic, type, filters)
+        with self._subscriptions_lock:
+            self._active_subscriptions = [
+                s
+                for s in self._active_subscriptions
+                if (s["topic"], s["type"], s["filters"]) != key
+            ]
+
+    def disconnect(self) -> None:
+        pass
+
+
+class _GatedLock:
+    """Context-manager lock wrapper that parks one designated thread before acquiring."""
+
+    def __init__(self, inner: threading.Lock) -> None:
+        self._inner = inner
+        self.gated_thread: threading.Thread | None = None
+        self.gate_reached = threading.Event()
+        self.proceed = threading.Event()
+
+    def __enter__(self):
+        if threading.current_thread() is self.gated_thread:
+            self.gate_reached.set()
+            self.proceed.wait(timeout=5.0)
+        self._inner.acquire()
+        return self._inner
+
+    def __exit__(self, exc_type, exc, tb):
+        self._inner.release()
+        return False
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_price_changes_does_not_wipe_concurrent_subscriber() -> None:
+    """
+    A subscribe_market_price_changes() landing between unsubscribe's
+    remaining-check and its handler-pop must keep its handler; otherwise its
+    live wire subscription becomes a silent dead stream. The interleaving is
+    forced with events (the unsubscriber is parked right before the pop), not
+    scheduling luck.
+    """
+    client = build_test_client()
+    try:
+        fake = _FakeRtds()
+        client._rtds = fake
+        client._ensure_rtds = Mock(return_value=fake)
+
+        def cb_a(message) -> None:
+            pass
+
+        def cb_b(message) -> None:
+            pass
+
+        client.subscribe_market_price_changes(cb_a, token_ids=["1"])
+
+        gate = _GatedLock(client._rtds_handlers_lock)
+        client._rtds_handlers_lock = gate
+
+        unsub_thread = threading.Thread(
+            target=client.unsubscribe_market_price_changes,
+            kwargs={"token_ids": ["1"]},
+            daemon=True,
+        )
+        gate.gated_thread = unsub_thread
+        unsub_thread.start()
+
+        # The unsubscriber passed its remaining-check (no subscriptions left)
+        # and is parked right before popping the handler bucket.
+        assert gate.gate_reached.wait(timeout=5.0), "unsubscriber never reached the handler pop"
+
+        sub_done = threading.Event()
+
+        def _subscribe_b() -> None:
+            client.subscribe_market_price_changes(cb_b, token_ids=["2"])
+            sub_done.set()
+
+        sub_thread = threading.Thread(target=_subscribe_b, daemon=True)
+        sub_thread.start()
+
+        # Unfixed code: B registers its handler and records its subscription
+        # while the unsubscriber is parked, so this wait returns quickly.
+        # Fixed code: B blocks on the facade registration lock until the
+        # unsubscriber finishes, so this times out — both paths continue.
+        sub_done.wait(timeout=1.0)
+        gate.proceed.set()
+
+        unsub_thread.join(timeout=5.0)
+        sub_thread.join(timeout=5.0)
+        assert not unsub_thread.is_alive() and not sub_thread.is_alive()
+
+        # B's wire subscription is live in both worlds...
+        with fake._subscriptions_lock:
+            assert any(
+                s["topic"] == "clob_market" and s["type"] == "price_change" and "2" in s["filters"]
+                for s in fake._active_subscriptions
+            )
+        # ...so its handler must still be registered (the bug wipes it).
+        with client._rtds_handlers_lock:
+            bucket = client._rtds_handlers.get(("clob_market", "price_change"), {})
+            handlers = list(bucket.values())
+        assert cb_b in handlers, "concurrent subscriber's handler was wiped -> silent dead stream"
+        # A unsubscribed with nothing remaining at check time; it must not linger.
+        assert cb_a not in handlers
     finally:
         await client.close()
 
