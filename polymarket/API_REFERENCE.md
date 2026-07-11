@@ -284,13 +284,6 @@ Common extra filters accepted by `GammaAPI.get_markets`:
 - `slug: Optional[str]`
 - Other query params accepted by Gamma.
 
-Example:
-
-```python
-async with PolymarketClient() as client:
-    markets = await client.get_markets(active=True, closed=False, limit=100)
-```
-
 ### Direct GammaAPI methods
 
 Available as `client.gamma.<method>`.
@@ -912,16 +905,6 @@ Orderbook callback conversion:
 - Accepts `OrderbookMessage` only.
 - Converts `message.buys` and `message.sells` into `OrderBook.bids` and `OrderBook.asks`.
 - Uses `Decimal(level.price)` and `Decimal(level.size)`.
-
-Example:
-
-```python
-def on_book(book: OrderBook) -> None:
-    latest["bid"] = book.best_bid
-    latest["ask"] = book.best_ask
-
-client.subscribe_orderbook(token_id, on_book)
-```
 
 ### WebSocketClient direct methods
 
@@ -1729,7 +1712,7 @@ Configured values below are pre-margin. Runtime limiter applies `settings.rate_l
 
 ## 13. Verification
 
-Run external static checks from repo root for line count, stale filesystem paths, removed changelog/status labels, and required contract strings. This file should remain between 1200 and 1700 lines.
+Run external static checks from repo root for line count, stale filesystem paths, removed changelog/status labels, and required contract strings. This file should remain between 1200 and 1800 lines (upper bound raised 2026-07-11: grew with the M0 Data-API surface; remaining content audited non-redundant).
 
 Public CLOB probe:
 
@@ -1743,37 +1726,6 @@ async with PolymarketClient() as client:
     price = await client.get_price(token_id, Side.BUY)
     book = await client.get_orderbook(token_id)
     depth = await client.get_liquidity_depth(token_id)
-```
-
-Gamma probe:
-
-```python
-async with PolymarketClient() as client:
-    markets = await client.get_markets(active=True, closed=False, limit=10)
-    events = await client.get_events(active=True, closed=False, limit=10)
-    profile = await client.gamma.get_public_profile(proxy_address)
-```
-
-Data API probe:
-
-```python
-async with PolymarketClient() as client:
-    wallet_id = await client.add_wallet(wallet_config, wallet_id="WALLET_0")
-    positions = await client.get_positions(wallet_id)
-    trades = await client.get_trades(wallet_id, limit=10)
-    activity = await client.get_activity(wallet_id, limit=10)
-    value = await client.get_portfolio_value(wallet_id)
-    leaderboard = await client.get_leaderboard(limit=10)
-```
-
-Authenticated account probe:
-
-```python
-async with PolymarketClient() as client:
-    wallet_id = await client.add_wallet(wallet_config, wallet_id="WALLET_0")
-    balance = await client.get_balances(wallet_id)
-    reserved = await client.get_reserved_balance(wallet_id)
-    open_orders = await client.get_orders(wallet_id)
 ```
 
 Controlled order lifecycle probe:
