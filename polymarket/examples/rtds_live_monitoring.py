@@ -21,8 +21,12 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from shared.polymarket import PolymarketClient
-from shared.polymarket.api.real_time_data import Message
+try:
+    from polymarket import PolymarketClient
+    from polymarket.api.real_time_data import Message
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import PolymarketClient
+    from shared.polymarket.api.real_time_data import Message
 
 # Configure logging
 logging.basicConfig(

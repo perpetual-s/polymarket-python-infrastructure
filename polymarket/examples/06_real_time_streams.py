@@ -13,7 +13,14 @@ Based on Phase 2: Real-Time Data Client
 
 import time
 
-from shared.polymarket.api.real_time_data import ClobApiKeyCreds, RealTimeDataClient, StreamHelpers
+try:
+    from polymarket.api.real_time_data import ClobApiKeyCreds, RealTimeDataClient, StreamHelpers
+except ImportError:  # Pelion vendored path
+    from shared.polymarket.api.real_time_data import (
+        ClobApiKeyCreds,
+        RealTimeDataClient,
+        StreamHelpers,
+    )
 
 # ========== Example 1: Market Trades (Strategy-2 use case) ==========
 

@@ -2500,7 +2500,7 @@ class PolymarketClient:
             wallet_id: Wallet to track
 
         Example:
-            >>> from shared.polymarket.api.websocket_models import TradeMessage, OrderMessage
+            >>> from .api.websocket_models import TradeMessage, OrderMessage
             >>> def on_fill(message):
             ...     if isinstance(message, TradeMessage):
             ...         print(f"Trade: {message.status} - {message.price}")

@@ -33,7 +33,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import PolymarketSettings
 from ..exceptions import APIError, MarketNotFoundError, OrderBookError, PriceUnavailableError
-from ..models import OrderBook as OrderBookType, PricePoint
+from ..models import OrderBook as OrderBookType
+from ..models import PricePoint
 from ..utils.numeric import to_decimal
 from ..utils.rate_limiter import RateLimiter
 from ..utils.retry import CircuitBreaker
@@ -62,8 +63,8 @@ class PublicCLOBAPI(BaseAPIClient):
     API credentials or wallet signatures.
 
     Usage:
-        >>> from shared.polymarket.api.clob_public import PublicCLOBAPI
-        >>> from shared.polymarket.config import PolymarketSettings
+        >>> from .clob_public import PublicCLOBAPI
+        >>> from ..config import PolymarketSettings
         >>>
         >>> settings = PolymarketSettings()
         >>> client = PublicCLOBAPI(settings)

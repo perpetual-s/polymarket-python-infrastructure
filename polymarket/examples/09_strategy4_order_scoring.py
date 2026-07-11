@@ -8,7 +8,10 @@ Run: python examples/09_strategy4_order_scoring.py
 
 import asyncio
 
-from shared.polymarket import PolymarketClient
+try:
+    from polymarket import PolymarketClient
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import PolymarketClient
 
 
 async def example_1_check_single_order():
@@ -94,7 +97,7 @@ def example_3_active_orders_scoring():
     print("Code demonstration:\n")
 
     print("""
-from shared.polymarket import PolymarketClient, WalletConfig
+from polymarket import PolymarketClient, WalletConfig
 
 # Setup
 client = PolymarketClient()

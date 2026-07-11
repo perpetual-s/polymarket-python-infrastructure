@@ -11,7 +11,7 @@ Demonstrates the new CTF (Conditional Token Framework) infrastructure:
 These features enable capital-efficient trading on multi-outcome markets.
 
 References:
-- shared/polymarket/Documentation/NEG_RISK_CTF.md
+- Documentation/NEG_RISK_CTF.md
 - https://github.com/Polymarket/neg-risk-ctf-adapter
 - https://github.com/Polymarket/ctf-exchange
 """
@@ -19,23 +19,42 @@ References:
 import asyncio
 from decimal import Decimal
 
-from shared.polymarket import (  # Fee calculation utilities; Validation utilities; CTF utilities
-    CTF_ADDRESS,
-    NEG_RISK_ADAPTER,
-    ConversionCalculator,
-    PolymarketClient,
-    Side,
-    calculate_net_cost,
-    calculate_order_fee,
-    calculate_profit_after_fees,
-    check_order_profitability,
-    compare_fees_buy_vs_sell,
-    estimate_breakeven_exit,
-    get_effective_spread,
-    is_safe_to_trade,
-    validate_balance,
-    validate_price_bounds,
-)
+try:  # Fee calculation utilities; Validation utilities; CTF utilities
+    from polymarket import (
+        CTF_ADDRESS,
+        NEG_RISK_ADAPTER,
+        ConversionCalculator,
+        PolymarketClient,
+        Side,
+        calculate_net_cost,
+        calculate_order_fee,
+        calculate_profit_after_fees,
+        check_order_profitability,
+        compare_fees_buy_vs_sell,
+        estimate_breakeven_exit,
+        get_effective_spread,
+        is_safe_to_trade,
+        validate_balance,
+        validate_price_bounds,
+    )
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import (
+        CTF_ADDRESS,
+        NEG_RISK_ADAPTER,
+        ConversionCalculator,
+        PolymarketClient,
+        Side,
+        calculate_net_cost,
+        calculate_order_fee,
+        calculate_profit_after_fees,
+        check_order_profitability,
+        compare_fees_buy_vs_sell,
+        estimate_breakeven_exit,
+        get_effective_spread,
+        is_safe_to_trade,
+        validate_balance,
+        validate_price_bounds,
+    )
 
 
 def demonstrate_fee_calculations():
@@ -327,7 +346,7 @@ async def main():
     print("   • Comprehensive input validation")
 
     print("\n📚 Documentation:")
-    print("   shared/polymarket/Documentation/NEG_RISK_CTF.md")
+    print("   Documentation/NEG_RISK_CTF.md")
 
     print("\n" + "=" * 70 + "\n")
 

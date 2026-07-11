@@ -16,23 +16,38 @@ import asyncio
 import os
 from decimal import Decimal
 
-from shared.polymarket import (  # NEW: Import validation and fee utilities
-    OrderRequest,
-    OrderType,
-    PolymarketClient,
-    Side,
-    WalletConfig,
-    calculate_net_cost,
-    calculate_profit_after_fees,
-    check_order_profitability,
-    validate_balance,
-    validate_order,
-)
-from shared.polymarket.exceptions import (
-    InsufficientBalanceError,
-    OrderRejectedError,
-    ValidationError,
-)
+try:  # NEW: Import validation and fee utilities
+    from polymarket import (
+        OrderRequest,
+        OrderType,
+        PolymarketClient,
+        Side,
+        WalletConfig,
+        calculate_net_cost,
+        calculate_profit_after_fees,
+        check_order_profitability,
+        validate_balance,
+        validate_order,
+    )
+    from polymarket.exceptions import InsufficientBalanceError, OrderRejectedError, ValidationError
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import (
+        OrderRequest,
+        OrderType,
+        PolymarketClient,
+        Side,
+        WalletConfig,
+        calculate_net_cost,
+        calculate_profit_after_fees,
+        check_order_profitability,
+        validate_balance,
+        validate_order,
+    )
+    from shared.polymarket.exceptions import (
+        InsufficientBalanceError,
+        OrderRejectedError,
+        ValidationError,
+    )
 
 
 async def main():

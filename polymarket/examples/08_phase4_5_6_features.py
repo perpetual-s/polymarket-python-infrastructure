@@ -13,7 +13,10 @@ import asyncio
 import time
 from datetime import datetime
 
-from shared.polymarket import PolymarketClient
+try:
+    from polymarket import PolymarketClient
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import PolymarketClient
 
 
 async def example_1_health_check():

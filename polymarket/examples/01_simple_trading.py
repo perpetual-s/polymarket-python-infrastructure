@@ -23,7 +23,10 @@ import os
 import time
 from decimal import Decimal
 
-from shared.polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
+try:
+    from polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
 
 
 async def main():

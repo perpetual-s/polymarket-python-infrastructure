@@ -14,13 +14,22 @@ import asyncio
 import os
 import time
 
-from shared.polymarket import PolymarketClient, WalletConfig
-from shared.polymarket.api.websocket_models import (
-    OrderEventType,
-    OrderMessage,
-    TradeMessage,
-    TradeStatus,
-)
+try:
+    from polymarket import PolymarketClient, WalletConfig
+    from polymarket.api.websocket_models import (
+        OrderEventType,
+        OrderMessage,
+        TradeMessage,
+        TradeStatus,
+    )
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import PolymarketClient, WalletConfig
+    from shared.polymarket.api.websocket_models import (
+        OrderEventType,
+        OrderMessage,
+        TradeMessage,
+        TradeStatus,
+    )
 
 
 async def main():

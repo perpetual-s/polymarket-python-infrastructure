@@ -7,7 +7,10 @@ Shows how to place 10+ orders simultaneously - critical for Strategy-3 performan
 import asyncio
 import os
 
-from shared.polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
+try:
+    from polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
+except ImportError:  # Pelion vendored path
+    from shared.polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
 
 
 async def main():
