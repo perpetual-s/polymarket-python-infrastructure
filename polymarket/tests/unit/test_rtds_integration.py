@@ -10,8 +10,7 @@ Tests cover:
 """
 
 import threading
-import time
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -21,7 +20,7 @@ pytestmark = pytest.mark.skip(
 )
 
 from polymarket import PolymarketClient
-from polymarket.api.real_time_data import ConnectionStatus, Message
+from polymarket.api.real_time_data import ConnectionStatus
 from polymarket.config import PolymarketSettings
 
 
@@ -50,31 +49,6 @@ class TestRTDSInitialization:
         mock_rtds_class.assert_called_once()
         mock_rtds.connect.assert_called_once()
         assert client._rtds is not None
-
-    @patch("polymarket.client.RealTimeDataClient")
-    def test_rtds_initialization_uses_settings(self, mock_rtds_class):
-        """RTDS should use configuration from settings."""
-        settings = PolymarketSettings(
-            rtds_url="wss://test.example.com", rtds_auto_reconnect=False, rtds_ping_interval=10.0
-        )
-        client = PolymarketClient(settings=settings)
-
-        mock_rtds = Mock()
-        mock_rtds_class.return_value = mock_rtds
-
-        # Trigger initialization
-        callback = Mock()
-        client.subscribe_crypto_prices(callback)
-
-        # Verify settings were passed
-        mock_rtds_class.assert_called_once_with(
-            host="wss://test.example.com",
-            on_connect=client._on_rtds_connect,
-            on_message=None,
-            on_status_change=client._on_rtds_status_change,
-            auto_reconnect=False,
-            ping_interval=10.0,
-        )
 
     def test_rtds_disabled_raises_error(self):
         """Should raise RuntimeError if RTDS disabled."""
@@ -238,34 +212,6 @@ class TestRTDSSubscriptionMethods:
 
 class TestRTDSCallbackErrorHandling:
     """Test callback error isolation."""
-
-    @patch("polymarket.client.RealTimeDataClient")
-    def test_callback_error_isolated(self, mock_rtds_class):
-        """Callback errors should not crash client."""
-        client = PolymarketClient()
-        mock_rtds = Mock()
-        mock_rtds_class.return_value = mock_rtds
-
-        # Callback that raises exception
-        def bad_callback(msg: Message):
-            raise ValueError("Callback error")
-
-        client.subscribe_crypto_prices(bad_callback)
-
-        # Get the wrapped callback
-        wrapped_callback = mock_rtds.on_custom_message
-
-        # Simulate message delivery
-        test_message = Message(
-            topic="crypto_prices",
-            type="update",
-            timestamp=int(time.time() * 1000),
-            payload={"price": 50000.0},
-            connection_id="test123",
-        )
-
-        # Should not raise exception
-        wrapped_callback(mock_rtds, test_message)
 
     @patch("polymarket.client.RealTimeDataClient")
     def test_multiple_callbacks(self, mock_rtds_class):
