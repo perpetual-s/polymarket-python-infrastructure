@@ -2595,6 +2595,7 @@ class PolymarketClient:
                         on_status_change=self._on_rtds_status_change,
                         auto_reconnect=self.settings.rtds_auto_reconnect,
                         ping_interval=self.settings.rtds_ping_interval,
+                        max_staleness=self.settings.rtds_max_staleness,
                     )
 
                     # Establish connection
@@ -2602,9 +2603,10 @@ class PolymarketClient:
 
                     # Fail loudly if the connection is not established in time:
                     # proceeding would let subscribe_* calls silently go nowhere.
-                    if not self._rtds_wait_connected(timeout=10.0):
+                    connect_timeout = self.settings.rtds_connection_timeout
+                    if not self._rtds_wait_connected(timeout=connect_timeout):
                         raise RuntimeError(
-                            "RTDS connection not established within 10s; "
+                            f"RTDS connection not established within {connect_timeout:g}s; "
                             "subscription would be silent — aborting"
                         )
                     logger.info("RTDS connection established")
@@ -3394,6 +3396,11 @@ class PolymarketClient:
                     logger.info("RTDS disconnected")
                 except Exception as e:
                     logger.error(f"Error disconnecting RTDS: {e}")
+
+            # Drop the handler registry so a re-ensured client cannot fire
+            # stale callbacks (mirrors unsubscribe_rtds_all)
+            with self._rtds_handlers_lock:
+                self._rtds_handlers.clear()
 
             # Close API clients (await async close methods)
             await self.gamma.close()

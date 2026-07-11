@@ -78,6 +78,11 @@ class PolymarketSettings(BaseSettings):
     rtds_connection_timeout: float = Field(
         default=30.0, ge=5.0, description="RTDS connection timeout (seconds)"
     )
+    rtds_max_staleness: float = Field(
+        default=30.0,
+        ge=5.0,
+        description="Max seconds without RTDS pong/message before forced reconnect",
+    )
     rtds_max_message_size: int = Field(
         default=1024 * 1024, ge=1024, description="Max RTDS message size (bytes)"  # 1MB
     )
