@@ -8,12 +8,12 @@ Based on: https://github.com/Polymarket/real-time-data-client
 """
 
 import json
-import time
 import logging
 import threading
-from typing import Optional, Callable, Dict, List, Any
-from enum import Enum
+import time
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import websocket  # websocket-client library
@@ -23,11 +23,17 @@ except ImportError:
         "Install with: pip install websocket-client"
     )
 
+from .websocket_logging import (
+    install_websocket_transient_disconnect_filter,
+    is_transient_websocket_disconnect,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class ConnectionStatus(str, Enum):
     """WebSocket connection status."""
+
     CONNECTING = "CONNECTING"
     CONNECTED = "CONNECTED"
     DISCONNECTED = "DISCONNECTED"
@@ -36,6 +42,7 @@ class ConnectionStatus(str, Enum):
 @dataclass
 class ClobApiKeyCreds:
     """API key credentials for CLOB authentication."""
+
     key: str
     secret: str
     passphrase: str
@@ -44,6 +51,7 @@ class ClobApiKeyCreds:
 @dataclass
 class Subscription:
     """Subscription configuration."""
+
     topic: str
     type: str
     filters: Optional[str] = None
@@ -53,6 +61,7 @@ class Subscription:
 @dataclass
 class Message:
     """Real-time message from WebSocket."""
+
     topic: str
     type: str
     timestamp: int
@@ -91,11 +100,12 @@ class RealTimeDataClient:
     def __init__(
         self,
         host: Optional[str] = None,
-        on_connect: Optional[Callable[['RealTimeDataClient'], None]] = None,
-        on_message: Optional[Callable[['RealTimeDataClient', Message], None]] = None,
+        on_connect: Optional[Callable[["RealTimeDataClient"], None]] = None,
+        on_message: Optional[Callable[["RealTimeDataClient", Message], None]] = None,
         on_status_change: Optional[Callable[[ConnectionStatus], None]] = None,
         auto_reconnect: bool = True,
-        ping_interval: float = DEFAULT_PING_INTERVAL
+        ping_interval: float = DEFAULT_PING_INTERVAL,
+        max_staleness: float = 30.0,
     ):
         """
         Initialize Real-Time Data Client.
@@ -106,7 +116,10 @@ class RealTimeDataClient:
             on_message: Callback for incoming messages
             on_status_change: Callback for connection status changes
             auto_reconnect: Automatically reconnect on disconnect
-            ping_interval: Ping interval in seconds (default: 5.0)
+            ping_interval: Ping interval in seconds (default: 5.0); drives both
+                the protocol PING loop and the text "ping" keepalive
+            max_staleness: Max seconds without any pong/message before the
+                watchdog forces a socket close (default: 30.0)
         """
         self.host = host or self.DEFAULT_HOST
         self.on_connect = on_connect
@@ -126,9 +139,14 @@ class RealTimeDataClient:
         self._connect_lock = threading.Lock()  # Protect connect() from concurrent calls
         self._connecting = False  # Track if connect is in progress
 
-        # Ping management
+        # Ping management + staleness watchdog
+        self.max_staleness = max_staleness
         self._ping_timer: Optional[threading.Timer] = None
+        # _ping_timer is touched from the ws thread (_on_open, _on_close) and
+        # the timer's own thread (_send_ping re-arm); guard every access.
+        self._ping_lock = threading.Lock()
         self._last_pong = time.time()
+        self._last_message_time = time.time()
 
         # Reconnection management (exponential backoff)
         self._reconnect_attempts = 0
@@ -145,9 +163,11 @@ class RealTimeDataClient:
         self._total_messages_received = 0
         self._total_reconnections = 0
 
+        install_websocket_transient_disconnect_filter()
+
         logger.info(f"Initialized RealTimeDataClient: {self.host}")
 
-    def connect(self) -> 'RealTimeDataClient':
+    def connect(self) -> "RealTimeDataClient":
         """
         Establish WebSocket connection.
 
@@ -182,14 +202,27 @@ class RealTimeDataClient:
             on_message=self._on_message,
             on_error=self._on_error,
             on_close=self._on_close,
-            on_pong=self._on_pong
+            on_pong=self._on_pong,
         )
 
-        # Run in separate thread
+        # Run in separate thread. run_forever's builtin ping loop sends
+        # protocol PINGs; RFC 6455 §5.5.2-5.5.3 obliges the server to answer
+        # with protocol PONGs, which _on_pong stamps — so a healthy-but-quiet
+        # stream stays fresh for the staleness watchdog, and a dead socket is
+        # torn down by ping_timeout (auto-reconnect then takes over). The text
+        # "ping" timer stays as an application-level keepalive on top.
+        # websocket-client requires 0 < ping_timeout < ping_interval.
+        if self.ping_interval > 0:
+            run_forever_kwargs = {
+                "ping_interval": self.ping_interval,
+                "ping_timeout": max(self.ping_interval - 1.0, self.ping_interval / 2.0),
+            }
+        else:
+            run_forever_kwargs = {"ping_interval": 0}  # protocol pings disabled
         self._ws_thread = threading.Thread(
             target=self.ws.run_forever,
-            kwargs={"ping_interval": 0},  # We handle pings manually
-            daemon=True
+            kwargs=run_forever_kwargs,
+            daemon=True,
         )
         self._ws_thread.start()
 
@@ -203,9 +236,10 @@ class RealTimeDataClient:
         self.auto_reconnect = False
 
         # Cancel ping timer
-        if self._ping_timer:
-            self._ping_timer.cancel()
-            self._ping_timer = None
+        with self._ping_lock:
+            if self._ping_timer:
+                self._ping_timer.cancel()
+                self._ping_timer = None
 
         # Cancel reconnect timer
         if self._reconnect_timer:
@@ -224,16 +258,24 @@ class RealTimeDataClient:
         topic: str,
         type: str = "*",
         filters: Optional[str] = None,
-        clob_auth: Optional[ClobApiKeyCreds] = None
-    ):
+        clob_auth: Optional[ClobApiKeyCreds] = None,
+    ) -> bool:
         """
         Subscribe to a data stream.
+
+        The desired subscription is ALWAYS recorded (thread-safe, deduplicated),
+        even when disconnected — the _on_open handler replays the registry on
+        every (re)connect.
 
         Args:
             topic: Topic name (e.g., "activity", "comments", "clob_market")
             type: Message type (e.g., "trades", "*" for all)
             filters: JSON filter string (e.g., '{"market_slug":"trump-2024"}')
             clob_auth: CLOB API credentials (required for clob_user topic)
+
+        Returns:
+            True if the subscription was sent now; False if it was only queued
+            (not connected) or the send failed (it will be replayed on connect).
 
         Example:
             # Subscribe to all trades
@@ -253,63 +295,65 @@ class RealTimeDataClient:
                 clob_auth=ClobApiKeyCreds(key="...", secret="...", passphrase="...")
             )
         """
-        if not self.ws or not self._is_connected():
-            logger.warning("Cannot subscribe: not connected")
-            return
+        record = {"topic": topic, "type": type, "filters": filters, "clob_auth": clob_auth}
 
+        # CRITICAL: Record the desired subscription BEFORE the connected check
+        # so offline subscribes are replayed on connect - THREAD-SAFE, deduped
+        key = (topic, type, filters)
+        with self._subscriptions_lock:
+            if not any(
+                (s["topic"], s["type"], s["filters"]) == key for s in self._active_subscriptions
+            ):
+                self._active_subscriptions.append(record)
+                logger.debug(
+                    f"Tracked subscription: {topic}/{type} "
+                    f"(total: {len(self._active_subscriptions)})"
+                )
+
+        if not self._is_connected():
+            logger.info(f"RTDS not connected; queued subscription {key} for replay on connect")
+            return False
+
+        return self._send_subscription(record)
+
+    def _send_subscription(self, record: Dict[str, Any]) -> bool:
+        """
+        Build and send the subscribe wire message for a tracked record.
+
+        Returns:
+            True if sent successfully, False on send failure.
+        """
         subscription = {
             "action": "subscribe",
             "subscriptions": [
                 {
-                    "topic": topic,
-                    "type": type,
+                    "topic": record["topic"],
+                    "type": record["type"],
                 }
-            ]
+            ],
         }
 
         # Add filters if provided
-        if filters:
-            subscription["subscriptions"][0]["filters"] = filters
+        if record["filters"]:
+            subscription["subscriptions"][0]["filters"] = record["filters"]
 
         # Add CLOB auth if provided
-        if clob_auth:
+        if record["clob_auth"]:
             subscription["subscriptions"][0]["clob_auth"] = {
-                "key": clob_auth.key,
-                "secret": clob_auth.secret,
-                "passphrase": clob_auth.passphrase
+                "key": record["clob_auth"].key,
+                "secret": record["clob_auth"].secret,
+                "passphrase": record["clob_auth"].passphrase,
             }
 
         try:
             self.ws.send(json.dumps(subscription))
-            logger.info(f"Subscribed: {topic}/{type}")
-
-            # CRITICAL: Track subscription for resubscription after reconnect
-            sub_record = {
-                "topic": topic,
-                "type": type,
-                "filters": filters,
-                "clob_auth": clob_auth,
-            }
-
-            # Avoid duplicates (check if already tracked) - THREAD-SAFE
-            sub_key = (topic, type, filters)
-            with self._subscriptions_lock:
-                if not any(
-                    (s["topic"], s["type"], s["filters"]) == sub_key
-                    for s in self._active_subscriptions
-                ):
-                    self._active_subscriptions.append(sub_record)
-                    logger.debug(f"Tracked subscription: {topic}/{type} (total: {len(self._active_subscriptions)})")
-
+            logger.info(f"Subscribed: {record['topic']}/{record['type']}")
+            return True
         except Exception as e:
             logger.error(f"Subscribe failed: {e}")
+            return False
 
-    def unsubscribe(
-        self,
-        topic: str,
-        type: str = "*",
-        filters: Optional[str] = None
-    ):
+    def unsubscribe(self, topic: str, type: str = "*", filters: Optional[str] = None):
         """
         Unsubscribe from a data stream.
 
@@ -329,7 +373,7 @@ class RealTimeDataClient:
                     "topic": topic,
                     "type": type,
                 }
-            ]
+            ],
         }
 
         if filters:
@@ -343,10 +387,13 @@ class RealTimeDataClient:
             sub_key = (topic, type, filters)
             with self._subscriptions_lock:
                 self._active_subscriptions = [
-                    s for s in self._active_subscriptions
+                    s
+                    for s in self._active_subscriptions
                     if (s["topic"], s["type"], s["filters"]) != sub_key
                 ]
-                logger.debug(f"Removed subscription tracking: {topic}/{type} (total: {len(self._active_subscriptions)})")
+                logger.debug(
+                    f"Removed subscription tracking: {topic}/{type} (total: {len(self._active_subscriptions)})"
+                )
 
         except Exception as e:
             logger.error(f"Unsubscribe failed: {e}")
@@ -355,6 +402,10 @@ class RealTimeDataClient:
 
     def _on_open(self, ws):
         """WebSocket open handler."""
+        # Stamp freshness FIRST so a stale armed timer can never observe
+        # pre-connect timestamps and instantly kill the fresh socket
+        self._last_pong = self._last_message_time = time.time()
+
         logger.info("WebSocket connected")
 
         # CRITICAL: Reset _connecting flag so future reconnects can proceed
@@ -378,34 +429,8 @@ class RealTimeDataClient:
         if subscriptions_to_restore:
             logger.info(f"Resubscribing to {len(subscriptions_to_restore)} streams...")
             for sub in subscriptions_to_restore:
-                try:
-                    # Build subscription message
-                    subscription = {
-                        "action": "subscribe",
-                        "subscriptions": [{
-                            "topic": sub["topic"],
-                            "type": sub["type"],
-                        }]
-                    }
-
-                    # Add filters if provided
-                    if sub["filters"]:
-                        subscription["subscriptions"][0]["filters"] = sub["filters"]
-
-                    # Add CLOB auth if provided
-                    if sub["clob_auth"]:
-                        subscription["subscriptions"][0]["clob_auth"] = {
-                            "key": sub["clob_auth"].key,
-                            "secret": sub["clob_auth"].secret,
-                            "passphrase": sub["clob_auth"].passphrase
-                        }
-
-                    # Send subscription (use ws directly to avoid re-tracking)
-                    self.ws.send(json.dumps(subscription))
-                    logger.info(f"Resubscribed: {sub['topic']}/{sub['type']}")
-
-                except Exception as e:
-                    logger.error(f"Failed to resubscribe to {sub['topic']}: {e}")
+                # Send directly (registry already holds the record; no re-tracking)
+                self._send_subscription(sub)
 
         # Start ping mechanism
         self._schedule_ping()
@@ -419,6 +444,7 @@ class RealTimeDataClient:
 
     def _on_message(self, ws, raw_message: str):
         """WebSocket message handler."""
+        self._last_message_time = time.time()
         try:
             # Parse message
             if not raw_message or not isinstance(raw_message, str):
@@ -438,7 +464,7 @@ class RealTimeDataClient:
                     type=data.get("type", ""),
                     timestamp=data.get("timestamp", int(time.time() * 1000)),
                     payload=data.get("payload", {}),
-                    connection_id=data.get("connection_id", "")
+                    connection_id=data.get("connection_id", ""),
                 )
 
                 # Notify application
@@ -458,7 +484,10 @@ class RealTimeDataClient:
 
     def _on_error(self, ws, error):
         """WebSocket error handler."""
-        logger.error(f"WebSocket error: {error}")
+        if is_transient_websocket_disconnect(error):
+            logger.warning(f"WebSocket transient disconnect: {error}")
+        else:
+            logger.error(f"WebSocket error: {error}")
         # Schedule reconnect (if not already scheduled by _on_close)
         self._schedule_reconnect()
 
@@ -468,9 +497,10 @@ class RealTimeDataClient:
         self._notify_status_change(ConnectionStatus.DISCONNECTED)
 
         # Cancel ping timer
-        if self._ping_timer:
-            self._ping_timer.cancel()
-            self._ping_timer = None
+        with self._ping_lock:
+            if self._ping_timer:
+                self._ping_timer.cancel()
+                self._ping_timer = None
 
         # Schedule reconnect (if not already scheduled by _on_error)
         self._schedule_reconnect()
@@ -497,7 +527,7 @@ class RealTimeDataClient:
                 self._connecting = False
 
             # Exponential backoff: 2, 4, 8, 16, 32, 64, 128, 256, 300 max
-            delay = min(2 ** self._reconnect_attempts, self._max_reconnect_delay)
+            delay = min(2**self._reconnect_attempts, self._max_reconnect_delay)
             self._reconnect_attempts += 1
 
             logger.info(f"Scheduling reconnect in {delay}s (attempt {self._reconnect_attempts})...")
@@ -514,29 +544,47 @@ class RealTimeDataClient:
             self._reconnect_timer.start()
 
     def _on_pong(self, ws, data):
-        """WebSocket pong handler."""
+        """WebSocket pong handler. Only stamps freshness; keepalive re-arms itself."""
         self._last_pong = time.time()
         logger.debug("Pong received")
 
-        # Schedule next ping
-        self._schedule_ping()
+    def _schedule_ping(self) -> None:
+        """Arm the next keepalive tick (cancels any pending one first). Thread-safe."""
+        with self._ping_lock:
+            if self._shutdown_requested:
+                return
+            if self._ping_timer:
+                self._ping_timer.cancel()
+            timer = threading.Timer(self.ping_interval, self._send_ping)
+            timer.daemon = True
+            self._ping_timer = timer
+            timer.start()
 
-    def _schedule_ping(self):
-        """Schedule next ping."""
-        if self._shutdown_requested:
-            return
+    def _send_ping(self) -> None:
+        """Keepalive tick: ping if connected, check staleness, ALWAYS re-arm."""
+        try:
+            if self.ws and self._is_connected():
+                self.ws.send("ping")
+                logger.debug("Ping sent")
+        except Exception as e:
+            logger.debug(f"RTDS ping failed: {e}")
+        finally:
+            self._check_staleness()
+            self._schedule_ping()  # unconditional re-arm (no pong dependency)
 
-        def send_ping():
-            if self.ws and self._is_connected() and not self._shutdown_requested:
-                try:
-                    self.ws.send("ping")
-                    logger.debug("Ping sent")
-                except Exception as e:
-                    logger.error(f"Ping failed: {e}")
-
-        self._ping_timer = threading.Timer(self.ping_interval, send_ping)
-        self._ping_timer.daemon = True
-        self._ping_timer.start()
+    def _check_staleness(self) -> None:
+        """Force a socket close (auto-reconnect takes over) if no recent pong/message."""
+        freshest = max(self._last_pong, self._last_message_time)
+        age = time.time() - freshest
+        if age > self.max_staleness and self.ws and self._is_connected():
+            logger.warning(
+                f"RTDS stale: no pong/message for {age:.0f}s (> {self.max_staleness}s); "
+                "forcing reconnect"
+            )
+            try:
+                self.ws.close()  # _on_close + auto_reconnect take over
+            except Exception as e:
+                logger.error(f"RTDS stale-close failed: {e}")
 
     def _is_connected(self) -> bool:
         """Check if WebSocket is connected."""
@@ -577,64 +625,51 @@ class RealTimeDataClient:
             "connected": self._is_connected(),
             "uptime_seconds": uptime_seconds,
             "active_subscriptions": active_sub_count,
+            "desired_subscriptions": active_sub_count,
+            "last_message_age_seconds": round(time.time() - self._last_message_time, 1),
             "total_messages_received": self._total_messages_received,
             "total_reconnections": self._total_reconnections,
             "current_reconnect_attempts": self._reconnect_attempts,
-            "last_pong_seconds_ago": int(time.time() - self._last_pong) if self._last_pong else None,
+            "last_pong_seconds_ago": (
+                int(time.time() - self._last_pong) if self._last_pong else None
+            ),
             "auto_reconnect_enabled": self.auto_reconnect,
         }
 
 
 # ========== Stream-Specific Helpers ==========
 
+
 class StreamHelpers:
     """Helper functions for common streaming patterns."""
 
     @staticmethod
-    def subscribe_to_market_trades(
-        client: RealTimeDataClient,
-        market_slug: str
-    ):
+    def subscribe_to_market_trades(client: RealTimeDataClient, market_slug: str):
         """Subscribe to trades for a specific market."""
         client.subscribe(
-            topic="activity",
-            type="trades",
-            filters=json.dumps({"market_slug": market_slug})
+            topic="activity", type="trades", filters=json.dumps({"market_slug": market_slug})
         )
 
     @staticmethod
-    def subscribe_to_event_trades(
-        client: RealTimeDataClient,
-        event_slug: str
-    ):
+    def subscribe_to_event_trades(client: RealTimeDataClient, event_slug: str):
         """Subscribe to trades for all markets in an event."""
         client.subscribe(
-            topic="activity",
-            type="trades",
-            filters=json.dumps({"event_slug": event_slug})
+            topic="activity", type="trades", filters=json.dumps({"event_slug": event_slug})
         )
 
     @staticmethod
     def subscribe_to_event_comments(
-        client: RealTimeDataClient,
-        event_id: int,
-        parent_type: str = "Event"
+        client: RealTimeDataClient, event_id: int, parent_type: str = "Event"
     ):
         """Subscribe to comments for an event."""
         client.subscribe(
             topic="comments",
             type="*",
-            filters=json.dumps({
-                "parentEntityID": event_id,
-                "parentEntityType": parent_type
-            })
+            filters=json.dumps({"parentEntityID": event_id, "parentEntityType": parent_type}),
         )
 
     @staticmethod
-    def subscribe_to_crypto_price(
-        client: RealTimeDataClient,
-        symbol: str
-    ):
+    def subscribe_to_crypto_price(client: RealTimeDataClient, symbol: str):
         """
         Subscribe to crypto price updates.
 
@@ -642,63 +677,38 @@ class StreamHelpers:
             symbol: "btcusdt", "ethusdt", "solusdt", "xrpusdt"
         """
         client.subscribe(
-            topic="crypto_prices",
-            type="update",
-            filters=json.dumps({"symbol": symbol.lower()})
+            topic="crypto_prices", type="update", filters=json.dumps({"symbol": symbol.lower()})
         )
 
     @staticmethod
-    def subscribe_to_market_orderbook(
-        client: RealTimeDataClient,
-        token_ids: List[str]
-    ):
+    def subscribe_to_market_orderbook(client: RealTimeDataClient, token_ids: List[str]):
         """
         Subscribe to aggregated orderbook updates.
 
         Args:
             token_ids: List of token IDs to monitor
         """
-        client.subscribe(
-            topic="clob_market",
-            type="agg_orderbook",
-            filters=json.dumps(token_ids)
-        )
+        client.subscribe(topic="clob_market", type="agg_orderbook", filters=json.dumps(token_ids))
 
     @staticmethod
-    def subscribe_to_price_changes(
-        client: RealTimeDataClient,
-        token_ids: List[str]
-    ):
+    def subscribe_to_price_changes(client: RealTimeDataClient, token_ids: List[str]):
         """Subscribe to price change events for tokens."""
-        client.subscribe(
-            topic="clob_market",
-            type="price_change",
-            filters=json.dumps(token_ids)
-        )
+        client.subscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
 
     @staticmethod
     def subscribe_to_new_markets(client: RealTimeDataClient):
         """Subscribe to new market creation events."""
-        client.subscribe(
-            topic="clob_market",
-            type="market_created"
-        )
+        client.subscribe(topic="clob_market", type="market_created")
 
     @staticmethod
     def subscribe_to_market_resolutions(client: RealTimeDataClient):
         """Subscribe to market resolution events."""
-        client.subscribe(
-            topic="clob_market",
-            type="market_resolved"
-        )
+        client.subscribe(topic="clob_market", type="market_resolved")
 
     # ========== RFQ (Request for Quote) Streams ==========
 
     @staticmethod
-    def subscribe_to_rfq_requests(
-        client: RealTimeDataClient,
-        market: Optional[str] = None
-    ):
+    def subscribe_to_rfq_requests(client: RealTimeDataClient, market: Optional[str] = None):
         """
         Subscribe to RFQ request events (OTC block trading).
 
@@ -713,17 +723,10 @@ class StreamHelpers:
             - request_expired: RFQ request expired
         """
         filters = json.dumps({"market": market}) if market else None
-        client.subscribe(
-            topic="rfq",
-            type="*",  # All request events
-            filters=filters
-        )
+        client.subscribe(topic="rfq", type="*", filters=filters)  # All request events
 
     @staticmethod
-    def subscribe_to_rfq_quotes(
-        client: RealTimeDataClient,
-        request_id: Optional[str] = None
-    ):
+    def subscribe_to_rfq_quotes(client: RealTimeDataClient, request_id: Optional[str] = None):
         """
         Subscribe to RFQ quote events.
 
@@ -738,11 +741,7 @@ class StreamHelpers:
             - quote_expired: Quote expired
         """
         filters = json.dumps({"requestId": request_id}) if request_id else None
-        client.subscribe(
-            topic="rfq",
-            type="quote_*",  # All quote events
-            filters=filters
-        )
+        client.subscribe(topic="rfq", type="quote_*", filters=filters)  # All quote events
 
     @staticmethod
     def subscribe_to_all_rfq_events(client: RealTimeDataClient):
@@ -751,7 +750,4 @@ class StreamHelpers:
 
         Useful for monitoring OTC trading activity across all markets.
         """
-        client.subscribe(
-            topic="rfq",
-            type="*"
-        )
+        client.subscribe(topic="rfq", type="*")

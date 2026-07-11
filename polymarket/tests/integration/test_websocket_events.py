@@ -2,17 +2,18 @@
 Integration tests for MarketManager WebSocket events.
 
 Tests real-time market_created and market_resolved event handling.
-Run with: pytest polymarket/tests/integration/test_websocket_events.py -v
+Run with: pytest shared/polymarket/tests/integration/test_websocket_events.py -v
 """
 
 import asyncio
-import pytest
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-from polymarket.market_manager import MarketManager, MarketManagerConfig
+import pytest
+
 from polymarket.api.clob_public import PublicCLOBAPI
 from polymarket.config import PolymarketSettings
+from polymarket.market_manager import MarketManager, MarketManagerConfig
 
 
 @pytest.fixture
@@ -39,7 +40,7 @@ class TestWebSocketStreaming:
             use_sampling_markets=True,
             enable_websocket=True,
             enable_periodic_sync=False,  # Disable for test
-            max_markets=100
+            max_markets=100,
         )
         manager = MarketManager(clob_api, config)
 
@@ -85,13 +86,10 @@ class TestWebSocketStreaming:
             use_sampling_markets=True,
             enable_websocket=True,
             enable_periodic_sync=False,
-            max_markets=100
+            max_markets=100,
         )
         manager = MarketManager(
-            clob_api,
-            config,
-            on_market_created=on_created,
-            on_market_resolved=on_resolved
+            clob_api, config, on_market_created=on_created, on_market_resolved=on_resolved
         )
 
         await manager.initialize()
@@ -118,7 +116,9 @@ class TestWebSocketStreaming:
 
         # This is a soft assertion - events may not occur during test window
         # The test validates the infrastructure works, not that events always exist
-        print("Note: If no events received, that's OK - markets may not be created/resolved during test")
+        print(
+            "Note: If no events received, that's OK - markets may not be created/resolved during test"
+        )
 
     @pytest.mark.asyncio
     async def test_periodic_sync_runs(self, clob_api):
@@ -128,7 +128,7 @@ class TestWebSocketStreaming:
             enable_websocket=True,
             enable_periodic_sync=True,
             periodic_sync_interval=5,  # Short interval for test
-            max_markets=50
+            max_markets=50,
         )
         manager = MarketManager(clob_api, config)
 
@@ -146,7 +146,9 @@ class TestWebSocketStreaming:
                 break
 
         stats = manager.get_stats()
-        assert stats.sync_count >= 1, f"Periodic sync should have run (sync_count={stats.sync_count})"
+        assert (
+            stats.sync_count >= 1
+        ), f"Periodic sync should have run (sync_count={stats.sync_count})"
         print(f"\nSync count: {stats.sync_count}")
         print(f"Markets: {manager.get_market_count()}")
 
@@ -160,7 +162,7 @@ class TestWebSocketStreaming:
             enable_websocket=True,
             auto_reconnect=True,
             enable_periodic_sync=False,
-            max_markets=50
+            max_markets=50,
         )
         manager = MarketManager(clob_api, config)
 
@@ -201,13 +203,10 @@ if __name__ == "__main__":
             use_sampling_markets=True,
             enable_websocket=True,
             enable_periodic_sync=False,
-            max_markets=200
+            max_markets=200,
         )
         manager = MarketManager(
-            clob_api,
-            config,
-            on_market_created=on_created,
-            on_market_resolved=on_resolved
+            clob_api, config, on_market_created=on_created, on_market_resolved=on_resolved
         )
 
         print("\n1. Bootstrapping...")

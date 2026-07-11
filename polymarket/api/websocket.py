@@ -7,29 +7,34 @@ v3.2: Added typed message models, health monitoring, and metrics.
 v3.3: Added message queue/buffer for async processing (Phase 3).
 """
 
-import json
-import threading
-import time
-import queue
 import asyncio
 import hashlib
-from typing import Optional, Callable, Dict, Any
-from enum import Enum
-from collections import deque
+import json
 import logging
+import queue
+import threading
+import time
+from collections import deque
+from enum import Enum
+from typing import Any, Callable, Dict, Optional
 
+from ..metrics import get_metrics
+from .websocket_logging import (
+    install_websocket_transient_disconnect_filter,
+    is_transient_websocket_disconnect,
+)
 from .websocket_models import (
+    CLOBEventType,
     WebSocketMessage,
     parse_websocket_message,
-    CLOBEventType,
 )
-from ..metrics import get_metrics
 
 logger = logging.getLogger(__name__)
 
 
 class ChannelType(str, Enum):
     """WebSocket channel types."""
+
     MARKET = "market"
     USER = "user"
 
@@ -63,7 +68,7 @@ class WebSocketClient:
         enable_compression: bool = True,
         on_failure_callback: Optional[Callable[[str], None]] = None,
         enable_deduplication: bool = True,
-        dedup_window_seconds: int = 300
+        dedup_window_seconds: int = 300,
     ):
         """
         Initialize WebSocket client.
@@ -96,6 +101,7 @@ class WebSocketClient:
         self.on_failure_callback = on_failure_callback
         self.enable_deduplication = enable_deduplication
         self.dedup_window_seconds = dedup_window_seconds
+        install_websocket_transient_disconnect_filter()
 
         self._ws = None
         self._thread: Optional[threading.Thread] = None
@@ -116,7 +122,9 @@ class WebSocketClient:
 
         # Message queue for async processing (v3.3)
         self._enable_queue = enable_queue
-        self._message_queue: Optional[queue.Queue] = queue.Queue(maxsize=queue_maxsize) if enable_queue else None
+        self._message_queue: Optional[queue.Queue] = (
+            queue.Queue(maxsize=queue_maxsize) if enable_queue else None
+        )
         self._consumer_task: Optional[asyncio.Task] = None
         self._queue_drops = 0  # Track dropped messages due to full queue
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -127,7 +135,9 @@ class WebSocketClient:
         self._dedup_lock = threading.Lock()  # Protect dedup structures
         self._duplicate_count = 0  # Track duplicate messages blocked
 
-        logger.info(f"WebSocket client initialized: {ws_url} (queue={'enabled' if enable_queue else 'disabled'})")
+        logger.info(
+            f"WebSocket client initialized: {ws_url} (queue={'enabled' if enable_queue else 'disabled'})"
+        )
 
     def connect(self, event_loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """
@@ -158,9 +168,11 @@ class WebSocketClient:
                     except RuntimeError:
                         # No running loop - disable queue to prevent message buildup
                         # FIX (Issue #2): Instead of letting messages pile up, fall back to direct callbacks
-                        logger.warning("No running event loop found. Disabling queue mode - "
-                                       "messages will be processed via direct callbacks. "
-                                       "For async processing, call connect() from async context or provide event_loop.")
+                        logger.warning(
+                            "No running event loop found. Disabling queue mode - "
+                            "messages will be processed via direct callbacks. "
+                            "For async processing, call connect() from async context or provide event_loop."
+                        )
                         self._enable_queue = False
                         self._event_loop = None
                         self._running = False  # Reset since we're not actually connecting
@@ -212,11 +224,7 @@ class WebSocketClient:
 
         logger.info("WebSocket disconnected")
 
-    def subscribe_market(
-        self,
-        token_id: str,
-        callback: Callable[[WebSocketMessage], None]
-    ) -> None:
+    def subscribe_market(self, token_id: str, callback: Callable[[WebSocketMessage], None]) -> None:
         """
         Subscribe to market updates.
 
@@ -240,10 +248,7 @@ class WebSocketClient:
 
         logger.info(f"Subscribed to market {token_id}")
 
-    def subscribe_user(
-        self,
-        callback: Callable[[WebSocketMessage], None]
-    ) -> None:
+    def subscribe_user(self, callback: Callable[[WebSocketMessage], None]) -> None:
         """
         Subscribe to user order/fill updates.
 
@@ -269,9 +274,7 @@ class WebSocketClient:
         logger.info("Subscribed to user updates")
 
     def subscribe_markets_multi(
-        self,
-        token_ids: list[str],
-        callback: Callable[[WebSocketMessage], None]
+        self, token_ids: list[str], callback: Callable[[WebSocketMessage], None]
     ) -> None:
         """
         Subscribe to multiple markets using SINGLE subscription message (v3.5 - L1).
@@ -302,9 +305,7 @@ class WebSocketClient:
         logger.info(f"Subscribed to {len(token_ids)} markets in single message")
 
     def subscribe_markets_batch(
-        self,
-        token_ids: list[str],
-        callback: Callable[[WebSocketMessage], None]
+        self, token_ids: list[str], callback: Callable[[WebSocketMessage], None]
     ) -> Dict[str, Any]:
         """
         Subscribe to multiple markets atomically with transaction semantics (v3.3).
@@ -322,7 +323,12 @@ class WebSocketClient:
             dict: Result with {"success": bool, "succeeded": list, "failed": list, "error": str}
         """
         if not token_ids:
-            return {"success": False, "succeeded": [], "failed": [], "error": "No token IDs provided"}
+            return {
+                "success": False,
+                "succeeded": [],
+                "failed": [],
+                "error": "No token IDs provided",
+            }
 
         succeeded = []
         failed = []
@@ -345,33 +351,20 @@ class WebSocketClient:
                             channel = f"{ChannelType.MARKET}:{success_token}"
                             self.unsubscribe(channel)
                         except Exception as rollback_err:
-                            logger.error(f"Error during rollback for {success_token}: {rollback_err}")
+                            logger.error(
+                                f"Error during rollback for {success_token}: {rollback_err}"
+                            )
 
-                    return {
-                        "success": False,
-                        "succeeded": [],
-                        "failed": failed,
-                        "error": error_msg
-                    }
+                    return {"success": False, "succeeded": [], "failed": failed, "error": error_msg}
 
             # All succeeded
             logger.info(f"Successfully subscribed to {len(succeeded)} markets")
-            return {
-                "success": True,
-                "succeeded": succeeded,
-                "failed": [],
-                "error": None
-            }
+            return {"success": True, "succeeded": succeeded, "failed": [], "error": None}
 
         except Exception as e:
             error_msg = f"Batch subscription error: {e}"
             logger.error(error_msg, exc_info=True)
-            return {
-                "success": False,
-                "succeeded": [],
-                "failed": token_ids,
-                "error": error_msg
-            }
+            return {"success": False, "succeeded": [], "failed": token_ids, "error": error_msg}
 
     def unsubscribe(self, channel: str) -> None:
         """Unsubscribe from channel."""
@@ -403,7 +396,9 @@ class WebSocketClient:
                     channel_type = self._channel_type
 
                 if channel_type is None:
-                    logger.error("Channel type not set - cannot connect. Call subscribe_user() or subscribe_market() first.")
+                    logger.error(
+                        "Channel type not set - cannot connect. Call subscribe_user() or subscribe_market() first."
+                    )
                     self._running = False
                     return
 
@@ -416,7 +411,7 @@ class WebSocketClient:
                     on_message=self._on_message,
                     on_error=self._on_error,
                     on_close=self._on_close,
-                    on_open=self._on_open
+                    on_open=self._on_open,
                 )
                 self._ws = ws
 
@@ -429,7 +424,9 @@ class WebSocketClient:
                 # Compression is negotiated via WebSocket handshake headers instead
                 # The enable_compression flag is kept for future use but not passed to run_forever()
 
-                logger.info(f"Connecting to WebSocket (compression={'enabled' if self.enable_compression else 'disabled'})...")
+                logger.info(
+                    f"Connecting to WebSocket (compression={'enabled' if self.enable_compression else 'disabled'})..."
+                )
                 ws.run_forever(**run_forever_kwargs)
 
                 if not self._running:
@@ -450,7 +447,10 @@ class WebSocketClient:
                 time.sleep(self.reconnect_delay)
 
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                if is_transient_websocket_disconnect(e):
+                    logger.warning(f"WebSocket transient disconnect: {e}")
+                else:
+                    logger.error(f"WebSocket error: {e}")
                 # Check if this is a fatal error requiring failure callback
                 if not self._running:
                     # Connection was explicitly stopped, not a failure
@@ -516,7 +516,9 @@ class WebSocketClient:
                 # Check if we've seen this message recently
                 if self._is_duplicate_message(message_hash):
                     self._duplicate_count += 1
-                    logger.debug(f"Duplicate message detected (hash={message_hash[:8]}...), skipping")
+                    logger.debug(
+                        f"Duplicate message detected (hash={message_hash[:8]}...), skipping"
+                    )
                     if self._metrics:
                         self._metrics.track_websocket_duplicate("clob")
                     return
@@ -544,9 +546,17 @@ class WebSocketClient:
 
             # Track message metrics
             if self._metrics and event_type:
-                channel_label = "market" if event_type in [CLOBEventType.BOOK, CLOBEventType.PRICE_CHANGE,
-                                                           CLOBEventType.TICK_SIZE_CHANGE,
-                                                           CLOBEventType.LAST_TRADE_PRICE] else "user"
+                channel_label = (
+                    "market"
+                    if event_type
+                    in [
+                        CLOBEventType.BOOK,
+                        CLOBEventType.PRICE_CHANGE,
+                        CLOBEventType.TICK_SIZE_CHANGE,
+                        CLOBEventType.LAST_TRADE_PRICE,
+                    ]
+                    else "user"
+                )
                 self._metrics.track_websocket_message(channel_label, event_type)
 
             # Queue message for async processing (v3.3) or invoke callback directly
@@ -582,7 +592,9 @@ class WebSocketClient:
                                 # Dropped a MARKET message, now try to insert USER message
                                 try:
                                     self._message_queue.put_nowait(message_item)
-                                    logger.debug("Dropped oldest MARKET message to make room for USER message")
+                                    logger.debug(
+                                        "Dropped oldest MARKET message to make room for USER message"
+                                    )
                                 except queue.Full:
                                     # Queue filled again between get and put - rare race condition
                                     # Put back the MARKET message we took (better than losing both)
@@ -590,21 +602,29 @@ class WebSocketClient:
                                         self._message_queue.put_nowait(oldest)
                                     except queue.Full:
                                         pass  # Queue is completely full, both messages lost
-                                    logger.critical("Queue race: dropped USER message after failed insert")
+                                    logger.critical(
+                                        "Queue race: dropped USER message after failed insert"
+                                    )
                             else:
                                 # Oldest was also USER channel, put it back
                                 try:
                                     self._message_queue.put_nowait(oldest)
                                 except queue.Full:
                                     pass  # Can't put back - rare race, at least we tried
-                                logger.critical("Queue full of USER messages, forced to drop USER channel message!")
+                                logger.critical(
+                                    "Queue full of USER messages, forced to drop USER channel message!"
+                                )
                         except queue.Empty:
                             # Queue drained between Full and get_nowait - try insert again
                             try:
                                 self._message_queue.put_nowait(message_item)
-                                logger.debug("Queue drained, inserted USER message after race recovery")
+                                logger.debug(
+                                    "Queue drained, inserted USER message after race recovery"
+                                )
                             except queue.Full:
-                                logger.critical("Queue race: still full after drain, dropped USER message")
+                                logger.critical(
+                                    "Queue race: still full after drain, dropped USER message"
+                                )
                     else:
                         # MARKET channel message - normal drop
                         logger.warning(
@@ -639,6 +659,9 @@ class WebSocketClient:
 
     def _on_error(self, ws, error) -> None:
         """Handle error."""
+        if is_transient_websocket_disconnect(error):
+            logger.warning(f"WebSocket transient disconnect: {error}")
+            return
         logger.error(f"WebSocket error: {error}")
 
     def _on_close(self, ws, close_status_code, close_msg) -> None:
@@ -699,7 +722,7 @@ class WebSocketClient:
         # Build message according to official spec
         msg = {
             "type": channel_type.value.upper(),  # "MARKET"
-            "asset_ids": asset_ids  # Multiple asset IDs in single array
+            "asset_ids": asset_ids,  # Multiple asset IDs in single array
         }
 
         try:
@@ -780,8 +803,10 @@ class WebSocketClient:
         with self._dedup_lock:
             # Clean up old hashes outside time window
             current_time = time.time()
-            while self._seen_hash_timestamps and \
-                  current_time - self._seen_hash_timestamps[0] > self.dedup_window_seconds:
+            while (
+                self._seen_hash_timestamps
+                and current_time - self._seen_hash_timestamps[0] > self.dedup_window_seconds
+            ):
                 self._seen_hash_timestamps.popleft()
                 self._seen_message_hashes.popleft()
 
@@ -813,7 +838,9 @@ class WebSocketClient:
             except Exception as e:
                 logger.error(f"Error in failure callback: {e}", exc_info=True)
 
-    def _invoke_callback(self, typed_message: WebSocketMessage, event_type: str, data: dict) -> None:
+    def _invoke_callback(
+        self, typed_message: WebSocketMessage, event_type: str, data: dict
+    ) -> None:
         """
         Invoke registered callbacks for message.
 
@@ -824,8 +851,12 @@ class WebSocketClient:
         """
         with self._lock:
             # Market channel messages
-            if event_type in [CLOBEventType.BOOK, CLOBEventType.PRICE_CHANGE,
-                             CLOBEventType.TICK_SIZE_CHANGE, CLOBEventType.LAST_TRADE_PRICE]:
+            if event_type in [
+                CLOBEventType.BOOK,
+                CLOBEventType.PRICE_CHANGE,
+                CLOBEventType.TICK_SIZE_CHANGE,
+                CLOBEventType.LAST_TRADE_PRICE,
+            ]:
                 # Find matching market subscription
                 asset_id = data.get("asset_id")
                 if asset_id:
@@ -925,7 +956,9 @@ class WebSocketClient:
             stats_dict["queue_enabled"] = True
             stats_dict["queue_size"] = self._message_queue.qsize()
             stats_dict["queue_drops"] = self._queue_drops
-            stats_dict["consumer_task_running"] = self._consumer_task is not None and not self._consumer_task.done()
+            stats_dict["consumer_task_running"] = (
+                self._consumer_task is not None and not self._consumer_task.done()
+            )
         else:
             stats_dict["queue_enabled"] = False
 
@@ -956,7 +989,7 @@ class WebSocketClient:
             return {
                 "status": "degraded",
                 "reason": "no_recent_messages",
-                "last_message_seconds_ago": int(time_since_last)
+                "last_message_seconds_ago": int(time_since_last),
             }
 
         return {"status": "healthy"}

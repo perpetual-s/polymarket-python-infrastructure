@@ -4,15 +4,11 @@ Example 3: Batch Order Placement for Strategy-3
 Shows how to place 10+ orders simultaneously - critical for Strategy-3 performance.
 """
 
-import os
 import asyncio
-from polymarket import (
-    PolymarketClient,
-    WalletConfig,
-    OrderRequest,
-    Side,
-    OrderType
-)
+import os
+
+from shared.polymarket import OrderRequest, OrderType, PolymarketClient, Side, WalletConfig
+
 
 async def main():
     """Batch order placement example."""
@@ -22,10 +18,7 @@ async def main():
 
     # 2. Add wallet
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
-    client.add_wallet(
-        WalletConfig(private_key=private_key),
-        wallet_id="strategy3"
-    )
+    client.add_wallet(WalletConfig(private_key=private_key), wallet_id="strategy3")
 
     # 3. Get multiple markets
     print("Fetching markets...")
@@ -46,9 +39,9 @@ async def main():
         order = OrderRequest(
             token_id=token_id,
             price=0.45,  # Buy at $0.45
-            size=10.0,   # $10 per order
+            size=10.0,  # $10 per order
             side=Side.BUY,
-            order_type=OrderType.GTC
+            order_type=OrderType.GTC,
         )
         orders.append(order)
 
@@ -59,13 +52,11 @@ async def main():
     print("⚡ This is 10x faster than sequential placement!")
 
     import time
+
     start = time.time()
 
     # CRITICAL: Batch submission
-    responses = await client.place_orders_batch(
-        orders,
-        wallet_id="strategy3"
-    )
+    responses = await client.place_orders_batch(orders, wallet_id="strategy3")
 
     elapsed = time.time() - start
 
@@ -115,6 +106,7 @@ async def main():
     print("Sequential placement (1 order/sec): 5 orders = 5s")
     print(f"Batch placement: 5 orders = {elapsed:.2f}s")
     print(f"Speedup: {5/elapsed:.1f}x faster! 🚀")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

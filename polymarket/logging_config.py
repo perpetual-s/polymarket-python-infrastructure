@@ -8,6 +8,10 @@ import logging
 import logging.config
 from typing import Optional
 
+# Root logger namespace for this package, derived from wherever the package is
+# installed (``polymarket`` in the source repo, ``shared.polymarket`` in Pelion).
+_PACKAGE = __name__.rpartition(".")[0]
+
 
 DEFAULT_LOGGING_CONFIG = {
     "version": 1,
@@ -15,26 +19,25 @@ DEFAULT_LOGGING_CONFIG = {
     "formatters": {
         "standard": {
             "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            "datefmt": "%Y-%m-%d %H:%M:%S"
+            "datefmt": "%Y-%m-%d %H:%M:%S",
         },
         "detailed": {
             "format": (
-                "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d "
-                "- %(message)s (%(funcName)s)"
+                "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d " "- %(message)s (%(funcName)s)"
             ),
-            "datefmt": "%Y-%m-%d %H:%M:%S"
+            "datefmt": "%Y-%m-%d %H:%M:%S",
         },
         "json": {
             "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
-            "format": "%(asctime)s %(name)s %(levelname)s %(message)s"
-        }
+            "format": "%(asctime)s %(name)s %(levelname)s %(message)s",
+        },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "level": "INFO",
             "formatter": "standard",
-            "stream": "ext://sys.stdout"
+            "stream": "ext://sys.stdout",
         },
         "file": {
             "class": "logging.handlers.RotatingFileHandler",
@@ -42,7 +45,7 @@ DEFAULT_LOGGING_CONFIG = {
             "formatter": "detailed",
             "filename": "polymarket_client.log",
             "maxBytes": 10485760,  # 10MB
-            "backupCount": 5
+            "backupCount": 5,
         },
         "error_file": {
             "class": "logging.handlers.RotatingFileHandler",
@@ -50,27 +53,22 @@ DEFAULT_LOGGING_CONFIG = {
             "formatter": "detailed",
             "filename": "polymarket_errors.log",
             "maxBytes": 10485760,
-            "backupCount": 5
-        }
+            "backupCount": 5,
+        },
     },
     "loggers": {
-        "polymarket": {
+        _PACKAGE: {
             "level": "INFO",
             "handlers": ["console", "file", "error_file"],
-            "propagate": False
+            "propagate": False,
         }
     },
-    "root": {
-        "level": "WARNING",
-        "handlers": ["console"]
-    }
+    "root": {"level": "WARNING", "handlers": ["console"]},
 }
 
 
 def setup_logging(
-    level: Optional[str] = None,
-    log_file: Optional[str] = None,
-    json_format: bool = False
+    level: Optional[str] = None, log_file: Optional[str] = None, json_format: bool = False
 ) -> None:
     """
     Setup logging configuration.
@@ -84,7 +82,7 @@ def setup_logging(
 
     # Override level
     if level:
-        config["loggers"]["polymarket"]["level"] = level.upper()
+        config["loggers"][_PACKAGE]["level"] = level.upper()
 
     # Override log file
     if log_file:
@@ -111,4 +109,4 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger instance
     """
-    return logging.getLogger(f"polymarket.{name}")
+    return logging.getLogger(f"{_PACKAGE}.{name}")

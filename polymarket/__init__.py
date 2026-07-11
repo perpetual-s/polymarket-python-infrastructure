@@ -11,73 +11,73 @@ Adapted from Polymarket's official clients (MIT License):
 """
 
 from .client import PolymarketClient
-from .market_manager import MarketManager, MarketManagerConfig, MarketStats
-from .models import (
-    Side,
-    OrderType,
-    OrderStatus,
-    SignatureType,
-    OrderRequest,
-    MarketOrderRequest,
-    OrderResponse,
-    Order,
-    Position,
-    Balance,
-    Market,
-    OrderBook,
-    WalletConfig,
-    ClientConfig,
-    LeaderboardTrader,
-)
-from .exceptions import (
-    PolymarketError,
-    APIError,
-    AuthenticationError,
-    ValidationError,
-    RateLimitError,
-    TimeoutError,
-    CircuitBreakerError,
-    TradingError,
-    InsufficientBalanceError,
-    OrderRejectedError,
-    MarketNotReadyError,
-    InvalidOrderError,
-    PriceUnavailableError,
-)
 
 # CTF (Conditional Token Framework) - Neg-Risk adapter
 from .ctf import (
-    NegRiskAdapter,
-    ConversionCalculator,
-    is_safe_to_trade,
+    CTF_ADDRESS,
     NEG_RISK_ADAPTER,
     NEG_RISK_EXCHANGE,
-    CTF_ADDRESS,
+    ConversionCalculator,
+    NegRiskAdapter,
+    is_safe_to_trade,
+)
+from .exceptions import (
+    APIError,
+    AuthenticationError,
+    CircuitBreakerError,
+    InsufficientBalanceError,
+    InvalidOrderError,
+    MarketNotReadyError,
+    OrderRejectedError,
+    PolymarketError,
+    PriceUnavailableError,
+    RateLimitError,
+    TimeoutError,
+    TradingError,
+    ValidationError,
+)
+from .market_manager import MarketManager, MarketManagerConfig, MarketStats
+from .models import (
+    Balance,
+    LeaderboardTrader,
+    Market,
+    MarketOrderRequest,
+    Order,
+    OrderBook,
+    OrderRequest,
+    OrderResponse,
+    OrderStatus,
+    OrderType,
+    Position,
+    PricePoint,
+    Side,
+    SignatureType,
+    WalletConfig,
 )
 
 # Fee calculation utilities
 # NOTE: Polymarket has NO trading fees (https://docs.polymarket.com/polymarket-learn/trading/fees)
 # These functions return 0 fees for API compatibility only
 from .utils.fees import (
-    calculate_order_fee,
     calculate_net_cost,
+    calculate_order_fee,
+    calculate_profit_after_fees,
     compare_fees_buy_vs_sell,
     estimate_breakeven_exit,
-    calculate_profit_after_fees,
     get_effective_spread,
 )
 
 # Order validation utilities
 from .utils.validation import (
+    check_order_profitability,
+    validate_balance,
+    validate_fee_rate,
+    validate_neg_risk_market,
     validate_order,
+    validate_order_amounts,
     validate_price_bounds,
     validate_size,
-    validate_fee_rate,
     validate_token_complementarity,
-    validate_neg_risk_market,
-    validate_balance,
-    validate_order_amounts,
-    check_order_profitability,
 )
 
 __version__ = "3.7.0"
@@ -85,12 +85,10 @@ __version__ = "3.7.0"
 __all__ = [
     # Main client
     "PolymarketClient",
-
     # Market Manager (real-time market data)
     "MarketManager",
     "MarketManagerConfig",
     "MarketStats",
-
     # Types
     "Side",
     "OrderType",
@@ -104,10 +102,9 @@ __all__ = [
     "Balance",
     "Market",
     "OrderBook",
+    "PricePoint",
     "WalletConfig",
-    "ClientConfig",
     "LeaderboardTrader",
-
     # Exceptions
     "PolymarketError",
     "APIError",
@@ -122,7 +119,6 @@ __all__ = [
     "MarketNotReadyError",
     "InvalidOrderError",
     "PriceUnavailableError",
-
     # CTF - Neg-Risk adapter
     "NegRiskAdapter",
     "ConversionCalculator",
@@ -130,7 +126,6 @@ __all__ = [
     "NEG_RISK_ADAPTER",
     "NEG_RISK_EXCHANGE",
     "CTF_ADDRESS",
-
     # Fee utilities
     "calculate_order_fee",
     "calculate_net_cost",
@@ -138,7 +133,6 @@ __all__ = [
     "estimate_breakeven_exit",
     "calculate_profit_after_fees",
     "get_effective_spread",
-
     # Validation utilities
     "validate_order",
     "validate_price_bounds",

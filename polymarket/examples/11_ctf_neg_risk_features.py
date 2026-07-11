@@ -11,33 +11,32 @@ Demonstrates the new CTF (Conditional Token Framework) infrastructure:
 These features enable capital-efficient trading on multi-outcome markets.
 
 References:
-- polymarket/Documentation/NEG_RISK_CTF.md
+- shared/polymarket/Documentation/NEG_RISK_CTF.md
 - https://github.com/Polymarket/neg-risk-ctf-adapter
 - https://github.com/Polymarket/ctf-exchange
 """
 
 import asyncio
 from decimal import Decimal
-from polymarket import (
+
+from shared.polymarket import (  # Fee calculation utilities; Validation utilities; CTF utilities
+    CTF_ADDRESS,
+    NEG_RISK_ADAPTER,
+    ConversionCalculator,
     PolymarketClient,
     Side,
-    # Fee calculation utilities
-    calculate_order_fee,
     calculate_net_cost,
+    calculate_order_fee,
+    calculate_profit_after_fees,
+    check_order_profitability,
     compare_fees_buy_vs_sell,
     estimate_breakeven_exit,
-    calculate_profit_after_fees,
     get_effective_spread,
-    # Validation utilities
+    is_safe_to_trade,
     validate_balance,
     validate_price_bounds,
-    check_order_profitability,
-    # CTF utilities
-    ConversionCalculator,
-    is_safe_to_trade,
-    NEG_RISK_ADAPTER,
-    CTF_ADDRESS,
 )
+
 
 def demonstrate_fee_calculations():
     """Show fee calculation utilities."""
@@ -116,7 +115,9 @@ def demonstrate_fee_calculations():
     print(f"  Raw spread: {spread['raw_spread']:.4f} ({spread['raw_spread_bps']} bps)")
     print(f"  Buy cost: ${spread['buy_cost']:.2f}")
     print(f"  Sell proceeds: ${spread['sell_proceeds']:.2f}")
-    print(f"  Effective spread: ${spread['effective_spread']:.2f} ({spread['effective_spread_bps']} bps)")
+    print(
+        f"  Effective spread: ${spread['effective_spread']:.2f} ({spread['effective_spread_bps']} bps)"
+    )
 
     print("\n✅ Fee calculations complete\n")
 
@@ -193,7 +194,7 @@ def demonstrate_validation_utilities():
         exit_price=Decimal("0.70"),
         size=Decimal("100.0"),
         fee_rate_bps=0,  # Polymarket charges 0% fees
-        min_profit_usdc=Decimal("1.0")
+        min_profit_usdc=Decimal("1.0"),
     )
 
     print("Trade 1 ($0.60 → $0.70, $100):")
@@ -206,7 +207,7 @@ def demonstrate_validation_utilities():
         exit_price=Decimal("0.61"),
         size=Decimal("100.0"),
         fee_rate_bps=0,  # Polymarket charges 0% fees
-        min_profit_usdc=Decimal("1.0")
+        min_profit_usdc=Decimal("1.0"),
     )
 
     print("\nTrade 2 ($0.60 → $0.61, $100):")
@@ -222,7 +223,7 @@ def demonstrate_validation_utilities():
         price=Decimal("0.60"),
         size=Decimal("100.0"),
         available_usdc=Decimal("100.0"),
-        fee_rate_bps=0  # Polymarket charges 0% fees
+        fee_rate_bps=0,  # Polymarket charges 0% fees
     )
 
     print("Balance check ($100 USDC, buy $100 at 0.60):")
@@ -236,7 +237,7 @@ def demonstrate_validation_utilities():
         price=Decimal("0.60"),
         size=Decimal("100.0"),
         available_usdc=Decimal("50.0"),
-        fee_rate_bps=0  # Polymarket charges 0% fees
+        fee_rate_bps=0,  # Polymarket charges 0% fees
     )
 
     print("\nBalance check ($50 USDC, buy $100 at 0.60):")
@@ -270,9 +271,7 @@ def demonstrate_ctf_adapter():
 
     # Example: 3-candidate election
     result = calc.calculate_conversion(
-        no_tokens=["token_a_no", "token_b_no"],
-        amount=1.0,
-        total_outcomes=3
+        no_tokens=["token_a_no", "token_b_no"], amount=1.0, total_outcomes=3
     )
 
     print("Election with 3 candidates (A, B, C):")
@@ -328,7 +327,7 @@ async def main():
     print("   • Comprehensive input validation")
 
     print("\n📚 Documentation:")
-    print("   polymarket/Documentation/NEG_RISK_CTF.md")
+    print("   shared/polymarket/Documentation/NEG_RISK_CTF.md")
 
     print("\n" + "=" * 70 + "\n")
 

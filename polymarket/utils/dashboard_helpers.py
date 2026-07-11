@@ -4,12 +4,12 @@ Dashboard helper functions for multi-wallet analytics.
 Optimized for Strategy-3's 100+ wallet tracking needs.
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
-from collections import defaultdict
 import logging
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
-from ..models import Position, Trade, Activity
+from ..models import Activity, Position, Trade
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def calculate_wallet_pnl(positions: List[Position]) -> Dict[str, float]:
             "unrealized_pnl": 0.0,
             "realized_pnl": 0.0,
             "total_value": 0.0,
-            "position_count": 0
+            "position_count": 0,
         }
 
     total_unrealized = sum(p.cash_pnl for p in positions)
@@ -42,7 +42,7 @@ def calculate_wallet_pnl(positions: List[Position]) -> Dict[str, float]:
         "unrealized_pnl": total_unrealized,
         "realized_pnl": total_realized,
         "total_value": total_value,
-        "position_count": len(positions)
+        "position_count": len(positions),
     }
 
 
@@ -58,23 +58,13 @@ def calculate_win_rate(trades: List[Trade], positions: List[Position]) -> Dict[s
         Dict with win_rate, winning_trades, losing_trades, total_trades
     """
     if not positions:
-        return {
-            "win_rate": 0.0,
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "total_trades": 0
-        }
+        return {"win_rate": 0.0, "winning_trades": 0, "losing_trades": 0, "total_trades": 0}
 
     # Calculate from positions with realized P&L
     closed_positions = [p for p in positions if p.realized_pnl != 0]
 
     if not closed_positions:
-        return {
-            "win_rate": 0.0,
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "total_trades": 0
-        }
+        return {"win_rate": 0.0, "winning_trades": 0, "losing_trades": 0, "total_trades": 0}
 
     winning = len([p for p in closed_positions if p.realized_pnl > 0])
     losing = len([p for p in closed_positions if p.realized_pnl < 0])
@@ -84,13 +74,11 @@ def calculate_win_rate(trades: List[Trade], positions: List[Position]) -> Dict[s
         "win_rate": (winning / total * 100) if total > 0 else 0.0,
         "winning_trades": winning,
         "losing_trades": losing,
-        "total_trades": total
+        "total_trades": total,
     }
 
 
-def group_positions_by_market(
-    positions: List[Position]
-) -> Dict[str, List[Position]]:
+def group_positions_by_market(positions: List[Position]) -> Dict[str, List[Position]]:
     """
     Group positions by market slug.
 
@@ -129,16 +117,14 @@ def calculate_market_exposure(positions: List[Position]) -> Dict[str, Dict[str, 
             "total_value": total_value,
             "total_pnl": total_pnl,
             "position_count": len(market_positions),
-            "title": market_positions[0].title if market_positions else ""
+            "title": market_positions[0].title if market_positions else "",
         }
 
     return exposure
 
 
 def calculate_sharpe_ratio(
-    trades: List[Trade],
-    positions: List[Position],
-    risk_free_rate: float = 0.05
+    trades: List[Trade], positions: List[Position], risk_free_rate: float = 0.05
 ) -> float:
     """
     Calculate Sharpe ratio from trading history using position P&L.
@@ -180,21 +166,20 @@ def calculate_sharpe_ratio(
 
     mean_return = sum(returns) / len(returns)
     variance = sum((r - mean_return) ** 2 for r in returns) / len(returns)
-    std_dev = variance ** 0.5
+    std_dev = variance**0.5
 
     if std_dev == 0:
         return 0.0
 
     # Annualize (252 trading days)
     daily_risk_free = risk_free_rate / 252
-    sharpe = ((mean_return - daily_risk_free) / std_dev) * (252 ** 0.5)
+    sharpe = ((mean_return - daily_risk_free) / std_dev) * (252**0.5)
 
     return round(sharpe, 2)
 
 
 def calculate_topic_performance(
-    positions: List[Position],
-    topic_classifier: Optional[Dict[str, List[str]]] = None
+    positions: List[Position], topic_classifier: Optional[Dict[str, List[str]]] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Calculate performance grouped by market topic.
@@ -214,7 +199,7 @@ def calculate_topic_performance(
             "crypto": ["bitcoin", "eth", "crypto", "blockchain", "defi"],
             "economics": ["fed", "inflation", "gdp", "recession", "jobs", "economy"],
             "tech": ["ai", "tech", "apple", "google", "microsoft", "openai"],
-            "other": []  # Catch-all
+            "other": [],  # Catch-all
         }
 
     topic_positions: Dict[str, List[Position]] = defaultdict(list)
@@ -255,16 +240,14 @@ def calculate_topic_performance(
             "total_pnl": total_pnl,
             "total_value": total_value,
             "position_count": len(topic_pos),
-            "win_rate": (winning / len(topic_pos) * 100) if topic_pos else 0.0
+            "win_rate": (winning / len(topic_pos) * 100) if topic_pos else 0.0,
         }
 
     return topic_performance
 
 
 def calculate_time_weighted_pnl(
-    positions: List[Position],
-    activities: List[Activity],
-    days: int = 30
+    positions: List[Position], activities: List[Activity], days: int = 30
 ) -> Dict[str, float]:
     """
     Calculate P&L over specific time periods.
@@ -281,27 +264,22 @@ def calculate_time_weighted_pnl(
 
     # Filter activities within time window
     recent_activities = [
-        a for a in activities
-        if a.timestamp >= cutoff_timestamp and a.type.value == "TRADE"
+        a
+        for a in activities
+        if a.timestamp >= cutoff_timestamp and getattr(a.type, "value", a.type) == "TRADE"
     ]
 
     # Calculate P&L from recent activities
-    pnl = sum(a.usd_value for a in recent_activities)
+    pnl = sum(a.usdc_size for a in recent_activities)
 
     # Calculate initial value (approximation)
     initial_value = sum(p.initial_value for p in positions)
     roi = (pnl / initial_value * 100) if initial_value > 0 else 0.0
 
-    return {
-        f"pnl_{days}d": pnl,
-        f"roi_{days}d": roi,
-        f"trades_{days}d": len(recent_activities)
-    }
+    return {f"pnl_{days}d": pnl, f"roi_{days}d": roi, f"trades_{days}d": len(recent_activities)}
 
 
-def aggregate_multi_wallet_positions(
-    wallet_positions: Dict[str, List[Position]]
-) -> Dict[str, Any]:
+def aggregate_multi_wallet_positions(wallet_positions: Dict[str, List[Position]]) -> Dict[str, Any]:
     """
     Aggregate positions across multiple wallets.
 
@@ -329,11 +307,9 @@ def aggregate_multi_wallet_positions(
     total_value = sum(s["total_value"] for s in wallet_summaries.values())
 
     # Top performers
-    top_wallets = sorted(
-        wallet_summaries.items(),
-        key=lambda x: x[1]["total_pnl"],
-        reverse=True
-    )[:10]
+    top_wallets = sorted(wallet_summaries.items(), key=lambda x: x[1]["total_pnl"], reverse=True)[
+        :10
+    ]
 
     return {
         "total_wallets": len(wallet_positions),
@@ -342,21 +318,15 @@ def aggregate_multi_wallet_positions(
         "total_value": total_value,
         "avg_pnl_per_wallet": total_pnl / len(wallet_positions) if wallet_positions else 0.0,
         "top_performers": [
-            {
-                "wallet": addr,
-                "pnl": metrics["total_pnl"],
-                "value": metrics["total_value"]
-            }
+            {"wallet": addr, "pnl": metrics["total_pnl"], "value": metrics["total_value"]}
             for addr, metrics in top_wallets
         ],
-        "wallet_summaries": wallet_summaries
+        "wallet_summaries": wallet_summaries,
     }
 
 
 def detect_consensus_signals(
-    wallet_positions: Dict[str, List[Position]],
-    min_wallets: int = 5,
-    min_agreement: float = 0.6
+    wallet_positions: Dict[str, List[Position]], min_wallets: int = 5, min_agreement: float = 0.6
 ) -> List[Dict[str, Any]]:
     """
     Detect consensus signals from multiple wallets.
@@ -398,29 +368,28 @@ def detect_consensus_signals(
         agreement_ratio = outcome_counts[dominant_outcome] / total_wallets
 
         if agreement_ratio >= min_agreement:
-            signals.append({
-                "market": market_slug,
-                "title": positions_with_wallet[0][1].title,
-                "outcome": dominant_outcome,
-                "wallet_count": total_wallets,
-                "agreement_ratio": agreement_ratio,
-                "total_value": total_value,
-                "wallets": [w for w, p in positions_with_wallet if p.outcome == dominant_outcome]
-            })
+            signals.append(
+                {
+                    "market": market_slug,
+                    "title": positions_with_wallet[0][1].title,
+                    "outcome": dominant_outcome,
+                    "wallet_count": total_wallets,
+                    "agreement_ratio": agreement_ratio,
+                    "total_value": total_value,
+                    "wallets": [
+                        w for w, p in positions_with_wallet if p.outcome == dominant_outcome
+                    ],
+                }
+            )
 
     # Sort by strength (wallet count * agreement ratio)
-    signals.sort(
-        key=lambda s: s["wallet_count"] * s["agreement_ratio"],
-        reverse=True
-    )
+    signals.sort(key=lambda s: s["wallet_count"] * s["agreement_ratio"], reverse=True)
 
     return signals
 
 
 def format_dashboard_metrics(
-    positions: List[Position],
-    trades: List[Trade],
-    activities: List[Activity]
+    positions: List[Position], trades: List[Trade], activities: List[Activity]
 ) -> Dict[str, Any]:
     """
     Format all metrics for dashboard display.
@@ -443,23 +412,18 @@ def format_dashboard_metrics(
     time_90d = calculate_time_weighted_pnl(positions, activities, days=90)
 
     return {
-        "summary": {
-            **pnl_metrics,
-            **win_rate_metrics,
-            **time_30d,
-            **time_90d
-        },
+        "summary": {**pnl_metrics, **win_rate_metrics, **time_30d, **time_90d},
         "market_exposure": market_exposure,
         "topic_performance": topic_performance,
         "positions": {
             "total": len(positions),
             "profitable": len([p for p in positions if p.cash_pnl > 0]),
             "losing": len([p for p in positions if p.cash_pnl < 0]),
-            "redeemable": len([p for p in positions if p.redeemable])
+            "redeemable": len([p for p in positions if p.redeemable]),
         },
         "activity": {
             "total_trades": len([a for a in activities if a.type.value == "TRADE"]),
             "total_redeems": len([a for a in activities if a.type.value == "REDEEM"]),
-            "last_activity": max([a.timestamp for a in activities]) if activities else 0
-        }
+            "last_activity": max([a.timestamp for a in activities]) if activities else 0,
+        },
     }
