@@ -42,6 +42,22 @@ def test_duplicate_subscribe_not_double_tracked():
     assert len(client._active_subscriptions) == 1
 
 
+def test_send_failure_keeps_subscription_for_replay():
+    # A connected send that raises must NOT drop the tracked record: the
+    # subscription is registered before the send, so a failed write leaves it
+    # in the registry to be replayed on the next (re)connect.
+    client, mock_ws = _connected_client()
+    mock_ws.send.side_effect = RuntimeError("socket write failed")
+
+    sent_now = client.subscribe(topic="activity", type="trades", filters='{"m":"x"}')
+
+    assert mock_ws.send.called  # the connected send path was exercised (not queued)
+    assert sent_now is False  # send raised -> reported as not sent
+    assert [(s["topic"], s["type"], s["filters"]) for s in client._active_subscriptions] == [
+        ("activity", "trades", '{"m":"x"}')
+    ]
+
+
 def test_ping_rearms_without_pong():
     client, mock_ws = _connected_client()
     with patch.object(client, "_schedule_ping") as re_arm:
@@ -62,6 +78,21 @@ def test_connect_arms_protocol_ping_on_run_forever():
     assert 0 < run_kwargs["ping_timeout"] < run_kwargs["ping_interval"]
     # on_pong must be wired on the app so protocol pongs stamp freshness
     assert app_cls.call_args.kwargs["on_pong"] == client._on_pong
+
+
+def test_connect_ping_interval_zero_omits_ping_timeout():
+    # Degenerate branch: ping_interval <= 0 disables protocol pings. It must
+    # pass ping_interval=0 and NOT leave a dangling ping_timeout, which
+    # websocket-client rejects unless 0 < ping_timeout < ping_interval.
+    client = RealTimeDataClient(auto_reconnect=False, ping_interval=0)
+    with (
+        patch("polymarket.api.real_time_data.websocket.WebSocketApp"),
+        patch("polymarket.api.real_time_data.threading.Thread") as thread_cls,
+    ):
+        client.connect()
+    run_kwargs = thread_cls.call_args.kwargs["kwargs"]
+    assert run_kwargs["ping_interval"] == 0
+    assert "ping_timeout" not in run_kwargs
 
 
 def test_registered_on_pong_callback_stamps_last_pong():
@@ -230,3 +261,20 @@ def test_on_open_stamps_freshness_before_status_notify():
     with patch.object(client, "_schedule_ping"):
         client._on_open(MagicMock())
     assert observed and observed[0][0] > 0 and observed[0][1] > 0
+
+
+def test_stats_exposes_desired_subscriptions_and_message_age():
+    client, _ = _connected_client()
+    client.subscribe(topic="activity", type="trades")
+    client.subscribe(topic="clob_market", type="price_change", filters='["1"]')
+    client._last_message_time = time.time() - 5.0
+
+    stats = client.stats()
+
+    # desired_subscriptions mirrors the tracked registry size
+    assert stats["desired_subscriptions"] == 2
+    assert stats["desired_subscriptions"] == stats["active_subscriptions"]
+    # last_message_age_seconds is a finite, non-negative float reflecting elapsed time
+    age = stats["last_message_age_seconds"]
+    assert isinstance(age, float)
+    assert 4.9 <= age <= 6.5
