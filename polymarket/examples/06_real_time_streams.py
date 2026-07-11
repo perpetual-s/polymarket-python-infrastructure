@@ -12,14 +12,11 @@ Based on Phase 2: Real-Time Data Client
 """
 
 import time
-from shared.polymarket.api.real_time_data import (
-    RealTimeDataClient,
-    StreamHelpers,
-    ClobApiKeyCreds
-)
 
+from shared.polymarket.api.real_time_data import ClobApiKeyCreds, RealTimeDataClient, StreamHelpers
 
 # ========== Example 1: Market Trades (Strategy-2 use case) ==========
+
 
 def example_market_trades():
     """Track live trades for a specific market."""
@@ -38,10 +35,9 @@ def example_market_trades():
 
     client = RealTimeDataClient(
         on_connect=lambda c: StreamHelpers.subscribe_to_market_trades(
-            c,
-            market_slug="trump-2024-election"
+            c, market_slug="trump-2024-election"
         ),
-        on_message=on_trade
+        on_message=on_trade,
     )
 
     client.connect()
@@ -56,6 +52,7 @@ def example_market_trades():
 
 
 # ========== Example 2: Event Comments (Sentiment Analysis) ==========
+
 
 def example_event_comments():
     """Monitor comments for sentiment analysis."""
@@ -77,11 +74,9 @@ def example_event_comments():
 
     client = RealTimeDataClient(
         on_connect=lambda c: StreamHelpers.subscribe_to_event_comments(
-            c,
-            event_id=100,  # Replace with actual event ID
-            parent_type="Event"
+            c, event_id=100, parent_type="Event"  # Replace with actual event ID
         ),
-        on_message=on_comment
+        on_message=on_comment,
     )
 
     client.connect()
@@ -96,6 +91,7 @@ def example_event_comments():
 
 # ========== Example 3: Crypto Prices (Strategy-1 Hedging) ==========
 
+
 def example_crypto_prices():
     """Monitor BTC/ETH prices for cross-platform hedging."""
     print("\n=== Example 3: Crypto Prices (Hedging) ===\n")
@@ -105,8 +101,8 @@ def example_crypto_prices():
     def on_price_update(client, message):
         """Handle crypto price updates."""
         payload = message.payload
-        symbol = payload.get('symbol')
-        value = payload.get('value')
+        symbol = payload.get("symbol")
+        value = payload.get("value")
 
         prices[symbol] = value
 
@@ -120,10 +116,7 @@ def example_crypto_prices():
         StreamHelpers.subscribe_to_crypto_price(client, "ethusdt")
         StreamHelpers.subscribe_to_crypto_price(client, "solusdt")
 
-    client = RealTimeDataClient(
-        on_connect=on_connect,
-        on_message=on_price_update
-    )
+    client = RealTimeDataClient(on_connect=on_connect, on_message=on_price_update)
 
     client.connect()
 
@@ -136,6 +129,7 @@ def example_crypto_prices():
 
 
 # ========== Example 4: Market Lifecycle Events ==========
+
 
 def example_market_lifecycle():
     """Monitor new markets and resolutions."""
@@ -163,10 +157,7 @@ def example_market_lifecycle():
         StreamHelpers.subscribe_to_new_markets(client)
         StreamHelpers.subscribe_to_market_resolutions(client)
 
-    client = RealTimeDataClient(
-        on_connect=on_connect,
-        on_message=on_market_event
-    )
+    client = RealTimeDataClient(on_connect=on_connect, on_message=on_market_event)
 
     client.connect()
 
@@ -180,6 +171,7 @@ def example_market_lifecycle():
 
 # ========== Example 5: Price Changes (Strategy-1) ==========
 
+
 def example_price_changes():
     """Monitor price changes for arbitrage opportunities."""
     print("\n=== Example 5: Price Changes (Arbitrage) ===\n")
@@ -188,11 +180,11 @@ def example_price_changes():
         """Handle price change events."""
         payload = message.payload
 
-        for change in payload.get('pc', []):  # pc = price changes
+        for change in payload.get("pc", []):  # pc = price changes
             print("[PRICE CHANGE]")
             print(f"  Token: {change.get('a')}")  # a = asset_id
             print(f"  Price: ${change.get('p')}")  # p = price
-            print(f"  Side: {change.get('s')}")    # s = side
+            print(f"  Side: {change.get('s')}")  # s = side
             print(f"  Best Bid: ${change.get('bb')}")  # bb = best_bid
             print(f"  Best Ask: ${change.get('ba')}")  # ba = best_ask
             print(f"  Spread: ${float(change.get('ba', 0)) - float(change.get('bb', 0)):.4f}")
@@ -201,12 +193,12 @@ def example_price_changes():
     # Example token IDs (replace with actual)
     token_ids = [
         "71321045679252212594626385532706912750332728571942532289631379312455583992833",
-        "48331043336612883890938759509493159234755048973500640148014422747788308965732"
+        "48331043336612883890938759509493159234755048973500640148014422747788308965732",
     ]
 
     client = RealTimeDataClient(
         on_connect=lambda c: StreamHelpers.subscribe_to_price_changes(c, token_ids),
-        on_message=on_price_change
+        on_message=on_price_change,
     )
 
     client.connect()
@@ -220,6 +212,7 @@ def example_price_changes():
 
 
 # ========== Example 6: Aggregated Orderbook Updates ==========
+
 
 def example_orderbook_stream():
     """Stream orderbook updates for multiple markets."""
@@ -235,8 +228,8 @@ def example_orderbook_stream():
         print(f"  Hash: {payload.get('hash')}")
 
         # Best prices
-        bids = payload.get('bids', [])
-        asks = payload.get('asks', [])
+        bids = payload.get("bids", [])
+        asks = payload.get("asks", [])
 
         if bids:
             best_bid = bids[0]
@@ -247,19 +240,17 @@ def example_orderbook_stream():
             print(f"  Best Ask: ${best_ask['price']} ({best_ask['size']} shares)")
 
         if bids and asks:
-            spread = float(asks[0]['price']) - float(bids[0]['price'])
+            spread = float(asks[0]["price"]) - float(bids[0]["price"])
             print(f"  Spread: ${spread:.4f}")
 
         print()
 
     # Example token IDs
-    token_ids = [
-        "71321045679252212594626385532706912750332728571942532289631379312455583992833"
-    ]
+    token_ids = ["71321045679252212594626385532706912750332728571942532289631379312455583992833"]
 
     client = RealTimeDataClient(
         on_connect=lambda c: StreamHelpers.subscribe_to_market_orderbook(c, token_ids),
-        on_message=on_orderbook_update
+        on_message=on_orderbook_update,
     )
 
     client.connect()
@@ -274,15 +265,14 @@ def example_orderbook_stream():
 
 # ========== Example 7: User Orders (Authenticated) ==========
 
+
 def example_user_orders():
     """Monitor your own orders (requires API credentials)."""
     print("\n=== Example 7: User Orders (Authenticated) ===\n")
 
     # IMPORTANT: Replace with your actual API credentials
     clob_auth = ClobApiKeyCreds(
-        key="your-api-key",
-        secret="your-api-secret",
-        passphrase="your-passphrase"
+        key="your-api-key", secret="your-api-secret", passphrase="your-passphrase"
     )
 
     def on_user_event(client, message):
@@ -311,12 +301,8 @@ def example_user_orders():
             print()
 
     client = RealTimeDataClient(
-        on_connect=lambda c: c.subscribe(
-            topic="clob_user",
-            type="*",
-            clob_auth=clob_auth
-        ),
-        on_message=on_user_event
+        on_connect=lambda c: c.subscribe(topic="clob_user", type="*", clob_auth=clob_auth),
+        on_message=on_user_event,
     )
 
     client.connect()
@@ -330,6 +316,7 @@ def example_user_orders():
 
 
 # ========== Example 8: Connection Status Monitoring ==========
+
 
 def example_connection_monitoring():
     """Monitor connection status with auto-reconnect."""
@@ -354,7 +341,7 @@ def example_connection_monitoring():
         on_message=on_message,
         on_status_change=on_status_change,
         auto_reconnect=True,  # Auto-reconnect on disconnect
-        ping_interval=5.0      # Ping every 5 seconds
+        ping_interval=5.0,  # Ping every 5 seconds
     )
 
     client.connect()
@@ -370,16 +357,12 @@ def example_connection_monitoring():
 
 # ========== Example 9: Multi-Stream Dashboard ==========
 
+
 def example_multi_stream_dashboard():
     """Subscribe to multiple streams in one client."""
     print("\n=== Example 9: Multi-Stream Dashboard ===\n")
 
-    stats = {
-        "trades": 0,
-        "comments": 0,
-        "price_updates": 0,
-        "new_markets": 0
-    }
+    stats = {"trades": 0, "comments": 0, "price_updates": 0, "new_markets": 0}
 
     def on_message(client, message):
         """Handle all message types."""
@@ -422,10 +405,7 @@ def example_multi_stream_dashboard():
 
         print("[READY] All subscriptions active")
 
-    client = RealTimeDataClient(
-        on_connect=on_connect,
-        on_message=on_message
-    )
+    client = RealTimeDataClient(on_connect=on_connect, on_message=on_message)
 
     client.connect()
 
@@ -470,7 +450,7 @@ if __name__ == "__main__":
             name, func = examples[key]
             print(f"\n\n{'='*60}")
             print(f"Running: {name}")
-            print('='*60)
+            print("=" * 60)
             func()
     elif choice in examples:
         _, func = examples[choice]

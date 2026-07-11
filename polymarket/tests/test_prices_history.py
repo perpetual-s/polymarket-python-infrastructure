@@ -1,4 +1,5 @@
 """CLOB /prices-history wrapper (monitor M0)."""
+
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -21,16 +22,27 @@ async def test_get_prices_history_params_rate_limit_key_and_parsing():
 
     async def fake_get(path, *, params=None, rate_limit_key=None, retry=True):
         calls.append((path, dict(params), rate_limit_key))
-        return {"history": [{"t": 1751000000, "p": 0.12}, {"t": "bad", "p": None},
-                            {"t": 1751000600, "p": "0.15"}]}
+        return {
+            "history": [
+                {"t": 1751000000, "p": 0.12},
+                {"t": "bad", "p": None},
+                {"t": 1751000600, "p": "0.15"},
+            ]
+        }
 
     api.get = fake_get
     points = await api.get_prices_history("123token", interval="1h", fidelity=10)
-    assert calls == [("/prices-history",
-                      {"market": "123token", "interval": "1h", "fidelity": 10},
-                      "GET:/prices-history")]
+    assert calls == [
+        (
+            "/prices-history",
+            {"market": "123token", "interval": "1h", "fidelity": 10},
+            "GET:/prices-history",
+        )
+    ]
     assert [(p.timestamp, p.price) for p in points] == [
-        (1751000000, Decimal("0.12")), (1751000600, Decimal("0.15"))]  # malformed row skipped
+        (1751000000, Decimal("0.12")),
+        (1751000600, Decimal("0.15")),
+    ]  # malformed row skipped
 
 
 @pytest.mark.asyncio

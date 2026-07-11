@@ -4,7 +4,6 @@ These tests require an async event loop as PolymarketClient/APIs create aiohttp 
 Skip by default until tests are updated for async context.
 """
 
-
 # Skip tests that instantiate PolymarketClient/CLOBAPI without async context
 # These tests need to be updated to use @pytest.mark.asyncio and async fixtures
 collect_ignore_glob = [

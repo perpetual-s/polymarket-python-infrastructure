@@ -123,9 +123,19 @@ async def test_get_all_current_markets_paginates_with_keyset_cursor():
 @pytest.mark.asyncio
 async def test_keyset_reports_raw_count_and_full_pages_continue_despite_parse_losses():
     gamma = object.__new__(GammaAPI)
-    good = {"id": "1", "question": "q", "slug": "s", "conditionId": "0xc", "category": "c",
-            "outcomes": '["Yes","No"]', "outcomePrices": '["0.5","0.5"]',
-            "volumeNum": 1, "liquidityNum": 1, "active": True, "closed": False}
+    good = {
+        "id": "1",
+        "question": "q",
+        "slug": "s",
+        "conditionId": "0xc",
+        "category": "c",
+        "outcomes": '["Yes","No"]',
+        "outcomePrices": '["0.5","0.5"]',
+        "volumeNum": 1,
+        "liquidityNum": 1,
+        "active": True,
+        "closed": False,
+    }
     bad = {"id": None}  # unparseable -> dropped by _parse_market_payload try/except
 
     async def fake_get(path, *, params, rate_limit_key):

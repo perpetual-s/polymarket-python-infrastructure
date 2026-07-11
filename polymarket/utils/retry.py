@@ -5,24 +5,24 @@ Handles transient failures with configurable retry strategies.
 """
 
 import asyncio
-import random
-import time
-import threading
-from typing import Callable, TypeVar, Optional
-from functools import wraps
 import logging
+import random
+import threading
+import time
+from functools import wraps
+from typing import Callable, Optional, TypeVar
 
 from ..exceptions import (
-    PolymarketError,
     APIError,
-    TimeoutError,
+    CircuitBreakerError,
+    PolymarketError,
     RateLimitError,
-    CircuitBreakerError
+    TimeoutError,
 )
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class CircuitBreaker:
@@ -32,12 +32,7 @@ class CircuitBreaker:
     States: CLOSED (normal), OPEN (failing), HALF_OPEN (testing recovery)
     """
 
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        timeout: float = 60.0,
-        name: str = "default"
-    ):
+    def __init__(self, failure_threshold: int = 5, timeout: float = 60.0, name: str = "default"):
         """
         Initialize circuit breaker.
 
@@ -77,9 +72,7 @@ class CircuitBreaker:
                     logger.info(f"Circuit breaker {self.name}: OPEN -> HALF_OPEN")
                     self._state = "HALF_OPEN"
                 else:
-                    raise CircuitBreakerError(
-                        f"Circuit breaker {self.name} is OPEN"
-                    )
+                    raise CircuitBreakerError(f"Circuit breaker {self.name} is OPEN")
 
         # Try calling function
         try:
@@ -150,7 +143,7 @@ class RetryStrategy:
         max_delay: float = 60.0,
         exponential_base: float = 2.0,
         jitter: bool = True,
-        circuit_breaker: Optional[CircuitBreaker] = None
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize retry strategy.
@@ -172,10 +165,7 @@ class RetryStrategy:
 
     def _calculate_delay(self, attempt: int) -> float:
         """Calculate delay for attempt with exponential backoff + jitter."""
-        delay = min(
-            self.base_delay * (self.exponential_base ** attempt),
-            self.max_delay
-        )
+        delay = min(self.base_delay * (self.exponential_base**attempt), self.max_delay)
 
         if self.jitter:
             # Add random jitter (±25%)
@@ -320,20 +310,13 @@ class RetryStrategy:
 
         # All retries exhausted
         if last_exception:
-            logger.error(
-                f"All {self.max_retries} retries exhausted for {func.__name__}"
-            )
+            logger.error(f"All {self.max_retries} retries exhausted for {func.__name__}")
             raise last_exception
 
         # Should never reach here
         raise PolymarketError("Retry logic error")
 
-    async def execute_async(
-        self,
-        func: Callable[..., T],
-        *args,
-        **kwargs
-    ) -> T:
+    async def execute_async(self, func: Callable[..., T], *args, **kwargs) -> T:
         """
         Execute async function with retry logic.
 
@@ -354,9 +337,11 @@ class RetryStrategy:
                     with self.circuit_breaker._lock:
                         if self.circuit_breaker._state == "OPEN":
                             # Check if timeout expired
-                            if (self.circuit_breaker._last_failure_time and
-                                time.time() - self.circuit_breaker._last_failure_time >=
-                                self.circuit_breaker.timeout):
+                            if (
+                                self.circuit_breaker._last_failure_time
+                                and time.time() - self.circuit_breaker._last_failure_time
+                                >= self.circuit_breaker.timeout
+                            ):
                                 self.circuit_breaker._state = "HALF_OPEN"
                             else:
                                 raise CircuitBreakerError(
@@ -408,11 +393,7 @@ class RetryStrategy:
         raise PolymarketError("Retry logic error")
 
 
-def with_retry(
-    max_retries: int = 3,
-    base_delay: float = 1.0,
-    max_delay: float = 60.0
-) -> Callable:
+def with_retry(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 60.0) -> Callable:
     """
     Decorator to add retry logic to function.
 
@@ -424,11 +405,10 @@ def with_retry(
     Returns:
         Decorated function
     """
+
     def decorator(func: Callable) -> Callable:
         strategy = RetryStrategy(
-            max_retries=max_retries,
-            base_delay=base_delay,
-            max_delay=max_delay
+            max_retries=max_retries, base_delay=base_delay, max_delay=max_delay
         )
 
         @wraps(func)

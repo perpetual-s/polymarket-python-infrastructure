@@ -4,15 +4,15 @@ Gamma API client for market data.
 Read-only API for markets, events, and metadata.
 """
 
-from typing import Optional, List, Dict, Any
 import logging
+from typing import Any, Dict, List, Optional
 
-from .base import BaseAPIClient
 from ..config import PolymarketSettings
-from ..models import Market, Event
 from ..exceptions import APIError, MarketDataError
+from ..models import Event, Market
 from ..utils.rate_limiter import RateLimiter
 from ..utils.retry import CircuitBreaker
+from .base import BaseAPIClient
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class GammaAPI(BaseAPIClient):
         self,
         settings: PolymarketSettings,
         rate_limiter: Optional[RateLimiter] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize Gamma API client.
@@ -42,7 +42,7 @@ class GammaAPI(BaseAPIClient):
             base_url=settings.gamma_url,
             settings=settings,
             rate_limiter=rate_limiter,
-            circuit_breaker=circuit_breaker
+            circuit_breaker=circuit_breaker,
         )
 
     def _parse_market_payload(self, data: Dict[str, Any]) -> Market:
@@ -78,7 +78,9 @@ class GammaAPI(BaseAPIClient):
             neg_risk_request_id=data.get("negRiskRequestID"),
             # CRITICAL: Grouped market fields (fixes resolution date issue)
             group_item_title=data.get("groupItemTitle"),
-            group_item_threshold=int(data.get("groupItemThreshold")) if data.get("groupItemThreshold") else None,
+            group_item_threshold=(
+                int(data.get("groupItemThreshold")) if data.get("groupItemThreshold") else None
+            ),
             # Trading state fields
             best_bid=data.get("bestBid"),
             best_ask=data.get("bestAsk"),
@@ -116,7 +118,7 @@ class GammaAPI(BaseAPIClient):
         archived: Optional[bool] = None,
         tag_id: Optional[int] = None,
         slug: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> List[Market]:
         """
         Get markets with filters.
@@ -138,11 +140,7 @@ class GammaAPI(BaseAPIClient):
             MarketDataError: If request fails
         """
         try:
-            params = {
-                "limit": min(limit, 1000),
-                "offset": offset,
-                **kwargs
-            }
+            params = {"limit": min(limit, 1000), "offset": offset, **kwargs}
 
             if active is not None:
                 params["active"] = str(active).lower()
@@ -155,11 +153,7 @@ class GammaAPI(BaseAPIClient):
             if slug:
                 params["slug"] = slug
 
-            response = await self.get(
-                "/markets",
-                params=params,
-                rate_limit_key="GET:/markets"
-            )
+            response = await self.get("/markets", params=params, rate_limit_key="GET:/markets")
 
             # Parse markets
             markets = []
@@ -191,7 +185,7 @@ class GammaAPI(BaseAPIClient):
         archived: Optional[bool] = None,
         tag_id: Optional[int] = None,
         slug: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Get markets from Gamma's cursor-based keyset endpoint.
@@ -220,9 +214,7 @@ class GammaAPI(BaseAPIClient):
                 params["slug"] = slug
 
             response = await self.get(
-                "/markets/keyset",
-                params=params,
-                rate_limit_key="GET:/markets/keyset"
+                "/markets/keyset", params=params, rate_limit_key="GET:/markets/keyset"
             )
 
             raw_markets = response.get("markets", [])
@@ -301,7 +293,7 @@ class GammaAPI(BaseAPIClient):
         active: Optional[bool] = None,
         closed: Optional[bool] = None,
         archived: Optional[bool] = None,
-        **kwargs
+        **kwargs,
     ) -> List[Event]:
         """
         Get events (collections of related markets).
@@ -321,11 +313,7 @@ class GammaAPI(BaseAPIClient):
             MarketDataError: If request fails
         """
         try:
-            params = {
-                "limit": min(limit, 1000),
-                "offset": offset,
-                **kwargs
-            }
+            params = {"limit": min(limit, 1000), "offset": offset, **kwargs}
 
             if active is not None:
                 params["active"] = str(active).lower()
@@ -334,11 +322,7 @@ class GammaAPI(BaseAPIClient):
             if archived is not None:
                 params["archived"] = str(archived).lower()
 
-            response = await self.get(
-                "/events",
-                params=params,
-                rate_limit_key="GET:/events"
-            )
+            response = await self.get("/events", params=params, rate_limit_key="GET:/events")
 
             # Parse events
             events = []
@@ -384,7 +368,7 @@ class GammaAPI(BaseAPIClient):
                         start_date=data.get("startDate"),
                         end_date=data.get("endDate"),
                         markets=nested_markets,  # Full Market objects!
-                        neg_risk=data.get("negRisk")
+                        neg_risk=data.get("negRisk"),
                     )
                     events.append(event)
                 except (KeyError, ValueError, TypeError) as e:
@@ -449,9 +433,7 @@ class GammaAPI(BaseAPIClient):
                 params["cursor"] = cursor
 
             response = await self.get(
-                "/events/pagination",
-                params=params,
-                rate_limit_key="GET:/events/pagination"
+                "/events/pagination", params=params, rate_limit_key="GET:/events/pagination"
             )
 
             # Response format: {"data": [...events...], "cursor": "..."}
@@ -643,7 +625,7 @@ class GammaAPI(BaseAPIClient):
             >>> for m in markets[:5]:
             ...     print(f"{m.question}: spread={m.spread}")
         """
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
 
         tradeable = []
         now = datetime.now(timezone.utc)
@@ -656,16 +638,14 @@ class GammaAPI(BaseAPIClient):
                     continue
 
                 # Skip markets not accepting orders
-                if hasattr(market, 'accepting_orders') and market.accepting_orders is False:
+                if hasattr(market, "accepting_orders") and market.accepting_orders is False:
                     continue
 
                 # Skip markets about to resolve (resolution risk)
                 if market.end_date:
                     try:
                         if isinstance(market.end_date, str):
-                            end_dt = datetime.fromisoformat(
-                                market.end_date.replace("Z", "+00:00")
-                            )
+                            end_dt = datetime.fromisoformat(market.end_date.replace("Z", "+00:00"))
                         else:
                             end_dt = market.end_date
 
@@ -732,10 +712,7 @@ class GammaAPI(BaseAPIClient):
             MarketDataError: If request fails
         """
         try:
-            response = await self.get(
-                "/tags",
-                rate_limit_key="GET:/tags"
-            )
+            response = await self.get("/tags", rate_limit_key="GET:/tags")
 
             logger.info(f"Fetched {len(response)} tags")
             return response
@@ -765,16 +742,9 @@ class GammaAPI(BaseAPIClient):
         """
         try:
             # Search uses different rate limit
-            params = {
-                "query": query,
-                "limit": min(limit, 100)
-            }
+            params = {"query": query, "limit": min(limit, 100)}
 
-            response = await self.get(
-                "/search",
-                params=params,
-                rate_limit_key="GET:/search"
-            )
+            response = await self.get("/search", params=params, rate_limit_key="GET:/search")
 
             markets = []
             for data in response:
@@ -790,7 +760,7 @@ class GammaAPI(BaseAPIClient):
                         volume=float(data.get("volumeNum", 0)),
                         liquidity=float(data.get("liquidityNum", 0)),
                         active=data.get("active", False),
-                        closed=data.get("closed", False)
+                        closed=data.get("closed", False),
                     )
                     markets.append(market)
                 except (KeyError, ValueError, TypeError) as e:
@@ -898,11 +868,7 @@ class GammaAPI(BaseAPIClient):
             Filtered list of tradable events
         """
         tradable = [
-            e for e in events
-            if (e.active and
-                not e.restricted and
-                not e.archived and
-                not e.closed)
+            e for e in events if (e.active and not e.restricted and not e.archived and not e.closed)
         ]
 
         logger.info(f"Filtered {len(tradable)} tradable events from {len(events)} total")
@@ -994,9 +960,7 @@ class GammaAPI(BaseAPIClient):
                 try:
                     # Fetch event by slug
                     response = await self.get(
-                        "/events",
-                        params={"slug": slug},
-                        rate_limit_key="GET:/events"
+                        "/events", params={"slug": slug}, rate_limit_key="GET:/events"
                     )
 
                     if not response or len(response) == 0:
@@ -1044,7 +1008,7 @@ class GammaAPI(BaseAPIClient):
                         start_date=data.get("startDate"),
                         end_date=data.get("endDate"),
                         markets=nested_markets,
-                        neg_risk=data.get("negRisk")
+                        neg_risk=data.get("negRisk"),
                     )
                     events.append(event)
 
@@ -1083,7 +1047,7 @@ class GammaAPI(BaseAPIClient):
         events = await self.get_15min_crypto_markets(
             assets=assets,
             slots_ahead=2,  # Current + next slot
-            slots_behind=0   # No past slots needed
+            slots_behind=0,  # No past slots needed
         )
 
         now = datetime.now(timezone.utc)
@@ -1095,9 +1059,7 @@ class GammaAPI(BaseAPIClient):
 
             try:
                 if isinstance(event.end_date, str):
-                    end_dt = datetime.fromisoformat(
-                        event.end_date.replace("Z", "+00:00")
-                    )
+                    end_dt = datetime.fromisoformat(event.end_date.replace("Z", "+00:00"))
                 else:
                     end_dt = event.end_date
 
@@ -1116,9 +1078,7 @@ class GammaAPI(BaseAPIClient):
             key=lambda e: e.end_date if e.end_date else "",
         )
 
-        logger.info(
-            f"Found {len(expiring_soon)} 15-min markets expiring within {within_seconds}s"
-        )
+        logger.info(f"Found {len(expiring_soon)} 15-min markets expiring within {within_seconds}s")
         return expiring_soon
 
     async def get_public_profile(self, address: str) -> Optional[Dict[str, Any]]:
@@ -1145,7 +1105,7 @@ class GammaAPI(BaseAPIClient):
                 "/public-profile",
                 params={"address": address.lower()},
                 rate_limit_key="GET:/public-profile",
-                retry=False
+                retry=False,
             )
 
             return self._parse_public_profile_response(response)

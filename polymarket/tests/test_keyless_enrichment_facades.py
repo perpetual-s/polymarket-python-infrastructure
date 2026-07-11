@@ -1,4 +1,5 @@
 """Keyless market-trades / address-activity facades (monitor M0)."""
+
 from unittest.mock import AsyncMock
 
 import pytest
@@ -40,8 +41,17 @@ async def test_get_market_trades_window_flags_truncation():
     from polymarket.models import Trade
 
     def _trade(ts):
-        return Trade(id=str(ts), market="m", conditionId="0xc", asset="a", side="BUY",
-                     size="1", price="0.5", feeRateBps=0, timestamp=ts)
+        return Trade(
+            id=str(ts),
+            market="m",
+            conditionId="0xc",
+            asset="a",
+            side="BUY",
+            size="1",
+            price="0.5",
+            feeRateBps=0,
+            timestamp=ts,
+        )
 
     async with PolymarketClient() as client:
         # Page 1: all rows still inside the window and page is full -> keep paging;

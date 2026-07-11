@@ -5,21 +5,24 @@ Uses Pydantic for runtime validation and type safety.
 DECIMAL PRECISION: All numeric types use Decimal for financial-grade accuracy.
 """
 
-from enum import Enum
-from typing import Optional, Any, Union
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from pydantic import BaseModel, Field, field_validator, ConfigDict, SecretStr, AliasChoices
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from enum import Enum
+from typing import Any, Optional, Union
+
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 class Side(str, Enum):
     """Order side."""
+
     BUY = "BUY"
     SELL = "SELL"
 
 
 class OrderType(str, Enum):
     """Order type."""
+
     GTC = "GTC"  # Good-til-cancelled
     GTD = "GTD"  # Good-til-date
     FOK = "FOK"  # Fill-or-kill
@@ -32,21 +35,23 @@ class OrderStatus(str, Enum):
 
     Official statuses from /data/orders endpoint.
     """
-    LIVE = "live"               # Active on exchange
-    PENDING = "pending"         # Being processed
-    FILLED = "filled"           # Completely filled
-    MATCHED = "matched"         # Matched (legacy/alias for filled)
-    CANCELLED = "cancelled"     # User cancelled
-    EXPIRED = "expired"         # Good-till-date expired
-    REJECTED = "rejected"       # Order rejected by exchange
+
+    LIVE = "live"  # Active on exchange
+    PENDING = "pending"  # Being processed
+    FILLED = "filled"  # Completely filled
+    MATCHED = "matched"  # Matched (legacy/alias for filled)
+    CANCELLED = "cancelled"  # User cancelled
+    EXPIRED = "expired"  # Good-till-date expired
+    REJECTED = "rejected"  # Order rejected by exchange
 
     # Legacy statuses (may appear in older data)
-    DELAYED = "delayed"         # Processing delayed
-    UNMATCHED = "unmatched"     # Not matched
+    DELAYED = "delayed"  # Processing delayed
+    UNMATCHED = "unmatched"  # Not matched
 
 
 class SignatureType(int, Enum):
     """Wallet signature type."""
+
     EOA = 0  # Externally Owned Account (MetaMask, hardware wallet)
     MAGIC = 1  # Magic/Email wallet
     PROXY = 2  # Proxy wallet
@@ -55,11 +60,14 @@ class SignatureType(int, Enum):
 # Request Models
 class OrderRequest(BaseModel):
     """Order placement request."""
+
     # NOTE: Removed use_enum_values=True to keep enums as enums (not auto-convert to strings)
     # model_config = ConfigDict(use_enum_values=True)
 
     token_id: str = Field(..., description="ERC1155 token ID")
-    price: Decimal = Field(..., ge=Decimal("0.01"), le=Decimal("0.99"), description="Order price (0.01-0.99)")
+    price: Decimal = Field(
+        ..., ge=Decimal("0.01"), le=Decimal("0.99"), description="Order price (0.01-0.99)"
+    )
     size: Decimal = Field(..., gt=0, description="Number of tokens/contracts to buy or sell")
     side: Side = Field(..., description="BUY or SELL")
     order_type: OrderType = Field(default=OrderType.GTC, description="Order type")
@@ -108,14 +116,11 @@ class MarketOrderRequest(BaseModel):
 
     This matches official py-clob-client MarketOrderArgs behavior.
     """
+
     model_config = ConfigDict(use_enum_values=True)
 
     token_id: str = Field(..., description="ERC1155 token ID")
-    amount: Decimal = Field(
-        ...,
-        gt=0,
-        description="BUY: USD to spend | SELL: tokens to sell"
-    )
+    amount: Decimal = Field(..., gt=0, description="BUY: USD to spend | SELL: tokens to sell")
     side: Side = Field(..., description="BUY or SELL")
     order_type: OrderType = Field(default=OrderType.FOK, description="FOK or FAK")
 
@@ -136,6 +141,7 @@ class MarketOrderRequest(BaseModel):
 # Response Models
 class OrderResponse(BaseModel):
     """Order placement response."""
+
     success: bool
     order_id: Optional[str] = None
     status: Optional[OrderStatus] = None
@@ -147,6 +153,7 @@ class OrderResponse(BaseModel):
 
 class Order(BaseModel):
     """Open order."""
+
     id: str
     market: str
     asset_id: str
@@ -177,6 +184,7 @@ class Order(BaseModel):
 
 class Position(BaseModel):
     """Trading position with comprehensive PnL tracking."""
+
     # Identity
     proxy_wallet: str = Field(..., alias="proxyWallet")
     asset: str
@@ -212,9 +220,16 @@ class Position(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @field_validator(
-        "size", "avg_price", "current_value", "initial_value", "cur_price",
-        "cash_pnl", "percent_pnl", "realized_pnl", "percent_realized_pnl",
-        mode="before"
+        "size",
+        "avg_price",
+        "current_value",
+        "initial_value",
+        "cur_price",
+        "cash_pnl",
+        "percent_pnl",
+        "realized_pnl",
+        "percent_realized_pnl",
+        mode="before",
     )
     @classmethod
     def validate_numeric(cls, v: Any) -> Decimal:
@@ -239,6 +254,7 @@ class Position(BaseModel):
 
 class Trade(BaseModel):
     """Trade execution record."""
+
     # Trade identity
     id: str
     market: str
@@ -281,6 +297,7 @@ class Trade(BaseModel):
 
 class ActivityType(str, Enum):
     """Onchain activity types."""
+
     TRADE = "TRADE"
     SPLIT = "SPLIT"
     MERGE = "MERGE"
@@ -299,6 +316,7 @@ class Activity(BaseModel):
     TRADE activities have side, price, conditionId populated.
     YIELD activities may have nulls for market-specific fields.
     """
+
     # Required fields
     timestamp: int
     type: ActivityType
@@ -362,6 +380,7 @@ class PortfolioValue(BaseModel):
 
     Returned by /value endpoint with detailed portfolio metrics.
     """
+
     user: str
     value: Decimal  # Legacy field - total value (same as equity_total)
     bets: Optional[Decimal] = None  # Total bet value
@@ -393,6 +412,7 @@ class Holder(BaseModel):
     Note: API returns nested structure { token: str, holders: [Holder] }.
     The get_holders method flattens this and adds token_id to each holder.
     """
+
     proxy_wallet: str = Field(..., alias="proxyWallet")
     amount: Decimal
     outcome_index: int = Field(..., alias="outcomeIndex")
@@ -428,14 +448,14 @@ class Holder(BaseModel):
 
 class LeaderboardTrader(BaseModel):
     """Leaderboard trader entry."""
+
     rank: str
     user_id: str = Field(..., validation_alias=AliasChoices("user_id", "proxyWallet"))
     user_name: str = Field(..., validation_alias=AliasChoices("user_name", "userName"))
     vol: Decimal
     pnl: Decimal
     profile_image: Optional[str] = Field(
-        None,
-        validation_alias=AliasChoices("profile_image", "profileImage")
+        None, validation_alias=AliasChoices("profile_image", "profileImage")
     )
     x_username: Optional[str] = Field(None, alias="xUsername")
     verified_badge: Optional[bool] = Field(None, alias="verifiedBadge")
@@ -458,6 +478,7 @@ class LeaderboardTrader(BaseModel):
 
 class Balance(BaseModel):
     """Wallet balance."""
+
     collateral: Decimal = Field(..., description="USDC balance")
     tokens: dict[str, Decimal] = Field(default_factory=dict, description="Token ID -> balance")
 
@@ -497,6 +518,7 @@ class Balance(BaseModel):
 # Market Data Models
 class Market(BaseModel):
     """Market information."""
+
     id: str
     question: str
     slug: str
@@ -513,8 +535,12 @@ class Market(BaseModel):
     end_date: Optional[datetime] = None
 
     # Additional fields from official Polymarket agents repo
-    rewards_min_size: Optional[Decimal] = Field(None, alias="rewardsMinSize", description="Minimum size for rewards")
-    rewards_max_spread: Optional[Decimal] = Field(None, alias="rewardsMaxSpread", description="Maximum spread for rewards")
+    rewards_min_size: Optional[Decimal] = Field(
+        None, alias="rewardsMinSize", description="Minimum size for rewards"
+    )
+    rewards_max_spread: Optional[Decimal] = Field(
+        None, alias="rewardsMaxSpread", description="Maximum spread for rewards"
+    )
     ticker: Optional[str] = Field(None, description="Short ticker/code for market")
     new: Optional[bool] = Field(None, description="Newly created market flag")
     featured: Optional[bool] = Field(None, description="Featured market flag")
@@ -522,38 +548,72 @@ class Market(BaseModel):
     archived: Optional[bool] = Field(None, description="Archived/deprecated market")
 
     # Neg-risk CTF adapter fields
-    neg_risk: Optional[bool] = Field(None, alias="negRisk", description="Negative risk market (mutually exclusive outcomes)")
-    enable_neg_risk: Optional[bool] = Field(None, alias="enableNegRisk", description="Neg-risk enabled for this market")
-    neg_risk_augmented: Optional[bool] = Field(None, alias="negRiskAugmented", description="Augmented neg-risk (incomplete outcome universe)")
-    neg_risk_market_id: Optional[str] = Field(None, alias="negRiskMarketID", description="Neg-risk CTF adapter market ID")
-    neg_risk_request_id: Optional[str] = Field(None, alias="negRiskRequestID", description="Neg-risk CTF adapter request ID")
+    neg_risk: Optional[bool] = Field(
+        None, alias="negRisk", description="Negative risk market (mutually exclusive outcomes)"
+    )
+    enable_neg_risk: Optional[bool] = Field(
+        None, alias="enableNegRisk", description="Neg-risk enabled for this market"
+    )
+    neg_risk_augmented: Optional[bool] = Field(
+        None,
+        alias="negRiskAugmented",
+        description="Augmented neg-risk (incomplete outcome universe)",
+    )
+    neg_risk_market_id: Optional[str] = Field(
+        None, alias="negRiskMarketID", description="Neg-risk CTF adapter market ID"
+    )
+    neg_risk_request_id: Optional[str] = Field(
+        None, alias="negRiskRequestID", description="Neg-risk CTF adapter request ID"
+    )
 
     # Grouped market fields (CRITICAL for correct resolution dates)
-    group_item_title: Optional[str] = Field(None, alias="groupItemTitle", description="Resolution date/title for grouped markets")
-    group_item_threshold: Optional[int] = Field(None, alias="groupItemThreshold", description="Ordering threshold for grouped markets")
+    group_item_title: Optional[str] = Field(
+        None, alias="groupItemTitle", description="Resolution date/title for grouped markets"
+    )
+    group_item_threshold: Optional[int] = Field(
+        None, alias="groupItemThreshold", description="Ordering threshold for grouped markets"
+    )
 
     # Trading state fields
     best_bid: Optional[Decimal] = Field(None, alias="bestBid", description="Current best bid price")
     best_ask: Optional[Decimal] = Field(None, alias="bestAsk", description="Current best ask price")
     spread: Optional[Decimal] = Field(None, description="Current bid-ask spread")
-    last_trade_price: Optional[Decimal] = Field(None, alias="lastTradePrice", description="Last trade price")
+    last_trade_price: Optional[Decimal] = Field(
+        None, alias="lastTradePrice", description="Last trade price"
+    )
     competitive: Optional[Decimal] = Field(None, description="Market competitiveness score (0-1)")
 
     # Trading constraints
-    order_min_size: Optional[Decimal] = Field(None, alias="orderMinSize", description="Minimum order size in USDC")
-    order_price_min_tick_size: Optional[Decimal] = Field(None, alias="orderPriceMinTickSize", description="Minimum price tick size")
-    accepting_orders: Optional[bool] = Field(None, alias="acceptingOrders", description="Whether market is accepting orders")
+    order_min_size: Optional[Decimal] = Field(
+        None, alias="orderMinSize", description="Minimum order size in USDC"
+    )
+    order_price_min_tick_size: Optional[Decimal] = Field(
+        None, alias="orderPriceMinTickSize", description="Minimum price tick size"
+    )
+    accepting_orders: Optional[bool] = Field(
+        None, alias="acceptingOrders", description="Whether market is accepting orders"
+    )
 
     # UMA oracle fields
-    question_id: Optional[str] = Field(None, alias="questionID", description="UMA oracle question ID")
+    question_id: Optional[str] = Field(
+        None, alias="questionID", description="UMA oracle question ID"
+    )
     uma_bond: Optional[Decimal] = Field(None, alias="umaBond", description="UMA bond amount")
     uma_reward: Optional[Decimal] = Field(None, alias="umaReward", description="UMA reward amount")
-    resolution_source: Optional[str] = Field(None, alias="resolutionSource", description="URL/source for market resolution")
+    resolution_source: Optional[str] = Field(
+        None, alias="resolutionSource", description="URL/source for market resolution"
+    )
 
     # Time-windowed volumes
-    volume_24h: Optional[Decimal] = Field(None, alias="volume24hr", description="24-hour trading volume")
-    volume_1wk: Optional[Decimal] = Field(None, alias="volume1wk", description="1-week trading volume")
-    volume_1mo: Optional[Decimal] = Field(None, alias="volume1mo", description="1-month trading volume")
+    volume_24h: Optional[Decimal] = Field(
+        None, alias="volume24hr", description="24-hour trading volume"
+    )
+    volume_1wk: Optional[Decimal] = Field(
+        None, alias="volume1wk", description="1-week trading volume"
+    )
+    volume_1mo: Optional[Decimal] = Field(
+        None, alias="volume1mo", description="1-month trading volume"
+    )
 
     # Server-computed price changes (Gamma; used by the market monitor sweep channel)
     one_hour_price_change: Optional[Decimal] = Field(
@@ -564,11 +624,17 @@ class Market(BaseModel):
     )
 
     # Creator/resolver fields
-    submitted_by: Optional[str] = Field(None, alias="submitted_by", description="Address that submitted the market")
-    resolved_by: Optional[str] = Field(None, alias="resolvedBy", description="Address that resolves the market")
+    submitted_by: Optional[str] = Field(
+        None, alias="submitted_by", description="Address that submitted the market"
+    )
+    resolved_by: Optional[str] = Field(
+        None, alias="resolvedBy", description="Address that resolves the market"
+    )
 
     # Date tracking
-    has_reviewed_dates: Optional[bool] = Field(None, alias="hasReviewedDates", description="Whether dates have been reviewed")
+    has_reviewed_dates: Optional[bool] = Field(
+        None, alias="hasReviewedDates", description="Whether dates have been reviewed"
+    )
 
     @field_validator("outcomes", mode="before")
     @classmethod
@@ -576,6 +642,7 @@ class Market(BaseModel):
         """Parse outcomes from JSON string if needed."""
         if isinstance(v, str):
             import json
+
             return json.loads(v)
         return v
 
@@ -585,6 +652,7 @@ class Market(BaseModel):
         """Parse outcome prices from JSON string or list, convert to Decimal."""
         if isinstance(v, str):
             import json
+
             prices = json.loads(v)
         else:
             prices = v
@@ -617,13 +685,23 @@ class Market(BaseModel):
             return Decimal("0.0")
 
     @field_validator(
-        "rewards_min_size", "rewards_max_spread",
-        "best_bid", "best_ask", "spread", "last_trade_price", "competitive",
-        "order_min_size", "order_price_min_tick_size",
-        "uma_bond", "uma_reward",
-        "volume_24h", "volume_1wk", "volume_1mo",
-        "one_hour_price_change", "one_day_price_change",
-        mode="before"
+        "rewards_min_size",
+        "rewards_max_spread",
+        "best_bid",
+        "best_ask",
+        "spread",
+        "last_trade_price",
+        "competitive",
+        "order_min_size",
+        "order_price_min_tick_size",
+        "uma_bond",
+        "uma_reward",
+        "volume_24h",
+        "volume_1wk",
+        "volume_1mo",
+        "one_hour_price_change",
+        "one_day_price_change",
+        mode="before",
     )
     @classmethod
     def validate_optional_numeric(cls, v: Any) -> Optional[Decimal]:
@@ -650,6 +728,7 @@ class Market(BaseModel):
             return None
         if isinstance(v, str):
             import json
+
             return json.loads(v)
         return v
 
@@ -658,6 +737,7 @@ class Market(BaseModel):
 
 class Event(BaseModel):
     """Event information (group of related markets)."""
+
     id: str
     slug: str
     title: str
@@ -677,7 +757,9 @@ class Event(BaseModel):
     end_date: Optional[datetime] = Field(None, alias="endDate")
 
     # Markets in this event (FULL market objects, not just IDs!)
-    markets: list["Market"] = Field(default_factory=list, description="Full market objects in this event")
+    markets: list["Market"] = Field(
+        default_factory=list, description="Full market objects in this event"
+    )
 
     # Negative risk indicator
     neg_risk: Optional[bool] = Field(None, alias="negRisk", description="Negative risk event")
@@ -700,6 +782,7 @@ class Event(BaseModel):
 
 class OrderBook(BaseModel):
     """Order book for a token."""
+
     token_id: str
     bids: list[tuple[Decimal, Decimal]] = Field(default_factory=list, description="[(price, size)]")
     asks: list[tuple[Decimal, Decimal]] = Field(default_factory=list, description="[(price, size)]")
@@ -774,6 +857,7 @@ class PricePoint(BaseModel):
 # Configuration Models
 class WalletConfig(BaseModel):
     """Wallet configuration."""
+
     private_key: SecretStr = Field(..., description="Wallet private key (hex)")
     address: Optional[str] = Field(None, description="Wallet address (derived if not provided)")
     signature_type: SignatureType = Field(default=SignatureType.EOA)
@@ -787,6 +871,7 @@ class WalletConfig(BaseModel):
 # Filter Models
 class MarketFilters(BaseModel):
     """Filters for market queries."""
+
     limit: int = Field(default=100, le=1000)
     offset: int = Field(default=0, ge=0)
     active: Optional[bool] = None
@@ -797,6 +882,7 @@ class MarketFilters(BaseModel):
 
 class OrderFilters(BaseModel):
     """Filters for order queries."""
+
     market: Optional[str] = None
     asset_id: Optional[str] = None
     status: Optional[OrderStatus] = None
@@ -805,6 +891,7 @@ class OrderFilters(BaseModel):
 # WebSocket Models
 class WebSocketMessage(BaseModel):
     """WebSocket message."""
+
     channel: str
     event: str
     data: dict[str, Any]

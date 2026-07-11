@@ -5,28 +5,24 @@ Provides endpoints for positions, trades, activity, and portfolio analytics.
 Base URL: https://data-api.polymarket.com
 """
 
-from typing import Optional, List, Dict, Any
 import logging
+from typing import Any, Dict, List, Optional
 
-from .base import BaseAPIClient
 from ..config import PolymarketSettings
+from ..exceptions import APIError, TimeoutError, ValidationError
 from ..models import (
-    Position,
-    Trade,
     Activity,
-    PortfolioValue,
+    ActivityType,
     Holder,
     LeaderboardTrader,
+    PortfolioValue,
+    Position,
     Side,
-    ActivityType
-)
-from ..exceptions import (
-    APIError,
-    TimeoutError,
-    ValidationError
+    Trade,
 )
 from ..utils.rate_limiter import RateLimiter
 from ..utils.retry import CircuitBreaker
+from .base import BaseAPIClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +43,7 @@ class DataAPI(BaseAPIClient):
         self,
         settings: Optional[PolymarketSettings] = None,
         rate_limiter: Optional[RateLimiter] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize Data API client.
@@ -60,6 +56,7 @@ class DataAPI(BaseAPIClient):
         # Create settings if not provided
         if settings is None:
             from ..config import get_settings
+
             settings = get_settings()
 
         # Override data API URL
@@ -70,7 +67,7 @@ class DataAPI(BaseAPIClient):
             base_url=data_api_url,
             settings=settings,
             rate_limiter=rate_limiter,
-            circuit_breaker=circuit_breaker
+            circuit_breaker=circuit_breaker,
         )
 
     # ========== Positions ==========
@@ -87,7 +84,7 @@ class DataAPI(BaseAPIClient):
         offset: int = 0,
         sort_by: str = "TOKENS",
         sort_direction: str = "DESC",
-        title: Optional[str] = None
+        title: Optional[str] = None,
     ) -> List[Position]:
         """
         Get current positions for a user.
@@ -123,7 +120,7 @@ class DataAPI(BaseAPIClient):
             "limit": min(limit, 500),
             "offset": min(offset, 10000),
             "sortBy": sort_by,
-            "sortDirection": sort_direction
+            "sortDirection": sort_direction,
         }
 
         if market:
@@ -139,10 +136,7 @@ class DataAPI(BaseAPIClient):
 
         try:
             response = await self.get(
-                "/positions",
-                params=params,
-                rate_limit_key="GET:/positions",
-                retry=True
+                "/positions", params=params, rate_limit_key="GET:/positions", retry=True
             )
 
             # Parse positions
@@ -184,7 +178,7 @@ class DataAPI(BaseAPIClient):
         filter_type: Optional[str] = None,
         filter_amount: Optional[float] = None,
         market: Optional[str] = None,
-        side: Optional[Side] = None
+        side: Optional[Side] = None,
     ) -> List[Trade]:
         """
         Get user trade history.
@@ -208,7 +202,7 @@ class DataAPI(BaseAPIClient):
         params: Dict[str, Any] = {
             "limit": min(limit, 500),
             "offset": offset,
-            "takerOnly": str(taker_only).lower()
+            "takerOnly": str(taker_only).lower(),
         }
 
         if user:
@@ -224,10 +218,7 @@ class DataAPI(BaseAPIClient):
 
         try:
             response = await self.get(
-                "/trades",
-                params=params,
-                rate_limit_key="GET:/trades",
-                retry=True
+                "/trades", params=params, rate_limit_key="GET:/trades", retry=True
             )
 
             if not isinstance(response, list):
@@ -267,7 +258,7 @@ class DataAPI(BaseAPIClient):
         start: Optional[int] = None,
         end: Optional[int] = None,
         side: Optional[Side] = None,
-        sort_by: str = "TIMESTAMP"
+        sort_by: str = "TIMESTAMP",
     ) -> List[Activity]:
         """
         Get onchain activity for a user.
@@ -297,7 +288,7 @@ class DataAPI(BaseAPIClient):
             "user": user.lower(),
             "limit": min(limit, 500),
             "offset": offset,
-            "sortBy": sort_by
+            "sortBy": sort_by,
         }
 
         if market:
@@ -313,10 +304,7 @@ class DataAPI(BaseAPIClient):
 
         try:
             response = await self.get(
-                "/activity",
-                params=params,
-                rate_limit_key="GET:/activity",
-                retry=False
+                "/activity", params=params, rate_limit_key="GET:/activity", retry=False
             )
 
             if not isinstance(response, list):
@@ -351,11 +339,7 @@ class DataAPI(BaseAPIClient):
 
     # ========== Portfolio Value ==========
 
-    async def get_portfolio_value(
-        self,
-        user: str,
-        market: Optional[str] = None
-    ) -> PortfolioValue:
+    async def get_portfolio_value(self, user: str, market: Optional[str] = None) -> PortfolioValue:
         """
         Get total USD value of user's positions with detailed breakdown.
 
@@ -382,19 +366,14 @@ class DataAPI(BaseAPIClient):
         if not user or not user.startswith("0x"):
             raise ValidationError(f"Invalid user address: {user}")
 
-        params: Dict[str, Any] = {
-            "user": user.lower()
-        }
+        params: Dict[str, Any] = {"user": user.lower()}
 
         if market:
             params["market"] = market
 
         try:
             response = await self.get(
-                "/value",
-                params=params,
-                rate_limit_key="GET:/value",
-                retry=True
+                "/value", params=params, rate_limit_key="GET:/value", retry=True
             )
 
             # Parse response - API returns list with single item [{user, value}]
@@ -437,10 +416,7 @@ class DataAPI(BaseAPIClient):
     # ========== Market Holders ==========
 
     async def get_holders(
-        self,
-        market: str,
-        limit: int = 100,
-        min_balance: int = 1
+        self, market: str, limit: int = 100, min_balance: int = 1
     ) -> List[Holder]:
         """
         Get top holders in a specific market.
@@ -475,15 +451,12 @@ class DataAPI(BaseAPIClient):
         params: Dict[str, Any] = {
             "market": market,
             "limit": min(limit, 500),
-            "minBalance": min_balance
+            "minBalance": min_balance,
         }
 
         try:
             response = await self.get(
-                "/holders",
-                params=params,
-                rate_limit_key="GET:/holders",
-                retry=True
+                "/holders", params=params, rate_limit_key="GET:/holders", retry=True
             )
 
             if not isinstance(response, list):
@@ -522,9 +495,7 @@ class DataAPI(BaseAPIClient):
     # ========== Leaderboard ==========
 
     async def get_leaderboard(
-        self,
-        limit: int = 100,
-        min_pnl: Optional[float] = None
+        self, limit: int = 100, min_pnl: Optional[float] = None
     ) -> List[LeaderboardTrader]:
         """
         Get leaderboard of top traders.
@@ -541,10 +512,7 @@ class DataAPI(BaseAPIClient):
         """
         try:
             response = await self.get(
-                "/v1/leaderboard",
-                params={},
-                rate_limit_key="GET:/v1/leaderboard",
-                retry=True
+                "/v1/leaderboard", params={}, rate_limit_key="GET:/v1/leaderboard", retry=True
             )
 
             if not isinstance(response, list):

@@ -8,12 +8,12 @@ Based on: https://github.com/Polymarket/real-time-data-client
 """
 
 import json
-import time
 import logging
 import threading
-from typing import Optional, Callable, Dict, List, Any
-from enum import Enum
+import time
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import websocket  # websocket-client library
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 class ConnectionStatus(str, Enum):
     """WebSocket connection status."""
+
     CONNECTING = "CONNECTING"
     CONNECTED = "CONNECTED"
     DISCONNECTED = "DISCONNECTED"
@@ -41,6 +42,7 @@ class ConnectionStatus(str, Enum):
 @dataclass
 class ClobApiKeyCreds:
     """API key credentials for CLOB authentication."""
+
     key: str
     secret: str
     passphrase: str
@@ -49,6 +51,7 @@ class ClobApiKeyCreds:
 @dataclass
 class Subscription:
     """Subscription configuration."""
+
     topic: str
     type: str
     filters: Optional[str] = None
@@ -58,6 +61,7 @@ class Subscription:
 @dataclass
 class Message:
     """Real-time message from WebSocket."""
+
     topic: str
     type: str
     timestamp: int
@@ -96,8 +100,8 @@ class RealTimeDataClient:
     def __init__(
         self,
         host: Optional[str] = None,
-        on_connect: Optional[Callable[['RealTimeDataClient'], None]] = None,
-        on_message: Optional[Callable[['RealTimeDataClient', Message], None]] = None,
+        on_connect: Optional[Callable[["RealTimeDataClient"], None]] = None,
+        on_message: Optional[Callable[["RealTimeDataClient", Message], None]] = None,
         on_status_change: Optional[Callable[[ConnectionStatus], None]] = None,
         auto_reconnect: bool = True,
         ping_interval: float = DEFAULT_PING_INTERVAL,
@@ -159,7 +163,7 @@ class RealTimeDataClient:
 
         logger.info(f"Initialized RealTimeDataClient: {self.host}")
 
-    def connect(self) -> 'RealTimeDataClient':
+    def connect(self) -> "RealTimeDataClient":
         """
         Establish WebSocket connection.
 
@@ -194,14 +198,14 @@ class RealTimeDataClient:
             on_message=self._on_message,
             on_error=self._on_error,
             on_close=self._on_close,
-            on_pong=self._on_pong
+            on_pong=self._on_pong,
         )
 
         # Run in separate thread
         self._ws_thread = threading.Thread(
             target=self.ws.run_forever,
             kwargs={"ping_interval": 0},  # We handle pings manually
-            daemon=True
+            daemon=True,
         )
         self._ws_thread.start()
 
@@ -236,7 +240,7 @@ class RealTimeDataClient:
         topic: str,
         type: str = "*",
         filters: Optional[str] = None,
-        clob_auth: Optional[ClobApiKeyCreds] = None
+        clob_auth: Optional[ClobApiKeyCreds] = None,
     ) -> bool:
         """
         Subscribe to a data stream.
@@ -280,8 +284,7 @@ class RealTimeDataClient:
         key = (topic, type, filters)
         with self._subscriptions_lock:
             if not any(
-                (s["topic"], s["type"], s["filters"]) == key
-                for s in self._active_subscriptions
+                (s["topic"], s["type"], s["filters"]) == key for s in self._active_subscriptions
             ):
                 self._active_subscriptions.append(record)
                 logger.debug(
@@ -309,7 +312,7 @@ class RealTimeDataClient:
                     "topic": record["topic"],
                     "type": record["type"],
                 }
-            ]
+            ],
         }
 
         # Add filters if provided
@@ -321,7 +324,7 @@ class RealTimeDataClient:
             subscription["subscriptions"][0]["clob_auth"] = {
                 "key": record["clob_auth"].key,
                 "secret": record["clob_auth"].secret,
-                "passphrase": record["clob_auth"].passphrase
+                "passphrase": record["clob_auth"].passphrase,
             }
 
         try:
@@ -332,12 +335,7 @@ class RealTimeDataClient:
             logger.error(f"Subscribe failed: {e}")
             return False
 
-    def unsubscribe(
-        self,
-        topic: str,
-        type: str = "*",
-        filters: Optional[str] = None
-    ):
+    def unsubscribe(self, topic: str, type: str = "*", filters: Optional[str] = None):
         """
         Unsubscribe from a data stream.
 
@@ -357,7 +355,7 @@ class RealTimeDataClient:
                     "topic": topic,
                     "type": type,
                 }
-            ]
+            ],
         }
 
         if filters:
@@ -371,10 +369,13 @@ class RealTimeDataClient:
             sub_key = (topic, type, filters)
             with self._subscriptions_lock:
                 self._active_subscriptions = [
-                    s for s in self._active_subscriptions
+                    s
+                    for s in self._active_subscriptions
                     if (s["topic"], s["type"], s["filters"]) != sub_key
                 ]
-                logger.debug(f"Removed subscription tracking: {topic}/{type} (total: {len(self._active_subscriptions)})")
+                logger.debug(
+                    f"Removed subscription tracking: {topic}/{type} (total: {len(self._active_subscriptions)})"
+                )
 
         except Exception as e:
             logger.error(f"Unsubscribe failed: {e}")
@@ -445,7 +446,7 @@ class RealTimeDataClient:
                     type=data.get("type", ""),
                     timestamp=data.get("timestamp", int(time.time() * 1000)),
                     payload=data.get("payload", {}),
-                    connection_id=data.get("connection_id", "")
+                    connection_id=data.get("connection_id", ""),
                 )
 
                 # Notify application
@@ -507,7 +508,7 @@ class RealTimeDataClient:
                 self._connecting = False
 
             # Exponential backoff: 2, 4, 8, 16, 32, 64, 128, 256, 300 max
-            delay = min(2 ** self._reconnect_attempts, self._max_reconnect_delay)
+            delay = min(2**self._reconnect_attempts, self._max_reconnect_delay)
             self._reconnect_attempts += 1
 
             logger.info(f"Scheduling reconnect in {delay}s (attempt {self._reconnect_attempts})...")
@@ -608,61 +609,46 @@ class RealTimeDataClient:
             "total_messages_received": self._total_messages_received,
             "total_reconnections": self._total_reconnections,
             "current_reconnect_attempts": self._reconnect_attempts,
-            "last_pong_seconds_ago": int(time.time() - self._last_pong) if self._last_pong else None,
+            "last_pong_seconds_ago": (
+                int(time.time() - self._last_pong) if self._last_pong else None
+            ),
             "auto_reconnect_enabled": self.auto_reconnect,
         }
 
 
 # ========== Stream-Specific Helpers ==========
 
+
 class StreamHelpers:
     """Helper functions for common streaming patterns."""
 
     @staticmethod
-    def subscribe_to_market_trades(
-        client: RealTimeDataClient,
-        market_slug: str
-    ):
+    def subscribe_to_market_trades(client: RealTimeDataClient, market_slug: str):
         """Subscribe to trades for a specific market."""
         client.subscribe(
-            topic="activity",
-            type="trades",
-            filters=json.dumps({"market_slug": market_slug})
+            topic="activity", type="trades", filters=json.dumps({"market_slug": market_slug})
         )
 
     @staticmethod
-    def subscribe_to_event_trades(
-        client: RealTimeDataClient,
-        event_slug: str
-    ):
+    def subscribe_to_event_trades(client: RealTimeDataClient, event_slug: str):
         """Subscribe to trades for all markets in an event."""
         client.subscribe(
-            topic="activity",
-            type="trades",
-            filters=json.dumps({"event_slug": event_slug})
+            topic="activity", type="trades", filters=json.dumps({"event_slug": event_slug})
         )
 
     @staticmethod
     def subscribe_to_event_comments(
-        client: RealTimeDataClient,
-        event_id: int,
-        parent_type: str = "Event"
+        client: RealTimeDataClient, event_id: int, parent_type: str = "Event"
     ):
         """Subscribe to comments for an event."""
         client.subscribe(
             topic="comments",
             type="*",
-            filters=json.dumps({
-                "parentEntityID": event_id,
-                "parentEntityType": parent_type
-            })
+            filters=json.dumps({"parentEntityID": event_id, "parentEntityType": parent_type}),
         )
 
     @staticmethod
-    def subscribe_to_crypto_price(
-        client: RealTimeDataClient,
-        symbol: str
-    ):
+    def subscribe_to_crypto_price(client: RealTimeDataClient, symbol: str):
         """
         Subscribe to crypto price updates.
 
@@ -670,63 +656,38 @@ class StreamHelpers:
             symbol: "btcusdt", "ethusdt", "solusdt", "xrpusdt"
         """
         client.subscribe(
-            topic="crypto_prices",
-            type="update",
-            filters=json.dumps({"symbol": symbol.lower()})
+            topic="crypto_prices", type="update", filters=json.dumps({"symbol": symbol.lower()})
         )
 
     @staticmethod
-    def subscribe_to_market_orderbook(
-        client: RealTimeDataClient,
-        token_ids: List[str]
-    ):
+    def subscribe_to_market_orderbook(client: RealTimeDataClient, token_ids: List[str]):
         """
         Subscribe to aggregated orderbook updates.
 
         Args:
             token_ids: List of token IDs to monitor
         """
-        client.subscribe(
-            topic="clob_market",
-            type="agg_orderbook",
-            filters=json.dumps(token_ids)
-        )
+        client.subscribe(topic="clob_market", type="agg_orderbook", filters=json.dumps(token_ids))
 
     @staticmethod
-    def subscribe_to_price_changes(
-        client: RealTimeDataClient,
-        token_ids: List[str]
-    ):
+    def subscribe_to_price_changes(client: RealTimeDataClient, token_ids: List[str]):
         """Subscribe to price change events for tokens."""
-        client.subscribe(
-            topic="clob_market",
-            type="price_change",
-            filters=json.dumps(token_ids)
-        )
+        client.subscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
 
     @staticmethod
     def subscribe_to_new_markets(client: RealTimeDataClient):
         """Subscribe to new market creation events."""
-        client.subscribe(
-            topic="clob_market",
-            type="market_created"
-        )
+        client.subscribe(topic="clob_market", type="market_created")
 
     @staticmethod
     def subscribe_to_market_resolutions(client: RealTimeDataClient):
         """Subscribe to market resolution events."""
-        client.subscribe(
-            topic="clob_market",
-            type="market_resolved"
-        )
+        client.subscribe(topic="clob_market", type="market_resolved")
 
     # ========== RFQ (Request for Quote) Streams ==========
 
     @staticmethod
-    def subscribe_to_rfq_requests(
-        client: RealTimeDataClient,
-        market: Optional[str] = None
-    ):
+    def subscribe_to_rfq_requests(client: RealTimeDataClient, market: Optional[str] = None):
         """
         Subscribe to RFQ request events (OTC block trading).
 
@@ -741,17 +702,10 @@ class StreamHelpers:
             - request_expired: RFQ request expired
         """
         filters = json.dumps({"market": market}) if market else None
-        client.subscribe(
-            topic="rfq",
-            type="*",  # All request events
-            filters=filters
-        )
+        client.subscribe(topic="rfq", type="*", filters=filters)  # All request events
 
     @staticmethod
-    def subscribe_to_rfq_quotes(
-        client: RealTimeDataClient,
-        request_id: Optional[str] = None
-    ):
+    def subscribe_to_rfq_quotes(client: RealTimeDataClient, request_id: Optional[str] = None):
         """
         Subscribe to RFQ quote events.
 
@@ -766,11 +720,7 @@ class StreamHelpers:
             - quote_expired: Quote expired
         """
         filters = json.dumps({"requestId": request_id}) if request_id else None
-        client.subscribe(
-            topic="rfq",
-            type="quote_*",  # All quote events
-            filters=filters
-        )
+        client.subscribe(topic="rfq", type="quote_*", filters=filters)  # All quote events
 
     @staticmethod
     def subscribe_to_all_rfq_events(client: RealTimeDataClient):
@@ -779,7 +729,4 @@ class StreamHelpers:
 
         Useful for monitoring OTC trading activity across all markets.
         """
-        client.subscribe(
-            topic="rfq",
-            type="*"
-        )
+        client.subscribe(topic="rfq", type="*")

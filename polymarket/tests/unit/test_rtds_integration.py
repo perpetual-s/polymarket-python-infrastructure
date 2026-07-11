@@ -9,16 +9,19 @@ Tests cover:
 - Resource cleanup
 """
 
-import pytest
 import threading
 import time
-from unittest.mock import Mock, patch, MagicMock, call
+from unittest.mock import MagicMock, Mock, call, patch
+
+import pytest
 
 # Skip all tests - PolymarketClient creates aiohttp sessions requiring async event loop
-pytestmark = pytest.mark.skip(reason="PolymarketClient creates aiohttp sessions requiring async event loop")
+pytestmark = pytest.mark.skip(
+    reason="PolymarketClient creates aiohttp sessions requiring async event loop"
+)
 
 from polymarket import PolymarketClient
-from polymarket.api.real_time_data import Message, ConnectionStatus
+from polymarket.api.real_time_data import ConnectionStatus, Message
 from polymarket.config import PolymarketSettings
 
 
@@ -30,7 +33,7 @@ class TestRTDSInitialization:
         client = PolymarketClient()
         assert client._rtds is None
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_rtds_lazy_initialization(self, mock_rtds_class):
         """RTDS should initialize on first subscription."""
         client = PolymarketClient()
@@ -48,13 +51,11 @@ class TestRTDSInitialization:
         mock_rtds.connect.assert_called_once()
         assert client._rtds is not None
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_rtds_initialization_uses_settings(self, mock_rtds_class):
         """RTDS should use configuration from settings."""
         settings = PolymarketSettings(
-            rtds_url="wss://test.example.com",
-            rtds_auto_reconnect=False,
-            rtds_ping_interval=10.0
+            rtds_url="wss://test.example.com", rtds_auto_reconnect=False, rtds_ping_interval=10.0
         )
         client = PolymarketClient(settings=settings)
 
@@ -72,7 +73,7 @@ class TestRTDSInitialization:
             on_message=None,
             on_status_change=client._on_rtds_status_change,
             auto_reconnect=False,
-            ping_interval=10.0
+            ping_interval=10.0,
         )
 
     def test_rtds_disabled_raises_error(self):
@@ -83,7 +84,7 @@ class TestRTDSInitialization:
         with pytest.raises(RuntimeError, match="RTDS is disabled"):
             client.subscribe_crypto_prices(Mock())
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_rtds_initialization_failure_allows_retry(self, mock_rtds_class):
         """Failed initialization should allow retry."""
         client = PolymarketClient()
@@ -91,7 +92,7 @@ class TestRTDSInitialization:
         # First attempt fails
         mock_rtds_class.side_effect = [
             Exception("Connection failed"),
-            Mock()  # Second attempt succeeds
+            Mock(),  # Second attempt succeeds
         ]
 
         # First attempt should fail
@@ -112,7 +113,7 @@ class TestRTDSInitialization:
 class TestRTDSThreadSafety:
     """Test thread safety of RTDS operations."""
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_concurrent_initialization_safe(self, mock_rtds_class):
         """Concurrent subscriptions should only initialize once."""
         client = PolymarketClient()
@@ -137,7 +138,7 @@ class TestRTDSThreadSafety:
 class TestRTDSSubscriptionMethods:
     """Test individual subscription methods."""
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_activity_trades_validation(self, mock_rtds_class):
         """subscribe_activity_trades should validate inputs."""
         client = PolymarketClient()
@@ -147,12 +148,10 @@ class TestRTDSSubscriptionMethods:
         # Should reject both market_slug and event_slug
         with pytest.raises(ValueError, match="Cannot specify both"):
             client.subscribe_activity_trades(
-                Mock(),
-                market_slug="trump-2024",
-                event_slug="election-2024"
+                Mock(), market_slug="trump-2024", event_slug="election-2024"
             )
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_crypto_prices_validation(self, mock_rtds_class):
         """subscribe_crypto_prices should validate symbol."""
         client = PolymarketClient()
@@ -167,7 +166,7 @@ class TestRTDSSubscriptionMethods:
         for symbol in ["btcusdt", "ethusdt", "solusdt", "xrpusdt"]:
             client.subscribe_crypto_prices(Mock(), symbol=symbol)
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_market_price_changes_validation(self, mock_rtds_class):
         """subscribe_market_price_changes should validate token_ids."""
         client = PolymarketClient()
@@ -178,7 +177,7 @@ class TestRTDSSubscriptionMethods:
         with pytest.raises(ValueError, match="cannot be empty"):
             client.subscribe_market_price_changes(Mock(), token_ids=[])
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_market_orderbook_rtds_validation(self, mock_rtds_class):
         """subscribe_market_orderbook_rtds should validate token_ids."""
         client = PolymarketClient()
@@ -189,7 +188,7 @@ class TestRTDSSubscriptionMethods:
         with pytest.raises(ValueError, match="cannot be empty"):
             client.subscribe_market_orderbook_rtds(Mock(), token_ids=[])
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_unsubscribe_market_price_changes_validation(self, mock_rtds_class):
         """unsubscribe_market_price_changes should validate token_ids."""
         client = PolymarketClient()
@@ -199,7 +198,7 @@ class TestRTDSSubscriptionMethods:
         with pytest.raises(ValueError, match="cannot be empty"):
             client.unsubscribe_market_price_changes(token_ids=[])
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_crypto_prices_chainlink_validation(self, mock_rtds_class):
         """subscribe_crypto_prices_chainlink should validate symbol."""
         client = PolymarketClient()
@@ -214,7 +213,7 @@ class TestRTDSSubscriptionMethods:
         for symbol in ["btcusdt", "ethusdt", "solusdt", "xrpusdt"]:
             client.subscribe_crypto_prices_chainlink(Mock(), symbol=symbol)
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_market_last_trade_price_validation(self, mock_rtds_class):
         """subscribe_market_last_trade_price should validate token_ids."""
         client = PolymarketClient()
@@ -225,7 +224,7 @@ class TestRTDSSubscriptionMethods:
         with pytest.raises(ValueError, match="cannot be empty"):
             client.subscribe_market_last_trade_price(Mock(), token_ids=[])
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_subscribe_market_tick_size_change_validation(self, mock_rtds_class):
         """subscribe_market_tick_size_change should validate token_ids."""
         client = PolymarketClient()
@@ -240,7 +239,7 @@ class TestRTDSSubscriptionMethods:
 class TestRTDSCallbackErrorHandling:
     """Test callback error isolation."""
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_callback_error_isolated(self, mock_rtds_class):
         """Callback errors should not crash client."""
         client = PolymarketClient()
@@ -262,13 +261,13 @@ class TestRTDSCallbackErrorHandling:
             type="update",
             timestamp=int(time.time() * 1000),
             payload={"price": 50000.0},
-            connection_id="test123"
+            connection_id="test123",
         )
 
         # Should not raise exception
         wrapped_callback(mock_rtds, test_message)
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_multiple_callbacks(self, mock_rtds_class):
         """Multiple subscriptions should work."""
         client = PolymarketClient()
@@ -291,7 +290,7 @@ class TestRTDSCallbackErrorHandling:
 class TestRTDSCleanup:
     """Test RTDS cleanup and resource management."""
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_close_disconnects_rtds(self, mock_rtds_class):
         """close() should disconnect RTDS."""
         client = PolymarketClient()
@@ -308,7 +307,7 @@ class TestRTDSCleanup:
         mock_rtds.disconnect.assert_called_once()
         assert client._rtds is None
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_close_handles_rtds_error(self, mock_rtds_class):
         """close() should handle RTDS disconnect errors."""
         client = PolymarketClient()
@@ -321,7 +320,7 @@ class TestRTDSCleanup:
         # Should not raise exception
         client.close()
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_unsubscribe_rtds_all(self, mock_rtds_class):
         """unsubscribe_rtds_all should disconnect RTDS."""
         client = PolymarketClient()
@@ -334,7 +333,7 @@ class TestRTDSCleanup:
         mock_rtds.disconnect.assert_called_once()
         assert client._rtds is None
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_unsubscribe_rtds_all_safe_when_not_initialized(self, mock_rtds_class):
         """unsubscribe_rtds_all should be safe when RTDS not initialized."""
         client = PolymarketClient()
@@ -346,7 +345,7 @@ class TestRTDSCleanup:
 class TestRTDSCallbacks:
     """Test RTDS connection callbacks."""
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_on_rtds_connect_logs(self, mock_rtds_class):
         """_on_rtds_connect should log successfully."""
         client = PolymarketClient()
@@ -356,7 +355,7 @@ class TestRTDSCallbacks:
         # Should not raise exception
         client._on_rtds_connect(mock_rtds)
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_on_rtds_connect_handles_errors(self, mock_rtds_class):
         """_on_rtds_connect should handle callback errors."""
         client = PolymarketClient()
@@ -378,7 +377,7 @@ class TestRTDSCallbacks:
 class TestRTDSSubscriptionFilters:
     """Test subscription filter construction."""
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_activity_trades_market_filter(self, mock_rtds_class):
         """subscribe_activity_trades should construct market filter."""
         client = PolymarketClient()
@@ -390,11 +389,11 @@ class TestRTDSSubscriptionFilters:
         # Verify subscribe called with correct filters
         mock_rtds.subscribe.assert_called_once()
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert call_kwargs['topic'] == 'activity'
-        assert call_kwargs['type'] == 'trades'
-        assert '"market_slug": "trump-2024"' in call_kwargs['filters']
+        assert call_kwargs["topic"] == "activity"
+        assert call_kwargs["type"] == "trades"
+        assert '"market_slug": "trump-2024"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_activity_trades_event_filter(self, mock_rtds_class):
         """subscribe_activity_trades should construct event filter."""
         client = PolymarketClient()
@@ -404,9 +403,9 @@ class TestRTDSSubscriptionFilters:
         client.subscribe_activity_trades(Mock(), event_slug="election-2024")
 
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert '"event_slug": "election-2024"' in call_kwargs['filters']
+        assert '"event_slug": "election-2024"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_crypto_prices_symbol_filter(self, mock_rtds_class):
         """subscribe_crypto_prices should construct symbol filter."""
         client = PolymarketClient()
@@ -416,12 +415,12 @@ class TestRTDSSubscriptionFilters:
         client.subscribe_crypto_prices(Mock(), symbol="BTCUSDT")  # Uppercase
 
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert call_kwargs['topic'] == 'crypto_prices'
-        assert call_kwargs['type'] == 'update'
+        assert call_kwargs["topic"] == "crypto_prices"
+        assert call_kwargs["type"] == "update"
         # Should lowercase symbol
-        assert '"symbol": "btcusdt"' in call_kwargs['filters']
+        assert '"symbol": "btcusdt"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_market_price_changes_token_filter(self, mock_rtds_class):
         """subscribe_market_price_changes should construct token filter."""
         client = PolymarketClient()
@@ -432,13 +431,13 @@ class TestRTDSSubscriptionFilters:
         client.subscribe_market_price_changes(Mock(), token_ids=token_ids)
 
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert call_kwargs['topic'] == 'clob_market'
-        assert call_kwargs['type'] == 'price_change'
+        assert call_kwargs["topic"] == "clob_market"
+        assert call_kwargs["type"] == "price_change"
         # Filter should be JSON list
-        assert '"12345"' in call_kwargs['filters']
-        assert '"67890"' in call_kwargs['filters']
+        assert '"12345"' in call_kwargs["filters"]
+        assert '"67890"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_unsubscribe_market_price_changes_token_filter(self, mock_rtds_class):
         """unsubscribe_market_price_changes should construct the matching token filter."""
         client = PolymarketClient()
@@ -449,12 +448,12 @@ class TestRTDSSubscriptionFilters:
         client.unsubscribe_market_price_changes(token_ids=token_ids)
 
         call_kwargs = mock_rtds.unsubscribe.call_args[1]
-        assert call_kwargs['topic'] == 'clob_market'
-        assert call_kwargs['type'] == 'price_change'
-        assert '"12345"' in call_kwargs['filters']
-        assert '"67890"' in call_kwargs['filters']
+        assert call_kwargs["topic"] == "clob_market"
+        assert call_kwargs["type"] == "price_change"
+        assert '"12345"' in call_kwargs["filters"]
+        assert '"67890"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_crypto_prices_chainlink_symbol_filter(self, mock_rtds_class):
         """subscribe_crypto_prices_chainlink should construct symbol filter."""
         client = PolymarketClient()
@@ -464,12 +463,12 @@ class TestRTDSSubscriptionFilters:
         client.subscribe_crypto_prices_chainlink(Mock(), symbol="ETHUSDT")  # Uppercase
 
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert call_kwargs['topic'] == 'crypto_prices_chainlink'
-        assert call_kwargs['type'] == 'update'
+        assert call_kwargs["topic"] == "crypto_prices_chainlink"
+        assert call_kwargs["type"] == "update"
         # Should lowercase symbol
-        assert '"symbol": "ethusdt"' in call_kwargs['filters']
+        assert '"symbol": "ethusdt"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_market_last_trade_price_token_filter(self, mock_rtds_class):
         """subscribe_market_last_trade_price should construct token filter."""
         client = PolymarketClient()
@@ -480,13 +479,13 @@ class TestRTDSSubscriptionFilters:
         client.subscribe_market_last_trade_price(Mock(), token_ids=token_ids)
 
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert call_kwargs['topic'] == 'clob_market'
-        assert call_kwargs['type'] == 'last_trade_price'
+        assert call_kwargs["topic"] == "clob_market"
+        assert call_kwargs["type"] == "last_trade_price"
         # Filter should be JSON list
-        assert '"11111"' in call_kwargs['filters']
-        assert '"22222"' in call_kwargs['filters']
+        assert '"11111"' in call_kwargs["filters"]
+        assert '"22222"' in call_kwargs["filters"]
 
-    @patch('polymarket.client.RealTimeDataClient')
+    @patch("polymarket.client.RealTimeDataClient")
     def test_market_tick_size_change_token_filter(self, mock_rtds_class):
         """subscribe_market_tick_size_change should construct token filter."""
         client = PolymarketClient()
@@ -497,11 +496,11 @@ class TestRTDSSubscriptionFilters:
         client.subscribe_market_tick_size_change(Mock(), token_ids=token_ids)
 
         call_kwargs = mock_rtds.subscribe.call_args[1]
-        assert call_kwargs['topic'] == 'clob_market'
-        assert call_kwargs['type'] == 'tick_size_change'
+        assert call_kwargs["topic"] == "clob_market"
+        assert call_kwargs["type"] == "tick_size_change"
         # Filter should be JSON list
-        assert '"33333"' in call_kwargs['filters']
-        assert '"44444"' in call_kwargs['filters']
+        assert '"33333"' in call_kwargs["filters"]
+        assert '"44444"' in call_kwargs["filters"]
 
 
 if __name__ == "__main__":
