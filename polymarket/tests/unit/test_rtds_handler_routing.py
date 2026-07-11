@@ -159,6 +159,36 @@ async def test_ensure_rtds_timeout_raises_runtime_error(mock_rtds_class):
 
 @pytest.mark.asyncio
 @patch("polymarket.client.RealTimeDataClient")
+async def test_ensure_rtds_uses_configured_timeout_and_staleness(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds_class.return_value = mock_rtds
+    settings = PolymarketSettings(
+        enable_rtds=True, rtds_connection_timeout=7.0, rtds_max_staleness=45.0
+    )
+    async with PolymarketClient(settings=settings) as client:
+        with patch.object(client, "_rtds_wait_connected", return_value=True, create=True) as wait:
+            client.subscribe_activity_trades(lambda m: None)
+        assert wait.call_args.kwargs["timeout"] == 7.0
+        assert mock_rtds_class.call_args.kwargs["max_staleness"] == 45.0
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
+async def test_close_clears_rtds_handlers(mock_rtds_class):
+    mock_rtds = MagicMock()
+    mock_rtds.status = ConnectionStatus.CONNECTED
+    mock_rtds_class.return_value = mock_rtds
+    client = PolymarketClient(settings=PolymarketSettings(enable_rtds=True))
+    with patch.object(client, "_rtds_wait_connected", return_value=True, create=True):
+        client.subscribe_activity_trades(lambda m: None)
+    assert client._rtds_handlers
+    await client.close()
+    assert client._rtds_handlers == {}  # stale callbacks must not survive a close
+
+
+@pytest.mark.asyncio
+@patch("polymarket.client.RealTimeDataClient")
 async def test_transport_constructed_with_dispatcher_as_on_message(mock_rtds_class):
     mock_rtds = MagicMock()
     mock_rtds.status = ConnectionStatus.CONNECTED
