@@ -142,6 +142,9 @@ class RealTimeDataClient:
         # Ping management + staleness watchdog
         self.max_staleness = max_staleness
         self._ping_timer: Optional[threading.Timer] = None
+        # _ping_timer is touched from the ws thread (_on_open, _on_close) and
+        # the timer's own thread (_send_ping re-arm); guard every access.
+        self._ping_lock = threading.Lock()
         self._last_pong = time.time()
         self._last_message_time = time.time()
 
@@ -233,9 +236,10 @@ class RealTimeDataClient:
         self.auto_reconnect = False
 
         # Cancel ping timer
-        if self._ping_timer:
-            self._ping_timer.cancel()
-            self._ping_timer = None
+        with self._ping_lock:
+            if self._ping_timer:
+                self._ping_timer.cancel()
+                self._ping_timer = None
 
         # Cancel reconnect timer
         if self._reconnect_timer:
@@ -493,9 +497,10 @@ class RealTimeDataClient:
         self._notify_status_change(ConnectionStatus.DISCONNECTED)
 
         # Cancel ping timer
-        if self._ping_timer:
-            self._ping_timer.cancel()
-            self._ping_timer = None
+        with self._ping_lock:
+            if self._ping_timer:
+                self._ping_timer.cancel()
+                self._ping_timer = None
 
         # Schedule reconnect (if not already scheduled by _on_error)
         self._schedule_reconnect()
@@ -544,14 +549,16 @@ class RealTimeDataClient:
         logger.debug("Pong received")
 
     def _schedule_ping(self) -> None:
-        """Arm the next keepalive tick (cancels any pending one first)."""
-        if self._shutdown_requested:
-            return
-        if self._ping_timer:
-            self._ping_timer.cancel()
-        self._ping_timer = threading.Timer(self.ping_interval, self._send_ping)
-        self._ping_timer.daemon = True
-        self._ping_timer.start()
+        """Arm the next keepalive tick (cancels any pending one first). Thread-safe."""
+        with self._ping_lock:
+            if self._shutdown_requested:
+                return
+            if self._ping_timer:
+                self._ping_timer.cancel()
+            timer = threading.Timer(self.ping_interval, self._send_ping)
+            timer.daemon = True
+            self._ping_timer = timer
+            timer.start()
 
     def _send_ping(self) -> None:
         """Keepalive tick: ping if connected, check staleness, ALWAYS re-arm."""
