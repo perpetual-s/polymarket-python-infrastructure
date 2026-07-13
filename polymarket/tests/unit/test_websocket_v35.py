@@ -8,15 +8,21 @@ Tests:
 - L3: WebSocket compression
 """
 
-import asyncio
 import logging
 import threading
 import time
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from polymarket.api.websocket import WebSocketClient
+
+
+@pytest.fixture(autouse=True)
+def _disable_metrics_server():
+    """Keep WebSocket feature tests from opening the Prometheus listener."""
+    with patch("polymarket.api.websocket.get_metrics", return_value=None):
+        yield
 
 
 class TestMessageDeduplication:
@@ -451,7 +457,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for remote closes is also WARNING."""
-        ws = WebSocketClient(
+        WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
@@ -503,7 +509,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_ping_timeout_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for ping/pong timeouts is also WARNING."""
-        ws = WebSocketClient(
+        WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
@@ -523,7 +529,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_connection_timeout_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for connection timeouts is also WARNING."""
-        ws = WebSocketClient(
+        WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
@@ -543,7 +549,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_close_frame_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for close frame 1001 is WARNING."""
-        ws = WebSocketClient(
+        WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 

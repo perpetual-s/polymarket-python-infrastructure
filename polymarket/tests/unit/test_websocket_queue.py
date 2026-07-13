@@ -8,7 +8,7 @@ import pytest
 import asyncio
 import queue
 import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from polymarket.api.websocket import WebSocketClient
 
 
@@ -19,7 +19,8 @@ class TestQueueInitialization:
         """Test queue is enabled by default."""
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            api_key="test_key",
+            enable_metrics=False,
         )
 
         assert ws._enable_queue is True
@@ -32,7 +33,8 @@ class TestQueueInitialization:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=False
+            enable_metrics=False,
+            enable_queue=False,
         )
 
         assert ws._enable_queue is False
@@ -43,7 +45,8 @@ class TestQueueInitialization:
         ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            queue_maxsize=5000
+            enable_metrics=False,
+            queue_maxsize=5000,
         )
 
         assert ws._message_queue.maxsize == 5000
@@ -58,8 +61,9 @@ class TestMessageQueuing:
         return WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
+            enable_metrics=False,
             enable_queue=True,
-            queue_maxsize=10
+            queue_maxsize=10,
         )
 
     def test_message_enqueued_when_enabled(self, ws_client):
@@ -98,7 +102,8 @@ class TestMessageQueuing:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=False
+            enable_metrics=False,
+            enable_queue=False,
         )
 
         # Mock callback
@@ -131,25 +136,29 @@ class TestConsumerTask:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=True
+            enable_metrics=False,
+            enable_queue=True,
         )
 
         # Get running event loop
         loop = asyncio.get_running_loop()
 
-        # Mock websocket run_forever to prevent actual connection
-        with patch('websocket.WebSocketApp.run_forever'):
+        # Keep the transport thread hermetic; this test only exercises consumer startup.
+        with patch.object(ws_client, "_run"):
             ws_client.connect(event_loop=loop)
 
             # Give consumer task a moment to start
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0)
 
             # Check consumer task is running
             assert ws_client._consumer_task is not None
             assert not ws_client._consumer_task.done()
 
             # Cleanup
+            consumer_task = ws_client._consumer_task
             ws_client.disconnect()
+            with pytest.raises(asyncio.CancelledError):
+                await consumer_task
 
     @pytest.mark.asyncio
     async def test_consumer_task_processes_messages(self):
@@ -157,8 +166,9 @@ class TestConsumerTask:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
+            enable_metrics=False,
             enable_queue=True,
-            queue_maxsize=10
+            queue_maxsize=10,
         )
 
         # Setup callback
@@ -219,7 +229,8 @@ class TestConsumerTask:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=True
+            enable_metrics=False,
+            enable_queue=True,
         )
 
         loop = asyncio.get_running_loop()
@@ -231,14 +242,14 @@ class TestConsumerTask:
 
         await asyncio.sleep(0.1)
 
-        # Disconnect
+        # Disconnect clears the public task reference after cancelling the task.
+        consumer_task = ws_client._consumer_task
         ws_client.disconnect()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer_task
 
-        # Wait a bit
-        await asyncio.sleep(0.1)
-
-        # Check task is cancelled
-        assert ws_client._consumer_task.done()
+        assert consumer_task.cancelled()
+        assert ws_client._consumer_task is None
 
 
 class TestQueueMetrics:
@@ -249,8 +260,9 @@ class TestQueueMetrics:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
+            enable_metrics=False,
             enable_queue=True,
-            queue_maxsize=1000
+            queue_maxsize=1000,
         )
 
         stats = ws_client.stats()
@@ -266,7 +278,8 @@ class TestQueueMetrics:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=False
+            enable_metrics=False,
+            enable_queue=False,
         )
 
         stats = ws_client.stats()
@@ -279,9 +292,10 @@ class TestQueueMetrics:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
+            enable_metrics=False,
             enable_queue=True,
             queue_maxsize=2,
-            enable_deduplication=False  # Disable to test queue behavior in isolation
+            enable_deduplication=False,  # Disable to test queue behavior in isolation
         )
 
         # Fill queue
@@ -308,7 +322,8 @@ class TestBackwardCompatibility:
         """Test default behavior matches old API."""
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
-            api_key="test_key"
+            api_key="test_key",
+            enable_metrics=False,
         )
 
         # Queue should be enabled by default (new behavior)
@@ -320,7 +335,8 @@ class TestBackwardCompatibility:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
-            enable_queue=False
+            enable_metrics=False,
+            enable_queue=False,
         )
 
         # Should behave like old sync mode
@@ -339,9 +355,10 @@ class TestPrometheusMetrics:
         ws_client = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
             api_key="test_key",
+            enable_metrics=False,
             enable_queue=True,
             queue_maxsize=1,
-            enable_deduplication=False  # Disable to test queue behavior in isolation
+            enable_deduplication=False,  # Disable to test queue behavior in isolation
         )
 
         ws_client._metrics = mock_metrics

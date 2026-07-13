@@ -15,14 +15,12 @@ Tests verify:
 """
 
 import asyncio
-from decimal import Decimal
-from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
 import pytest_asyncio
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientSession
 
 from polymarket.api.base import BaseAPIClient
 from polymarket.config import PolymarketSettings

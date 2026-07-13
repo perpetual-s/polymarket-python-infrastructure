@@ -13,7 +13,6 @@ from polymarket.api.websocket_models import (
     LastTradePriceMessage,
     TradeMessage,
     OrderMessage,
-    CLOBEventType,
     TradeStatus,
     OrderEventType,
 )

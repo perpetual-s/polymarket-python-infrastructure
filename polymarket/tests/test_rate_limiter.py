@@ -1,6 +1,5 @@
 """Tests for rate limiter."""
 
-import time
 import pytest
 from ..utils.rate_limiter import RateLimiter
 from ..exceptions import RateLimitError

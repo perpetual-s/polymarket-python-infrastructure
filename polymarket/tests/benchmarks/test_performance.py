@@ -9,18 +9,18 @@ Run with: pytest tests/benchmarks/ -v -s
 import asyncio
 import statistics
 import time
-from typing import Any, Dict, List
+from typing import Dict
 from unittest.mock import Mock, patch
 
 import pytest
+
+from polymarket import OrderRequest, PolymarketClient, Side, WalletConfig
+from polymarket.models import OrderBook, OrderResponse, OrderStatus, Position
 
 # Skip all benchmark tests - mock setup needs rework for current client API
 pytestmark = pytest.mark.skip(
     reason="Benchmark tests need mock setup rework for current client API"
 )
-
-from polymarket import OrderRequest, PolymarketClient, Side, WalletConfig
-from polymarket.models import OrderBook, OrderResponse, OrderStatus, Position
 
 
 def pytest_configure(config):
@@ -96,7 +96,7 @@ class TestOrderOperationBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Single Order Placement")
+        print("BENCHMARK: Single Order Placement")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -137,7 +137,7 @@ class TestOrderOperationBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Batch Order Placement (10 orders)")
+        print("BENCHMARK: Batch Order Placement (10 orders)")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -179,7 +179,7 @@ class TestDataFetchingBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Fetch Single Wallet Positions (10 positions)")
+        print("BENCHMARK: Fetch Single Wallet Positions (10 positions)")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -218,7 +218,7 @@ class TestDataFetchingBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Batch Fetch Positions (100 wallets)")
+        print("BENCHMARK: Batch Fetch Positions (100 wallets)")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -249,7 +249,7 @@ class TestOrderbookBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Single Orderbook Fetch")
+        print("BENCHMARK: Single Orderbook Fetch")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -275,7 +275,7 @@ class TestOrderbookBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Batch Orderbook Fetch (20 tokens)")
+        print("BENCHMARK: Batch Orderbook Fetch (20 tokens)")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -305,7 +305,7 @@ class TestNonceManagerBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Sequential Nonce Operations (100 ops)")
+        print("BENCHMARK: Sequential Nonce Operations (100 ops)")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -345,7 +345,7 @@ class TestNonceManagerBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Concurrent Nonce Operations (10 threads)")
+        print("BENCHMARK: Concurrent Nonce Operations (10 threads)")
         print(f"{'='*60}")
         print(f"  Min:     {results['min_ms']:.2f}ms")
         print(f"  Max:     {results['max_ms']:.2f}ms")
@@ -376,7 +376,7 @@ class TestMemoryBenchmarks:
 
         # Report
         print(f"\n{'='*60}")
-        print(f"BENCHMARK: Memory Footprint")
+        print("BENCHMARK: Memory Footprint")
         print(f"{'='*60}")
         print(f"  Base client:     {base_size:,} bytes")
         print(f"  With 10 wallets: {with_wallets_size:,} bytes")

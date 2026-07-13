@@ -10,7 +10,6 @@ Tests:
 
 import pytest
 from decimal import Decimal
-from typing import List
 from polymarket.models import Market, Event
 from polymarket.utils.allowances import EXCHANGE_CONTRACTS, USDC_ADDRESS, CTF_ADDRESS
 

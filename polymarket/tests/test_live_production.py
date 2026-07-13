@@ -84,11 +84,11 @@ async def test_production_api():
             total_value = sum(p.current_value for p in positions if p.current_value)
             total_pnl = sum(p.cash_pnl for p in positions if p.cash_pnl)
 
-            print(f"\n  Portfolio Summary:")
+            print("\n  Portfolio Summary:")
             print(f"    Total Value:  ${total_value:.2f}")
             print(f"    Total P&L:    ${total_pnl:.2f}")
 
-            print(f"\n  Top 3 Positions:")
+            print("\n  Top 3 Positions:")
             for i, pos in enumerate(positions[:3], 1):
                 print(f"\n  {i}. {pos.title}")
                 print(f"     Outcome: {pos.outcome}")
@@ -107,7 +107,7 @@ async def test_production_api():
         print(f"✓ Found {len(trades)} recent trades")
 
         if trades:
-            print(f"\n  Recent Trades:")
+            print("\n  Recent Trades:")
             for i, trade in enumerate(trades[:3], 1):
                 print(f"\n  {i}. {trade.market if hasattr(trade, 'market') else 'Unknown Market'}")
                 print(f"     Side: {trade.side if hasattr(trade, 'side') else 'N/A'}")

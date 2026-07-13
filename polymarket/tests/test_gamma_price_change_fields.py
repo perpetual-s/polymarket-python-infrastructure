@@ -2,8 +2,6 @@
 
 from decimal import Decimal
 
-import pytest
-
 from polymarket.api.gamma import GammaAPI
 from polymarket.models import Market
 

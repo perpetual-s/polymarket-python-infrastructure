@@ -14,7 +14,6 @@ Tests:
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
-from pydantic import ValidationError
 
 from polymarket.models import Balance, OrderRequest, OrderType, Position, Side
 from polymarket.utils.fees import (
@@ -42,7 +41,6 @@ class TestFloatVsDecimalPrecision:
         # Financial example: $0.60 * 100 tokens
         price_float = 0.60
         quantity = 100
-        expected = 60.0
 
         # Float can have precision errors
         result_float = price_float * quantity

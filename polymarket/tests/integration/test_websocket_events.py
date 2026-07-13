@@ -133,7 +133,6 @@ class TestWebSocketStreaming:
         manager = MarketManager(clob_api, config)
 
         await manager.initialize()
-        initial_count = manager.get_market_count()
 
         await manager.start_streaming()
 
@@ -225,7 +224,7 @@ if __name__ == "__main__":
             await manager.shutdown()
             return
 
-        print(f"\n3. Listening for events (60s)...")
+        print("\n3. Listening for events (60s)...")
         print("   (Markets are created/resolved infrequently, may not see events)")
 
         try:

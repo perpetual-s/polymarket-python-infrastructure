@@ -7,7 +7,6 @@ import pytest
 
 from polymarket.api.clob_public import PublicCLOBAPI
 from polymarket.exceptions import APIError
-from polymarket.models import PricePoint
 
 
 def _api():
