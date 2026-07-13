@@ -5,6 +5,7 @@ Supports burst allowances and sliding time windows.
 """
 
 import asyncio
+import math
 import time
 import threading
 from collections import deque
@@ -40,6 +41,13 @@ class RateLimiter:
             cleanup_interval: Seconds between cleanup runs (default: 5 min)
             endpoint_ttl: Seconds before unused endpoint is removed (default: 1 hour)
         """
+        if not math.isfinite(margin) or not 0 < margin <= 1:
+            raise ValueError("margin must be finite and within (0, 1]")
+        if not math.isfinite(cleanup_interval) or cleanup_interval <= 0:
+            raise ValueError("cleanup_interval must be a finite positive number")
+        if not math.isfinite(endpoint_ttl) or endpoint_ttl <= 0:
+            raise ValueError("endpoint_ttl must be a finite positive number")
+
         self.enabled = enabled
         self.margin = margin
         self.cleanup_interval = cleanup_interval
@@ -49,14 +57,14 @@ class RateLimiter:
         self._requests: dict[str, deque] = {}  # endpoint -> timestamps
         self._last_access: dict[str, float] = {}  # endpoint -> last access time
         self._lock = threading.RLock()  # Reentrant lock for locks dict
-        self._last_cleanup = time.time()
-        self._request_count = 0
+        self._last_cleanup = time.monotonic()
 
     def _get_lock(self, endpoint: str) -> threading.RLock:
         """Get or create reentrant lock for endpoint."""
         with self._lock:
             if endpoint not in self._locks:
                 self._locks[endpoint] = threading.RLock()
+            self._last_access[endpoint] = time.monotonic()
             return self._locks[endpoint]
 
     def _get_requests(self, endpoint: str) -> deque:
@@ -69,7 +77,7 @@ class RateLimiter:
 
     def _clean_old_requests(self, endpoint: str, window: float) -> None:
         """Remove requests outside time window."""
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - window
         requests = self._get_requests(endpoint)
 
@@ -95,6 +103,10 @@ class RateLimiter:
         """
         if not self.enabled:
             return
+        if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout must be finite and non-negative")
+
+        self._maybe_cleanup()
 
         try:
             lock = self._get_lock(endpoint)
@@ -106,7 +118,7 @@ class RateLimiter:
             # Use burst limit if available, otherwise regular limit
             effective_limit = burst if burst else limit
             if effective_limit:
-                effective_limit = int(effective_limit * self.margin)
+                effective_limit = max(1, int(effective_limit * self.margin))
 
             if not effective_limit:
                 return
@@ -120,7 +132,7 @@ class RateLimiter:
                 retry_after=0
             ) from e
 
-        start_time = time.time()
+        start_time = time.monotonic()
 
         while True:
             try:
@@ -131,12 +143,12 @@ class RateLimiter:
 
                     if len(requests) < effective_limit:
                         # Have capacity, record request
-                        requests.append(time.time())
+                        requests.append(time.monotonic())
                         return  # Success!
 
                     # Calculate wait time
                     oldest_request = requests[0]
-                    wait_time = window - (time.time() - oldest_request)
+                    wait_time = window - (time.monotonic() - oldest_request)
 
             except Exception as e:
                 # Internal error (queue corruption, etc) - raise RateLimitError
@@ -149,7 +161,7 @@ class RateLimiter:
 
             # Check timeout OUTSIDE lock
             if timeout is not None:
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 if elapsed >= timeout:
                     raise RateLimitError(
                         f"Rate limit timeout for {endpoint}",
@@ -186,7 +198,7 @@ class RateLimiter:
             return
 
         # Use thread-safe sync version in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.acquire, endpoint, timeout)
 
     def get_remaining(self, endpoint: str) -> int:
@@ -202,6 +214,8 @@ class RateLimiter:
         if not self.enabled:
             return 99999
 
+        self._maybe_cleanup()
+
         lock = self._get_lock(endpoint)
         with lock:
             config = get_rate_limit(endpoint)
@@ -211,7 +225,7 @@ class RateLimiter:
 
             effective_limit = burst if burst else limit
             if effective_limit:
-                effective_limit = int(effective_limit * self.margin)
+                effective_limit = max(1, int(effective_limit * self.margin))
 
             if not effective_limit:
                 return 99999
@@ -221,7 +235,14 @@ class RateLimiter:
 
             return max(0, effective_limit - len(requests))
 
-    def cleanup_stale_endpoints(self) -> int:
+    def _maybe_cleanup(self) -> None:
+        """Run bounded endpoint cleanup at the configured interval."""
+        now = time.monotonic()
+        if now - self._last_cleanup < self.cleanup_interval:
+            return
+        self.cleanup_stale_endpoints(now=now)
+
+    def cleanup_stale_endpoints(self, *, now: Optional[float] = None) -> int:
         """
         Manually cleanup endpoints not accessed in endpoint_ttl seconds.
 
@@ -231,7 +252,7 @@ class RateLimiter:
         Returns:
             Number of endpoints cleaned up
         """
-        now = time.time()
+        now = time.monotonic() if now is None else now
         cutoff = now - self.endpoint_ttl
 
         with self._lock:
@@ -250,6 +271,7 @@ class RateLimiter:
             if stale:
                 logger.info(f"Cleaned up {len(stale)} stale rate limit endpoints")
 
+            self._last_cleanup = now
             return len(stale)
 
     def reset(self, endpoint: Optional[str] = None) -> None:
@@ -273,11 +295,13 @@ class RateLimiter:
             Dict of endpoint -> stats
         """
         stats = {}
-        for endpoint in self._requests:
+        with self._lock:
+            endpoints = tuple(self._requests)
+        for endpoint in endpoints:
             config = get_rate_limit(endpoint)
             remaining = self.get_remaining(endpoint)
             limit = config.get("burst") or config.get("limit", 0)
-            effective = int(limit * self.margin) if limit else 0
+            effective = max(1, int(limit * self.margin)) if limit else 0
 
             stats[endpoint] = {
                 "limit": effective,
