@@ -424,13 +424,34 @@ async def test_async_wrappers_await_underlying_clients() -> None:
     client = build_test_client()
     try:
         client.clob.get_server_time = AsyncMock(return_value=1234567890)
+        client.clob.get_last_trade_price = AsyncMock(return_value=Decimal("0.55"))
+        client.clob.get_last_trades_prices = AsyncMock(
+            return_value={"12345": Decimal("0.55")}
+        )
+        client.clob.get_ok = AsyncMock(return_value=True)
+        client.clob.get_simplified_markets = AsyncMock(
+            return_value={"data": [], "next_cursor": "LTE="}
+        )
         client.public_clob.get_best_bid_ask = AsyncMock(
             return_value=(Decimal("0.45"), Decimal("0.47"))
         )
 
         assert await client.get_server_time() == 1234567890
+        assert await client.get_last_trade_price("12345") == Decimal("0.55")
+        assert await client.get_last_trades_prices(["12345"]) == {
+            "12345": Decimal("0.55")
+        }
+        assert await client.get_ok() is True
+        assert await client.get_simplified_markets("cursor-1") == {
+            "data": [],
+            "next_cursor": "LTE=",
+        }
         assert await client.get_best_bid_ask("12345") == (Decimal("0.45"), Decimal("0.47"))
         client.clob.get_server_time.assert_awaited_once()
+        client.clob.get_last_trade_price.assert_awaited_once_with("12345")
+        client.clob.get_last_trades_prices.assert_awaited_once_with(["12345"])
+        client.clob.get_ok.assert_awaited_once_with()
+        client.clob.get_simplified_markets.assert_awaited_once_with("cursor-1")
         client.public_clob.get_best_bid_ask.assert_awaited_once_with("12345")
     finally:
         await client.close()
@@ -554,6 +575,54 @@ async def test_health_check_awaits_async_clob_probe() -> None:
         assert health["status"] == "healthy"
         assert health["clob"]["status"] == "healthy"
         client.clob.health_check.assert_awaited_once()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_add_wallet_registers_then_initializes_credentials() -> None:
+    client = build_test_client()
+    wallet_config = MagicMock()
+    client.key_manager.add_wallet = Mock(return_value="wallet-a")
+    client._initialize_api_credentials = AsyncMock()
+
+    try:
+        wallet_id = await client.add_wallet(
+            wallet_config,
+            wallet_id="wallet-a",
+            set_default=True,
+        )
+    finally:
+        await client.close()
+
+    assert wallet_id == "wallet-a"
+    client.key_manager.add_wallet.assert_called_once_with(
+        wallet_config,
+        wallet_id="wallet-a",
+        set_default=True,
+    )
+    client._initialize_api_credentials.assert_awaited_once_with("wallet-a")
+
+
+@pytest.mark.asyncio
+async def test_orderbook_websocket_facade_subscribes_and_disconnects() -> None:
+    client = build_test_client()
+    client._ensure_websocket = Mock()
+    websocket = MagicMock()
+    client._ws = websocket
+
+    try:
+        callback = Mock()
+        client.subscribe_orderbook("token-1", callback)
+
+        client._ensure_websocket.assert_called_once_with(None)
+        websocket.subscribe_market.assert_called_once()
+        assert websocket.subscribe_market.call_args.args[0] == "token-1"
+        assert callable(websocket.subscribe_market.call_args.args[1])
+
+        client.unsubscribe_all()
+        websocket.disconnect.assert_called_once_with()
+        assert client._ws is None
     finally:
         await client.close()
 

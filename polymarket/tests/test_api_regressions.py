@@ -1,6 +1,7 @@
 """Regression tests for public API payload changes."""
 
 import logging
+from decimal import Decimal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -289,4 +290,218 @@ async def test_public_get_best_bid_ask_returns_none_on_no_orderbook_404_without_
     assert not any(
         record.name == "polymarket.api.clob_public" and record.levelno >= logging.ERROR
         for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_orderbooks_empty_input_avoids_provider_request():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.post = AsyncMock()
+
+    try:
+        assert await api.get_orderbooks_batch([]) == {}
+        api.post.assert_not_awaited()
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_orderbooks_use_one_request_and_parse_only_valid_entries(caplog):
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.post = AsyncMock(
+        return_value=[
+            {
+                "asset_id": "token-1",
+                "bids": [
+                    {"price": "0.40", "size": "5"},
+                    {"price": "0.60", "size": "3"},
+                ],
+                "asks": [
+                    {"price": "0.70", "size": "2"},
+                    {"price": "0.65", "size": "4"},
+                ],
+                "market": "market-a",
+                "tick_size": "0.01",
+                "neg_risk": True,
+            },
+            {"bids": [], "asks": []},
+        ]
+    )
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="polymarket.api.clob"):
+            books = await api.get_orderbooks_batch(["token-1", "token-2"])
+    finally:
+        await api.close()
+
+    api.post.assert_awaited_once_with(
+        "/books",
+        json_data=[{"token_id": "token-1"}, {"token_id": "token-2"}],
+        rate_limit_key="POST:/books",
+        retry=True,
+    )
+    assert list(books) == ["token-1"]
+    assert books["token-1"].bids == [
+        (Decimal("0.60"), Decimal("3")),
+        (Decimal("0.40"), Decimal("5")),
+    ]
+    assert books["token-1"].asks == [
+        (Decimal("0.65"), Decimal("4")),
+        (Decimal("0.70"), Decimal("2")),
+    ]
+    assert books["token-1"].tick_size == Decimal("0.01")
+    assert books["token-1"].neg_risk is True
+    assert "Missing asset_id" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_batch_orderbook_provider_failure_is_wrapped():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.post = AsyncMock(side_effect=RuntimeError("provider down"))
+
+    try:
+        with pytest.raises(TradingError, match="Batch orderbook fetch failed"):
+            await api.get_orderbooks_batch(["token-1"])
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_clob_health_accepts_official_ok_string_and_wraps_failures():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.get = AsyncMock(return_value="OK")
+
+    try:
+        assert await api.get_ok() is True
+        api.get.assert_awaited_once_with("/", rate_limit_key="GET:/", retry=False)
+
+        api.get.reset_mock()
+        api.get.side_effect = RuntimeError("connection refused")
+        with pytest.raises(TradingError, match="CLOB server unavailable"):
+            await api.get_ok()
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_server_time_converts_seconds_and_rejects_missing_timestamp():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.get = AsyncMock(return_value=1_700_000_000)
+
+    try:
+        assert await api.get_server_time() == 1_700_000_000_000
+
+        api.get.return_value = {}
+        with pytest.raises(TradingError, match="Server time response missing timestamp"):
+            await api.get_server_time()
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_last_trade_price_endpoints_preserve_decimal_and_missing_values():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.get = AsyncMock(side_effect=[{"price": "0.55"}, {"price": None}])
+    api.post = AsyncMock(
+        return_value=[
+            {"token_id": "token-1", "price": "0.55"},
+            {"token_id": "token-2", "price": None},
+            {"price": "0.99"},
+        ]
+    )
+
+    try:
+        assert await api.get_last_trade_price("token-1") == Decimal("0.55")
+        assert await api.get_last_trade_price("token-2") is None
+        assert await api.get_last_trades_prices(["token-1", "token-2"]) == {
+            "token-1": Decimal("0.55"),
+            "token-2": None,
+        }
+    finally:
+        await api.close()
+
+    api.post.assert_awaited_once_with(
+        "/last-trades-prices",
+        json_data=[{"token_id": "token-1"}, {"token_id": "token-2"}],
+        rate_limit_key="POST:/last-trades-prices",
+        retry=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_order_scoring_endpoints_parse_batch_and_skip_malformed_entries():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api.get = AsyncMock(return_value={"scoring": True})
+    api.post = AsyncMock(
+        return_value=[
+            {"order_id": "order-1", "scoring": True},
+            {"order_id": "order-2"},
+            {"scoring": True},
+        ]
+    )
+
+    try:
+        assert await api.is_order_scoring("order-1") is True
+        assert await api.are_orders_scoring(["order-1", "order-2"]) == {
+            "order-1": True,
+            "order-2": False,
+        }
+
+        api.post.reset_mock()
+        assert await api.are_orders_scoring([]) == {}
+        api.post.assert_not_awaited()
+    finally:
+        await api.close()
+
+    api.get.assert_awaited_once_with(
+        "/order-scoring",
+        params={"order_id": "order-1"},
+        rate_limit_key="GET:/order-scoring",
+        retry=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_market_orders_signs_and_sends_identical_body():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api._create_l2_headers = Mock(return_value={"POLY_API_KEY": "key"})
+    api.delete = AsyncMock(return_value={"cancelled": ["order-1", "order-2"]})
+
+    try:
+        cancelled = await api.cancel_market_orders(
+            market_id="market-a",
+            address="0xabc",
+            api_key="key",
+            api_secret="secret",
+            api_passphrase="passphrase",
+        )
+    finally:
+        await api.close()
+
+    assert cancelled == 2
+    signed_body = api._create_l2_headers.call_args.kwargs["body"]
+    assert api.delete.await_args.kwargs["data"] == signed_body
+    api._create_l2_headers.assert_called_once_with(
+        address="0xabc",
+        api_key="key",
+        api_secret="secret",
+        api_passphrase="passphrase",
+        method="DELETE",
+        path="/cancel-market-orders",
+        body=signed_body,
+    )
+    api.delete.assert_awaited_once_with(
+        "/cancel-market-orders",
+        data=signed_body,
+        headers={"POLY_API_KEY": "key"},
+        rate_limit_key="DELETE:/cancel-market-orders",
+        retry=False,
     )
