@@ -157,7 +157,10 @@ class PublicCLOBAPI(BaseAPIClient):
 
         except Exception as e:
             logger.error(f"Error fetching midpoint for {token_id}: {e}")
-            raise PriceUnavailableError(f"Midpoint unavailable: {e}")
+            raise PriceUnavailableError(
+                f"Midpoint unavailable: {e}",
+                token_id=token_id,
+            )
 
     async def get_midpoints(self, token_ids: List[str]) -> Dict[str, Optional[Decimal]]:
         """
@@ -239,7 +242,10 @@ class PublicCLOBAPI(BaseAPIClient):
 
         except Exception as e:
             logger.error(f"Error fetching price for {token_id}: {e}")
-            raise PriceUnavailableError(f"Price unavailable: {e}")
+            raise PriceUnavailableError(
+                f"Price unavailable: {e}",
+                token_id=token_id,
+            )
 
     async def get_prices(self, params: List[Dict[str, str]]) -> Dict[str, Optional[Decimal]]:
         """
@@ -450,7 +456,10 @@ class PublicCLOBAPI(BaseAPIClient):
                     token_id=token_id,
                 ) from e
             logger.error(f"Error fetching orderbook for {token_id}: {e}")
-            raise OrderBookError(f"Orderbook unavailable: {e}")
+            raise OrderBookError(
+                f"Orderbook unavailable: {e}",
+                token_id=token_id,
+            )
 
     async def get_orderbooks_batch(self, token_ids: List[str]) -> List[OrderBookType]:
         """
@@ -740,7 +749,10 @@ class PublicCLOBAPI(BaseAPIClient):
 
         except Exception as e:
             logger.error(f"Error fetching market {condition_id}: {e}")
-            raise MarketNotFoundError(f"Market not found: {condition_id}")
+            raise MarketNotFoundError(
+                f"Market not found: {condition_id}",
+                market_id=condition_id,
+            )
 
     async def get_market_trades_events(self, condition_id: str) -> List[Dict[str, Any]]:
         """

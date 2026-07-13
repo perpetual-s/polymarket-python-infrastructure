@@ -12,7 +12,14 @@ from ..api.data_api import DataAPI
 from ..api.gamma import GammaAPI
 from ..auth.authenticator import Authenticator
 from ..config import PolymarketSettings
-from ..exceptions import APIError, MarketDataError, TradingError
+from ..exceptions import (
+    APIError,
+    MarketDataError,
+    MarketNotFoundError,
+    OrderBookError,
+    PriceUnavailableError,
+    TradingError,
+)
 from ..exceptions import TimeoutError as PolymarketTimeoutError
 from ..models import Activity, LeaderboardTrader
 
@@ -67,13 +74,54 @@ def test_activity_accepts_new_type_and_blank_side():
 
 
 @pytest.mark.asyncio
+async def test_market_not_found_preserves_public_condition_id():
+    """Safe exception rendering must not erase typed public market context."""
+    condition_id = "0x" + "f" * 64
+    api = PublicCLOBAPI(PolymarketSettings())
+    api.get = AsyncMock(side_effect=APIError("not found", status_code=404))
+
+    try:
+        with pytest.raises(MarketNotFoundError) as captured:
+            await api.get_market(condition_id)
+    finally:
+        await api.close()
+
+    assert captured.value.market_id == condition_id
+
+
+@pytest.mark.asyncio
+async def test_pricing_and_orderbook_failures_preserve_public_token_id():
+    """Typed pricing/book exceptions keep their public token identity."""
+    token_id = "1234567890"
+    api = PublicCLOBAPI(PolymarketSettings())
+    api.get = AsyncMock(side_effect=APIError("backend unavailable", status_code=500))
+
+    try:
+        with pytest.raises(PriceUnavailableError) as midpoint_error:
+            await api.get_midpoint(token_id)
+        with pytest.raises(PriceUnavailableError) as price_error:
+            await api.get_price(token_id, "BUY")
+        with pytest.raises(OrderBookError) as orderbook_error:
+            await api.get_orderbook(token_id)
+    finally:
+        await api.close()
+
+    assert midpoint_error.value.token_id == token_id
+    assert price_error.value.token_id == token_id
+    assert orderbook_error.value.token_id == token_id
+
+
+@pytest.mark.asyncio
 async def test_get_public_profile_returns_none_on_404():
     """Profile misses should return None without retrying."""
     api = GammaAPI(PolymarketSettings())
     api.get = AsyncMock(side_effect=APIError("profile not found", status_code=404))
 
     try:
-        assert await api.get_public_profile("0x1111111111111111111111111111111111111111") is None
+        assert (
+            await api.get_public_profile("0x1111111111111111111111111111111111111111")
+            is None
+        )
         api.get.assert_awaited_once()
         assert api.get.await_args.kwargs["retry"] is False
     finally:
@@ -101,7 +149,9 @@ async def test_get_activity_returns_empty_on_404_without_retry():
     api.get = AsyncMock(side_effect=APIError("activity not found", status_code=404))
 
     try:
-        assert await api.get_activity("0x1111111111111111111111111111111111111111") == []
+        assert (
+            await api.get_activity("0x1111111111111111111111111111111111111111") == []
+        )
         api.get.assert_awaited_once()
         assert api.get.await_args.kwargs["retry"] is False
     finally:
@@ -113,7 +163,9 @@ async def test_get_activity_polymarket_timeout_does_not_log_error(caplog):
     """Activity poller timeouts should propagate without marker-blocking logs."""
     api = DataAPI(PolymarketSettings())
     api.get = AsyncMock(
-        side_effect=PolymarketTimeoutError("Request timeout: Timeout on reading data from socket")
+        side_effect=PolymarketTimeoutError(
+            "Request timeout: Timeout on reading data from socket"
+        )
     )
 
     try:
@@ -262,7 +314,9 @@ async def test_get_order_rejects_non_mapping_provider_response():
 
 
 @pytest.mark.asyncio
-async def test_public_get_best_bid_ask_returns_none_on_no_orderbook_404_without_error_log(caplog):
+async def test_public_get_best_bid_ask_returns_none_on_no_orderbook_404_without_error_log(
+    caplog,
+):
     """No-orderbook /book misses should not emit marker-blocking public CLOB errors."""
     api = PublicCLOBAPI(PolymarketSettings())
     api.get = AsyncMock(
@@ -397,7 +451,9 @@ async def test_server_time_converts_seconds_and_rejects_missing_timestamp():
         assert await api.get_server_time() == 1_700_000_000_000
 
         api.get.return_value = {}
-        with pytest.raises(TradingError, match="Server time response missing timestamp"):
+        with pytest.raises(
+            TradingError, match="Server time response missing timestamp"
+        ):
             await api.get_server_time()
     finally:
         await api.close()
