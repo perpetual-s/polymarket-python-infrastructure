@@ -12,15 +12,6 @@ Adapted from Polymarket's official clients (MIT License):
 
 from .client import PolymarketClient
 
-# CTF (Conditional Token Framework) - Neg-Risk adapter
-from .ctf import (
-    CTF_ADDRESS,
-    NEG_RISK_ADAPTER,
-    NEG_RISK_EXCHANGE,
-    ConversionCalculator,
-    NegRiskAdapter,
-    is_safe_to_trade,
-)
 from .exceptions import (
     APIError,
     AuthenticationError,
@@ -81,6 +72,32 @@ from .utils.validation import (
 )
 
 __version__ = "3.7.0"
+
+_CTF_EXPORTS = frozenset(
+    {
+        "CTF_ADDRESS",
+        "NEG_RISK_ADAPTER",
+        "NEG_RISK_EXCHANGE",
+        "ConversionCalculator",
+        "NegRiskAdapter",
+        "is_safe_to_trade",
+    }
+)
+
+
+def __getattr__(name: str):
+    """Load optional on-chain CTF/Web3 support only when it is requested."""
+    if name not in _CTF_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import ctf
+
+    value = getattr(ctf, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _CTF_EXPORTS)
 
 __all__ = [
     # Main client

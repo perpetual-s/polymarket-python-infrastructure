@@ -1,8 +1,11 @@
 """Regression tests for async PolymarketClient behavior and trading safety."""
 
 import asyncio
+import subprocess
+import sys
 import threading
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -103,6 +106,21 @@ async def test_get_order_delegates_credentials_and_preserves_raw_truth() -> None
 def test_provider_capabilities_expose_lookup_but_block_preplacement_identity() -> None:
     assert PolymarketClient.supports_authoritative_order_lookup is True
     assert PolymarketClient.supports_preplacement_durable_order_identity is False
+
+
+def test_core_package_import_does_not_eagerly_load_optional_web3() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import polymarket.config; assert 'web3' not in sys.modules",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.asyncio
