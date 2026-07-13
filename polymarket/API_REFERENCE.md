@@ -465,11 +465,14 @@ Available as `client.clob.<method>`.
 | `async cancel_all_orders(wallet_id: Optional[str] = None, market_id: Optional[str] = None) -> int` | count | `TradingError`, auth/key-manager errors |
 | `async cancel_market_orders(market_id: str, wallet_id: Optional[str] = None) -> int` | count | `TradingError`, auth/key-manager errors |
 | `async get_orders(wallet_id: Optional[str] = None, market: Optional[str] = None) -> List[Order]` | open orders | `TradingError`, auth/key-manager errors |
+| `async get_order(order_id: str, wallet_id: Optional[str] = None) -> Dict[str, Any]` | raw authoritative order evidence | `TradingError`, auth/key-manager errors |
 | `async get_balances(wallet_id: Optional[str] = None) -> Balance` | balance | `TradingError`, auth/key-manager errors |
 | `async get_token_balance(token_id: str, wallet_id: Optional[str] = None) -> Decimal` | CTF token balance | `TradingError`, auth/key-manager errors |
 | `async get_position_balance(token_id: str, wallet_id: Optional[str] = None) -> Decimal` | Data API position size | returns `Decimal("0")` on lookup failure |
 | `async update_balance_allowance(wallet_id: Optional[str] = None, asset_type: str = "COLLATERAL", token_id: Optional[str] = None) -> Dict[str, Any]` | update response | `TradingError`, auth/key-manager errors |
 | `async release_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None, order_id: Optional[str] = None) -> None` | `None` | `BalanceTrackingError` |
+| `async restore_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None) -> None` | `None` | `BalanceTrackingError` |
+| `async reapply_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None, order_id: Optional[str] = None) -> None` | `None` | `BalanceTrackingError` |
 | `async get_reserved_balance(wallet_id: Optional[str] = None) -> Decimal` | reserved USD | none |
 
 ### Order placement
@@ -520,6 +523,9 @@ response = await client.place_order(order, wallet_id="WALLET_0")
 
 - Passed to signed-order construction.
 - Used for deterministic order hash/salt behavior where supported by `OrderBuilder`.
+- It is **not** a provider-backed idempotency token or client order ID. The
+  installed official client exposes no such pre-placement contract, so this
+  value cannot authorize replay after an ambiguous live submission.
 - Batch placement does not accept idempotency keys.
 
 ### Market orders
@@ -612,6 +618,7 @@ Available as `client.clob.<method>`; top-level wrappers fill auth fields from wa
 | `async cancel_market_orders(market_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> int` | cancel count | `TradingError` |
 | `async cancel_all_orders(address: str, api_key: str, api_secret: str, api_passphrase: str, market_id: Optional[str] = None) -> int` | cancel count | `TradingError` |
 | `async get_orders(address: str, api_key: str, api_secret: str, api_passphrase: str, market: Optional[str] = None) -> List[Order]` | orders | `TradingError` |
+| `async get_order(order_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> Dict[str, Any]` | raw single-order evidence | `TradingError` |
 | `async get_balances(address: str, api_key: str, api_secret: str, api_passphrase: str, signature_type: int = 0, funder: Optional[str] = None, asset_type: str = "COLLATERAL", token_id: Optional[str] = None) -> Balance` | balance | `TradingError` |
 | `async update_balance_allowance(address: str, api_key: str, api_secret: str, api_passphrase: str, signature_type: int = 0, asset_type: str = "COLLATERAL", token_id: Optional[str] = None) -> Dict[str, Any]` | update response | `TradingError` |
 
@@ -728,6 +735,18 @@ Return behavior:
 - Handles legacy list response.
 - Normalizes uppercase API statuses to lowercase model values.
 - Parses `created_at` as seconds, milliseconds, or ISO string.
+
+`get_order`:
+
+- Uses the authenticated official-provider endpoint `GET /data/order/{order_id}`.
+- Returns the raw mapping so money-state callers can require exact `status` and
+  `size_matched` evidence; non-mapping responses raise `TradingError`.
+- It can reconcile an already-known provider order ID. It does **not** provide a
+  provider-backed identity known before `POST /order`, so an ambiguous placement
+  timeout still cannot be inferred safe from a deterministic signing salt.
+- Capability flags expose that boundary explicitly:
+  `supports_authoritative_order_lookup = True` and
+  `supports_preplacement_durable_order_identity = False`.
 
 `get_balances`:
 

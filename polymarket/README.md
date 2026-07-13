@@ -431,6 +431,7 @@ async def cancel_all_orders(wallet_id, market_id=None) -> int
 
 # Queries
 async def get_orders(wallet_id, market=None) -> List[Order]
+async def get_order(order_id, wallet_id=None) -> Dict[str, Any]
 async def get_balances(wallet_id) -> Balance
 async def get_orderbook(token_id) -> OrderBook
 async def get_orderbooks_batch(token_ids) -> Dict[str, OrderBook]  # Strategy-3

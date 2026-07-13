@@ -74,6 +74,38 @@ def make_order(
 
 
 @pytest.mark.asyncio
+async def test_get_order_delegates_credentials_and_preserves_raw_truth() -> None:
+    client = build_test_client()
+    provider_order = {
+        "id": "order-1",
+        "status": "MATCHED",
+        "original_size": "10",
+        "size_matched": "10",
+    }
+    client.clob.get_order = AsyncMock(return_value=provider_order)
+
+    try:
+        result = await client.get_order("order-1", wallet_id="WALLET_TEST")
+    finally:
+        await client.close()
+
+    assert result is provider_order
+    client.key_manager.get_wallet.assert_called_with("WALLET_TEST")
+    client.clob.get_order.assert_awaited_once_with(
+        order_id="order-1",
+        address="0x1234567890abcdef1234567890abcdef12345678",
+        api_key="key",
+        api_secret="secret",
+        api_passphrase="passphrase",
+    )
+
+
+def test_provider_capabilities_expose_lookup_but_block_preplacement_identity() -> None:
+    assert PolymarketClient.supports_authoritative_order_lookup is True
+    assert PolymarketClient.supports_preplacement_durable_order_identity is False
+
+
+@pytest.mark.asyncio
 async def test_unsubscribe_market_price_changes_constructs_token_filter() -> None:
     client = build_test_client()
     try:

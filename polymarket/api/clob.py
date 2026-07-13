@@ -1317,6 +1317,53 @@ class CLOBAPI(BaseAPIClient):
             logger.error(f"Failed to get orders: {e}")
             raise TradingError(f"Failed to get orders: {e}")
 
+    async def get_order(
+        self,
+        order_id: str,
+        address: str,
+        api_key: str,
+        api_secret: str,
+        api_passphrase: str,
+    ) -> Dict[str, Any]:
+        """Fetch one order by its provider order ID.
+
+        This mirrors ``py_clob_client.ClobClient.get_order`` from the locally
+        installed provider client (v0.28.0), including its authenticated
+        ``GET /data/order/{order_id}`` endpoint.  The provider returns a raw
+        order dictionary; callers must fail closed if terminal status or
+        ``size_matched`` evidence is absent.
+        """
+        if not order_id:
+            raise TradingError("order_id is required for authoritative lookup")
+
+        path = f"/data/order/{order_id}"
+        try:
+            headers = self._create_l2_headers(
+                address=address,
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
+                method="GET",
+                path=path,
+            )
+            response = await self.get(
+                path,
+                headers=headers,
+                rate_limit_key="GET:/data/order",
+                retry=True,
+            )
+            if not isinstance(response, dict):
+                raise TradingError(
+                    "Invalid single-order response: expected dict, got "
+                    f"{type(response).__name__}"
+                )
+            return response
+        except TradingError:
+            raise
+        except Exception as error:
+            logger.error(f"Failed to get order {order_id}: {error}")
+            raise TradingError(f"Failed to get order {order_id}: {error}") from error
+
     async def get_balances(
         self,
         address: str,

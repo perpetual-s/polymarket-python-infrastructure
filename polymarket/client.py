@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .api.clob import CLOBAPI
 from .api.clob_public import PublicCLOBAPI
@@ -47,6 +47,7 @@ from .models import (
     OrderBook,
     OrderRequest,
     OrderResponse,
+    OrderType,
     Position,
     PricePoint,
     Side,
@@ -59,6 +60,9 @@ from .utils.rate_limiter import RateLimiter
 from .utils.retry import CircuitBreaker
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .models import LeaderboardTrader, PortfolioValue
 
 
 class PolymarketClient:
@@ -78,6 +82,16 @@ class PolymarketClient:
         markets = await client.get_markets(active=True)
         response = await client.place_order(order, wallet_id="strategy1")
     """
+
+    # The installed official py-clob-client v0.28.0 exposes an authenticated
+    # GET /data/order/{order_id}, so an already-known provider order ID can be
+    # reconciled authoritatively.  It does *not* expose a provider-backed
+    # client order ID or idempotency token that is known before POST /order.
+    # Deterministic signing salt is not the same contract: it cannot safely
+    # identify whether an ambiguous submit was accepted without assuming
+    # undocumented provider behavior.
+    supports_authoritative_order_lookup = True
+    supports_preplacement_durable_order_identity = False
 
     def __init__(
         self,
@@ -1170,6 +1184,13 @@ class PolymarketClient:
             if not isinstance(amount, Decimal):
                 amount = Decimal(str(amount))
 
+            if not amount.is_finite() or amount < Decimal("0"):
+                raise BalanceTrackingError(
+                    f"Release amount must be finite and non-negative: {amount}"
+                )
+            if amount == Decimal("0"):
+                return
+
             # Check for over-release (raise instead of silent clamping)
             if amount > current:
                 raise BalanceTrackingError(
@@ -1184,6 +1205,54 @@ class PolymarketClient:
                 f"Released ${amount:.2f} for order {order_id or 'unknown'} "
                 f"(remaining reserved: ${self._reserved_balances[wallet_key]:.2f})"
             )
+
+    async def restore_reserved_balance(
+        self,
+        amount: Decimal,
+        wallet_id: Optional[str] = None,
+    ) -> None:
+        """Restore the durable reservation projection during startup.
+
+        The caller's durable order ledger is authoritative across process
+        restarts.  This setter is intentionally one-shot: replacing a non-zero
+        runtime projection could erase a provisional BUY reservation that has
+        not yet reached durable storage.
+        """
+        try:
+            restored = Decimal(str(amount))
+        except Exception as error:
+            raise BalanceTrackingError(
+                f"Reserved balance must be a finite Decimal: {amount!r}"
+            ) from error
+        if not restored.is_finite() or restored < Decimal("0"):
+            raise BalanceTrackingError(
+                f"Reserved balance must be finite and non-negative: {restored}"
+            )
+
+        async with self._balance_lock:
+            wallet_key = self._wallet_key(wallet_id)
+            current = Decimal(str(self._reserved_balances.get(wallet_key, 0)))
+            if current not in {Decimal("0"), restored}:
+                raise BalanceTrackingError(
+                    f"Cannot replace active reservation projection for wallet "
+                    f"{wallet_key}: current=${current}, durable=${restored}"
+                )
+            self._reserved_balances[wallet_key] = restored
+
+        logger.info(
+            "Restored $%.2f durable reserved balance for wallet %s",
+            restored,
+            wallet_key,
+        )
+
+    async def reapply_reserved_balance(
+        self,
+        amount: Decimal,
+        wallet_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+    ) -> None:
+        """Compensate a local release when its durable transaction rolls back."""
+        await self._reserve_balance(amount, wallet_id=wallet_id, order_id=order_id)
 
     async def get_reserved_balance(self, wallet_id: Optional[str] = None) -> Decimal:
         """
@@ -1221,6 +1290,13 @@ class PolymarketClient:
 
             if not isinstance(amount, Decimal):
                 amount = Decimal(str(amount))
+
+            if not amount.is_finite() or amount < Decimal("0"):
+                raise BalanceTrackingError(
+                    f"Reservation amount must be finite and non-negative: {amount}"
+                )
+            if amount == Decimal("0"):
+                return
 
             self._reserved_balances[wallet_key] = current + amount
 
@@ -1868,6 +1944,27 @@ class PolymarketClient:
             api_secret=credentials.api_secret,
             api_passphrase=credentials.api_passphrase,
             market=market,
+        )
+
+    async def get_order(
+        self,
+        order_id: str,
+        wallet_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch authoritative status and matched-size evidence for one order.
+
+        The locally installed official provider client exposes this as
+        ``GET /data/order/{order_id}``.  A raw dictionary is returned because
+        the provider package does not publish a response model for this
+        endpoint; money-state callers must validate every required field.
+        """
+        credentials = self.key_manager.get_wallet(wallet_id)
+        return await self.clob.get_order(
+            order_id=order_id,
+            address=credentials.address,
+            api_key=credentials.api_key,
+            api_secret=credentials.api_secret,
+            api_passphrase=credentials.api_passphrase,
         )
 
     async def get_balances(self, wallet_id: Optional[str] = None) -> Balance:
@@ -2767,16 +2864,6 @@ class PolymarketClient:
         """
         try:
             logger.info(f"RTDS status changed: {status.value}", extra={"status": status.value})
-
-            # Emit metrics if enabled
-            if self.metrics:
-                status_map = {
-                    ConnectionStatus.CONNECTING: 0,
-                    ConnectionStatus.CONNECTED: 1,
-                    ConnectionStatus.DISCONNECTED: 2,
-                }
-                # Record status change event
-                # Note: metrics.record_rtds_status() would go here if implemented
 
         except Exception as e:
             logger.error(f"Error in RTDS status change callback: {e}", exc_info=True)

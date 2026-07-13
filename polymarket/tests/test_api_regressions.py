@@ -1,7 +1,7 @@
 """Regression tests for public API payload changes."""
 
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -11,7 +11,7 @@ from ..api.data_api import DataAPI
 from ..api.gamma import GammaAPI
 from ..auth.authenticator import Authenticator
 from ..config import PolymarketSettings
-from ..exceptions import APIError, MarketDataError
+from ..exceptions import APIError, MarketDataError, TradingError
 from ..exceptions import TimeoutError as PolymarketTimeoutError
 from ..models import Activity, LeaderboardTrader
 
@@ -190,6 +190,72 @@ async def test_get_midpoint_returns_none_on_no_orderbook_404():
     try:
         assert await api.get_midpoint("stale-token") is None
         api.get.assert_awaited_once()
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_get_order_uses_official_authenticated_single_order_endpoint():
+    """Single-order truth must preserve the provider's raw evidence fields."""
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api._create_l2_headers = Mock(  # type: ignore[method-assign]
+        return_value={"POLY_API_KEY": "key"}
+    )
+    response = {
+        "id": "order-1",
+        "status": "CANCELED",
+        "original_size": "10",
+        "size_matched": "3",
+    }
+    api.get = AsyncMock(return_value=response)
+
+    try:
+        result = await api.get_order(
+            order_id="order-1",
+            address="0x123",
+            api_key="key",
+            api_secret="secret",
+            api_passphrase="passphrase",
+        )
+    finally:
+        await api.close()
+
+    assert result is response
+    api._create_l2_headers.assert_called_once_with(
+        address="0x123",
+        api_key="key",
+        api_secret="secret",
+        api_passphrase="passphrase",
+        method="GET",
+        path="/data/order/order-1",
+    )
+    api.get.assert_awaited_once_with(
+        "/data/order/order-1",
+        headers={"POLY_API_KEY": "key"},
+        rate_limit_key="GET:/data/order",
+        retry=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_order_rejects_non_mapping_provider_response():
+    settings = PolymarketSettings()
+    api = CLOBAPI(settings, Authenticator(chain_id=settings.chain_id))
+    api._create_l2_headers = Mock(  # type: ignore[method-assign]
+        return_value={"POLY_API_KEY": "key"}
+    )
+    api.get = AsyncMock(return_value=[])
+
+    try:
+        with pytest.raises(TradingError, match="expected dict"):
+            await api.get_order(
+                order_id="order-1",
+                address="0x123",
+                api_key="key",
+                api_secret="secret",
+                api_passphrase="passphrase",
+            )
     finally:
         await api.close()
 
