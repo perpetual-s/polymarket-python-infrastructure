@@ -692,12 +692,18 @@ class TestExceptionSanitization:
         assert sanitized["condition_id"] == condition_id
         assert sanitized["untyped"] == "0x[REDACTED]"
 
-    def test_urlsafe_base64_secret_is_redacted(self):
-        """L2 API secrets are urlsafe base64 ('-'/'_'); they must not leak."""
-        # 43-char urlsafe secret containing both '-' and '_'.
+    def test_labeled_urlsafe_secret_is_redacted_but_public_slug_is_kept(self):
+        """URL-safe secrets are caught by label/structure, not the base64
+        backstop, so a long kebab public slug is not over-redacted."""
+        # 44-char urlsafe secret containing both '-' and '_'.
         secret = "abcDEF-hijkLMN_pqrsTUV0123456789-_ABCDEFGHIJ"
-        assert secret not in redact_text(f"could not decode {secret}")
-        assert redact_text(secret) == "[REDACTED]"
+        assert redact_text(f"api_secret={secret}") == "api_secret=[REDACTED]"
+        assert redact_value({"api_secret": secret})["api_secret"] == "[REDACTED]"
+        # A long public market slug (kebab case) must survive both free text and
+        # structured rendering: it is core data, not a credential.
+        slug = "presidential-election-winner-twenty-twenty-eight"
+        assert redact_text(slug) == slug
+        assert redact_value({"market_slug": slug})["market_slug"] == slug
 
     def test_empty_username_credential_uri_is_redacted(self):
         """redis://:password@host is the standard credentialed Redis form."""

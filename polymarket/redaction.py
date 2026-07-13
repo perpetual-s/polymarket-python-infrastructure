@@ -69,10 +69,15 @@ _LABELED_SECRET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _BASE64_SECRET_PATTERN = re.compile(
-    # Include the URL-safe base64 alphabet (``-`` and ``_``): Polymarket L2 API
-    # secrets/signatures are urlsafe-base64, and a ``-``/``_`` would otherwise
-    # split the run below the length threshold and leak the whole secret.
-    r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/=_-])"
+    # Standard base64 alphabet only. The URL-safe extension (``-``/``_``) is
+    # deliberately NOT included here: it cannot be distinguished by pattern from
+    # a long kebab/snake public identifier (e.g. a 40+ char market slug), so
+    # widening it over-redacts core public data. URL-safe secrets are instead
+    # caught by the labeled pattern (``api_secret=<value>``) and by structured
+    # ``redact_value`` on credential fields/containers, which are format-agnostic;
+    # a bare, unlabeled URL-safe secret in free text is a logging anti-pattern
+    # the signer/auth boundaries already suppress with ``from None``.
+    r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])"
 )
 
 _SENSITIVE_FIELD_SUFFIXES = frozenset(
