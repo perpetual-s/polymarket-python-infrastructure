@@ -243,17 +243,24 @@ class OrderBuilder:
 
             return order_dict
 
-        except ImportError as e:
-            logger.error(f"py_order_utils not installed: {e}")
+        except ImportError:
+            # This branch can also catch a lazy import triggered from inside the
+            # signer constructor, after the private key crossed the boundary, so
+            # render nothing from the exception and sever the chain like below.
+            logger.error("py_order_utils import failed during order signing")
             raise TradingError(
                 "py_order_utils required for order signing. "
                 "Install with: pip install py_order_utils"
-            )
+            ) from None
         except ValidationError:
             raise
         except Exception as e:
-            logger.error(f"Failed to build order: {e}")
-            raise TradingError(f"Failed to build order: {e}")
+            # SECURITY: private-key material crossed the signer boundary above.
+            # A signer/library exception may echo its raw input, so never render
+            # the exception itself; log/raise only its type and sever the chain.
+            error_type = type(e).__name__
+            logger.error(f"Failed to build order: {error_type}")
+            raise TradingError(f"Failed to build order: {error_type}") from None
 
     def _resolve_tick_size(self, token_id: str) -> Decimal:
         """

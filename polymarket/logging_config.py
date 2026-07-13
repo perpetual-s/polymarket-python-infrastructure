@@ -6,7 +6,13 @@ Provides structured logging for production use.
 
 import logging
 import logging.config
-from typing import Optional
+from copy import deepcopy
+from typing import Any, Optional
+
+from .utils.structured_logging import (
+    CredentialRedactionFilter,
+    RedactingJsonFormatter,
+)
 
 # Root logger namespace for this package, derived from wherever the package is
 # installed (``polymarket`` in the source repo, ``shared.polymarket`` in downstream project).
@@ -16,6 +22,9 @@ _PACKAGE = __name__.rpartition(".")[0]
 DEFAULT_LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "credential_redaction": {"()": CredentialRedactionFilter},
+    },
     "formatters": {
         "standard": {
             "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -23,12 +32,13 @@ DEFAULT_LOGGING_CONFIG = {
         },
         "detailed": {
             "format": (
-                "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d " "- %(message)s (%(funcName)s)"
+                "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d "
+                "- %(message)s (%(funcName)s)"
             ),
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
         "json": {
-            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "()": RedactingJsonFormatter,
             "format": "%(asctime)s %(name)s %(levelname)s %(message)s",
         },
     },
@@ -37,12 +47,14 @@ DEFAULT_LOGGING_CONFIG = {
             "class": "logging.StreamHandler",
             "level": "INFO",
             "formatter": "standard",
+            "filters": ["credential_redaction"],
             "stream": "ext://sys.stdout",
         },
         "file": {
             "class": "logging.handlers.RotatingFileHandler",
             "level": "DEBUG",
             "formatter": "detailed",
+            "filters": ["credential_redaction"],
             "filename": "polymarket_client.log",
             "maxBytes": 10485760,  # 10MB
             "backupCount": 5,
@@ -51,6 +63,7 @@ DEFAULT_LOGGING_CONFIG = {
             "class": "logging.handlers.RotatingFileHandler",
             "level": "ERROR",
             "formatter": "detailed",
+            "filters": ["credential_redaction"],
             "filename": "polymarket_errors.log",
             "maxBytes": 10485760,
             "backupCount": 5,
@@ -68,7 +81,9 @@ DEFAULT_LOGGING_CONFIG = {
 
 
 def setup_logging(
-    level: Optional[str] = None, log_file: Optional[str] = None, json_format: bool = False
+    level: Optional[str] = None,
+    log_file: Optional[str] = None,
+    json_format: bool = False,
 ) -> None:
     """
     Setup logging configuration.
@@ -78,7 +93,9 @@ def setup_logging(
         log_file: Optional log file path
         json_format: Use JSON formatting
     """
-    config = DEFAULT_LOGGING_CONFIG.copy()
+    # setup_logging may be called more than once by test/runtime bootstraps.
+    # A deep copy prevents one JSON/file override from mutating future calls.
+    config: dict[str, Any] = deepcopy(DEFAULT_LOGGING_CONFIG)
 
     # Override level
     if level:

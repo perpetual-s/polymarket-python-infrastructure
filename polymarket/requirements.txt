@@ -6,6 +6,7 @@ pydantic>=2.12.3  # Latest stable with Python 3.13 support
 pydantic-settings>=2.7.0  # Latest stable
 requests>=2.32.3  # Latest stable
 orjson>=3.10.0  # Fast JSON parser (30-50% faster than stdlib, releases GIL)
+python-json-logger>=4.0.0  # Structured logging output boundary
 
 # Polymarket official dependencies
 poly_eip712_structs==0.0.1  # Polymarket's EIP-712 fork (pinned)
