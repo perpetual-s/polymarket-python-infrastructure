@@ -262,7 +262,6 @@ def _detect_price_change_schema(data: dict) -> str:
     """
     # Check for v1 indicators (deprecated)
     has_changes = "changes" in data
-    has_root_asset_id = "asset_id" in data
     has_price_changes = "price_changes" in data
 
     if has_changes and not has_price_changes:

@@ -254,11 +254,6 @@ def calculate_profit_after_fees(
         entry_cost = token_count * exit_price
         exit_proceeds = size
 
-    # NO FEES on Polymarket
-    entry_fee = Decimal("0.0")
-    exit_fee = Decimal("0.0")
-    total_fees = Decimal("0.0")
-
     # Net profit = gross profit (no fees deducted)
     net_profit = gross_profit
 

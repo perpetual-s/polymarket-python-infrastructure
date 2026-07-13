@@ -160,8 +160,6 @@ async def example_market_details():
     print("EXAMPLE 5: Market Details by Condition ID")
     print("="*60)
 
-    client = PolymarketClient()
-
     # Example condition ID (would need actual ID from market data)
     # This is just for demonstration
     print("\n1. Get market by condition ID:")

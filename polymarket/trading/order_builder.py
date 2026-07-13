@@ -210,10 +210,13 @@ class OrderBuilder:
             if idempotency_key:
                 # Deterministic salt for retry safety
                 salt_value = self.generate_salt_from_key(idempotency_key)
-                salt_generator = lambda: salt_value
+
+                def salt_generator() -> int:
+                    return salt_value
             else:
                 # Random salt (default)
-                salt_generator = lambda: self.generate_salt_from_key(None)
+                def salt_generator() -> int:
+                    return self.generate_salt_from_key(None)
 
             # Select exchange based on neg_risk flag
             # CRITICAL: neg_risk markets use a different exchange contract

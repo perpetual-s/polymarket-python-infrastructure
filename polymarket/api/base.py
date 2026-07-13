@@ -515,7 +515,7 @@ class BaseAPIClient:
         try:
             # Quick connectivity check (no auth required)
             start = time.time()
-            response = await self._make_request("GET", "/", rate_limit_key=None)
+            await self._make_request("GET", "/", rate_limit_key=None)
             latency = time.time() - start
 
             return {
