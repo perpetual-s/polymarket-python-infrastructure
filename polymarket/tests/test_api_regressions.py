@@ -50,18 +50,19 @@ def test_leaderboard_trader_accepts_legacy_payload_shape():
     assert trader.profile_image == "avatar.png"
 
 
-def test_activity_accepts_new_type_and_blank_side():
+@pytest.mark.parametrize("activity_type", ["MAKER_REBATE", "REFERRAL_REWARD"])
+def test_activity_accepts_new_type_and_blank_side(activity_type):
     """Non-trade activities with blank side should not fail validation."""
     activity = Activity(
         timestamp=1,
-        type="MAKER_REBATE",
+        type=activity_type,
         transactionHash="0xabc",
         size="1.0",
         usdcSize="0.5",
         side="   ",
     )
 
-    assert activity.type == "MAKER_REBATE"
+    assert activity.type == activity_type
     assert activity.side is None
 
 

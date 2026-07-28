@@ -864,6 +864,7 @@ class ActivityType(str, Enum):
     CONVERSION = "CONVERSION"
     MAKER_REBATE = "MAKER_REBATE"
     TAKER_REBATE = "TAKER_REBATE"  # Observed live 2026-07-17 (fee-era rebates)
+    REFERRAL_REWARD = "REFERRAL_REWARD"  # Observed live 2026-07-28
     YIELD = "YIELD"  # Interest/staking rewards
 
 
