@@ -154,9 +154,10 @@ class LastTradePriceMessage:
     market: str
     price: str
     side: str  # "BUY" or "SELL"
-    size: str
-    fee_rate_bps: str  # Fee rate in basis points
-    timestamp: str  # Unix milliseconds
+    size: Optional[str] = None
+    fee_rate_bps: Optional[str] = None  # Fee rate in basis points
+    timestamp: Optional[str] = None  # Unix milliseconds
+    transaction_hash: Optional[str] = None
 
 
 # ========== User Channel Messages ==========
@@ -170,6 +171,9 @@ class MakerOrder:
     outcome: str
     owner: str  # API key
     price: str
+    maker_address: Optional[str] = None
+    fee_rate_bps: Optional[str] = None
+    side: Optional[str] = None
 
 
 @dataclass
@@ -194,11 +198,13 @@ class TradeMessage:
     outcome: str
     owner: str  # API key owner
     trade_owner: str  # API key of trade owner
+    trader_side: str  # "TAKER" or "MAKER" for the authenticated user
     taker_order_id: str
     maker_orders: List[MakerOrder]
     timestamp: str
     last_update: str
     matchtime: str
+    fee_rate_bps: Optional[str] = None
 
 
 @dataclass
@@ -262,6 +268,7 @@ def _detect_price_change_schema(data: dict) -> str:
     """
     # Check for v1 indicators (deprecated)
     has_changes = "changes" in data
+    has_root_asset_id = "asset_id" in data
     has_price_changes = "price_changes" in data
 
     if has_changes and not has_price_changes:
@@ -391,7 +398,7 @@ def parse_websocket_message(data: dict) -> Optional[WebSocketMessage]:
         elif event_type == CLOBEventType.LAST_TRADE_PRICE:
             _validate_required_fields(
                 data,
-                ["asset_id", "market", "price", "side", "size", "fee_rate_bps", "timestamp"],
+                ["asset_id", "market", "price", "side"],
                 "LastTradePriceMessage"
             )
             return LastTradePriceMessage(
@@ -400,9 +407,10 @@ def parse_websocket_message(data: dict) -> Optional[WebSocketMessage]:
                 market=data["market"],
                 price=data["price"],
                 side=data["side"],
-                size=data["size"],
-                fee_rate_bps=data["fee_rate_bps"],
-                timestamp=data["timestamp"]
+                size=data.get("size"),
+                fee_rate_bps=data.get("fee_rate_bps"),
+                timestamp=data.get("timestamp"),
+                transaction_hash=data.get("transaction_hash")
             )
 
         # User channel messages
@@ -410,8 +418,8 @@ def parse_websocket_message(data: dict) -> Optional[WebSocketMessage]:
             _validate_required_fields(
                 data,
                 ["type", "id", "asset_id", "market", "status", "side", "size", "price",
-                 "outcome", "owner", "trade_owner", "taker_order_id", "timestamp",
-                 "last_update", "matchtime"],
+                 "outcome", "owner", "trade_owner", "trader_side",
+                 "taker_order_id", "timestamp", "last_update", "matchtime"],
                 "TradeMessage"
             )
             return TradeMessage(
@@ -427,8 +435,10 @@ def parse_websocket_message(data: dict) -> Optional[WebSocketMessage]:
                 outcome=data["outcome"],
                 owner=data["owner"],
                 trade_owner=data["trade_owner"],
+                trader_side=data["trader_side"],
                 taker_order_id=data["taker_order_id"],
                 maker_orders=[MakerOrder(**mo) for mo in data.get("maker_orders", [])],
+                fee_rate_bps=data.get("fee_rate_bps"),
                 timestamp=data["timestamp"],
                 last_update=data["last_update"],
                 matchtime=data["matchtime"]

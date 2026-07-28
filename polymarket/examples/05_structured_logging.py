@@ -87,7 +87,7 @@ async def main():
         )
         return
 
-    client.add_wallet(
+    await client.add_wallet(
         WalletConfig(private_key=private_key),
         wallet_id="strategy1"
     )

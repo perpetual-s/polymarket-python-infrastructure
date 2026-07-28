@@ -22,6 +22,8 @@ from typing import Dict, List, Optional, Tuple
 from web3 import Web3
 from eth_account import Account
 
+from ..config import DEFAULT_POLYGON_RPC_URL
+
 from .addresses import (
     NEG_RISK_ADAPTER,
     CTF_ADDRESS,
@@ -96,7 +98,7 @@ class NegRiskAdapter:
     - Balance pre-checks before transactions
     """
 
-    def __init__(self, web3_provider: str = "https://polygon-rpc.com"):
+    def __init__(self, web3_provider: str = DEFAULT_POLYGON_RPC_URL):
         """
         Initialize NegRiskAdapter wrapper with security validation.
 

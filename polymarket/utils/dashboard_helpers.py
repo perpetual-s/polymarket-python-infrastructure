@@ -1,7 +1,7 @@
 """
 Dashboard helper functions for multi-wallet analytics.
 
-Optimized for Strategy-3's 100+ wallet tracking needs.
+Helpers for multi-wallet dashboards and analysis.
 """
 
 import logging
@@ -283,7 +283,7 @@ def aggregate_multi_wallet_positions(wallet_positions: Dict[str, List[Position]]
     """
     Aggregate positions across multiple wallets.
 
-    Optimized for Strategy-3's 100+ wallet tracking.
+    Optimized for concurrent multi-wallet tracking.
 
     Args:
         wallet_positions: Dict mapping wallet address to positions
@@ -331,7 +331,7 @@ def detect_consensus_signals(
     """
     Detect consensus signals from multiple wallets.
 
-    Strategy-3 specific: Find markets where N+ wallets agree.
+    Find markets where at least N wallets agree.
 
     Args:
         wallet_positions: Dict mapping wallet to positions

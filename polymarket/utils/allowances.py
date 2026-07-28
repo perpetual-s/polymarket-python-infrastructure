@@ -1,7 +1,8 @@
 """
 Token allowance management for Polymarket trading.
 
-EOA wallets must approve USDC and Conditional Token contracts before trading.
+EOA wallets must approve pUSD (CLOB V2 collateral) and Conditional Token
+contracts for the V2 exchanges + neg-risk adapter before trading.
 This module provides utilities to check and set required allowances.
 """
 
@@ -10,11 +11,12 @@ from typing import Dict, List
 from web3 import Web3
 from eth_account import Account
 
+from ..config import DEFAULT_POLYGON_RPC_URL
 from ..exceptions import ValidationError
 from ..ctf.addresses import (
-    USDC_ADDRESS,
+    COLLATERAL_ADDRESS,
     CTF_ADDRESS,
-    EXCHANGE_CONTRACTS,
+    EXCHANGE_CONTRACTS_V2,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ MAX_UINT256 = 2**256 - 1
 class AllowanceManager:
     """Manages token allowances for Polymarket trading."""
 
-    def __init__(self, web3_provider: str = "https://polygon-rpc.com"):
+    def __init__(self, web3_provider: str = DEFAULT_POLYGON_RPC_URL):
         """
         Initialize allowance manager.
 
@@ -62,7 +64,7 @@ class AllowanceManager:
             logger.warning(f"Web3 provider not connected: {web3_provider}")
 
         self.usdc = self.web3.eth.contract(
-            address=Web3.to_checksum_address(USDC_ADDRESS),
+            address=Web3.to_checksum_address(COLLATERAL_ADDRESS),
             abi=ERC20_ABI
         )
         self.ctf = self.web3.eth.contract(
@@ -85,7 +87,7 @@ class AllowanceManager:
         Returns:
             Dict mapping contract addresses to allowance amounts:
             {
-                "USDC": {"0x4bF...": 1000000000, ...},
+                "USDC": {"0x4bF...": 1000000000, ...},  # legacy key; values are pUSD
                 "CTF": {"0x4bF...": 1000000000, ...}
             }
 
@@ -99,10 +101,11 @@ class AllowanceManager:
         result = {}
 
         try:
-            # Check USDC allowances
+            # Check pUSD allowances. The legacy "USDC" result key is retained
+            # for callers, but the contract is COLLATERAL_ADDRESS (pUSD).
             if token_type in ("usdc", "both"):
                 usdc_allowances = {}
-                for exchange in EXCHANGE_CONTRACTS:
+                for exchange in EXCHANGE_CONTRACTS_V2:
                     exchange_addr = Web3.to_checksum_address(exchange)
                     allowance = self.usdc.functions.allowance(
                         wallet,
@@ -115,7 +118,7 @@ class AllowanceManager:
             # Check CTF allowances
             if token_type in ("ctf", "both"):
                 ctf_allowances = {}
-                for exchange in EXCHANGE_CONTRACTS:
+                for exchange in EXCHANGE_CONTRACTS_V2:
                     exchange_addr = Web3.to_checksum_address(exchange)
                     allowance = self.ctf.functions.allowance(
                         wallet,
@@ -208,9 +211,10 @@ class AllowanceManager:
             # Get current nonce
             nonce = self.web3.eth.get_transaction_count(wallet_address)
 
-            # Approve USDC
+            # Approve current collateral (pUSD). ``token_type="usdc"`` is a
+            # backward-compatible argument name retained from CLOB V1.
             if token_type in ("usdc", "both"):
-                for exchange in EXCHANGE_CONTRACTS:
+                for exchange in EXCHANGE_CONTRACTS_V2:
                     exchange_addr = Web3.to_checksum_address(exchange)
 
                     # Build transaction
@@ -240,7 +244,7 @@ class AllowanceManager:
 
             # Approve CTF
             if token_type in ("ctf", "both"):
-                for exchange in EXCHANGE_CONTRACTS:
+                for exchange in EXCHANGE_CONTRACTS_V2:
                     exchange_addr = Web3.to_checksum_address(exchange)
 
                     # Build transaction
@@ -332,7 +336,7 @@ class AllowanceManager:
 
 def check_wallet_ready(
     wallet_address: str,
-    web3_provider: str = "https://polygon-rpc.com"
+    web3_provider: str = DEFAULT_POLYGON_RPC_URL,
 ) -> bool:
     """
     Quick check if wallet is ready for trading.

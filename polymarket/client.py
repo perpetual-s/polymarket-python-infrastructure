@@ -1,28 +1,21 @@
-"""
-Main Polymarket client.
-
-Unified interface for all Polymarket operations across strategies.
-Thread-safe, multi-wallet, production-ready.
-"""
+"""Main async, thread-safe, multi-wallet Polymarket client."""
 
 import asyncio
 import atexit
 import logging
 import re
 import secrets  # For cryptographically secure random nonces
-import signal
-import sys
 import threading
 import time
-from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .api.clob import CLOBAPI
 from .api.clob_public import PublicCLOBAPI
 from .api.data_api import DataAPI
 from .api.gamma import GammaAPI
 from .api.real_time_data import ConnectionStatus, Message, RealTimeDataClient
-from .api.websocket import WebSocketClient
+from .api.websocket import WebSocketClient, WebSocketTelemetrySnapshotV1
 from .auth.authenticator import Authenticator
 from .auth.key_manager import KeyManager, WalletCredentials
 from .config import PolymarketSettings, get_settings
@@ -31,6 +24,7 @@ from .exceptions import (
     AuthenticationError,
     BalanceTrackingError,
     InsufficientBalanceError,
+    is_definitive_order_rejection,
     TimeoutError,
     TradingError,
     ValidationError,
@@ -39,9 +33,12 @@ from .metrics import get_metrics
 from .models import (
     Activity,
     Balance,
+    DataTradesResultV1,
     Event,
+    FeeInfo,
     Holder,
     Market,
+    MarketTradeEventsResultV1,
     MarketOrderRequest,
     Order,
     OrderBook,
@@ -49,6 +46,7 @@ from .models import (
     OrderResponse,
     OrderType,
     Position,
+    PriceHistoryResultV1,
     PricePoint,
     Side,
     Trade,
@@ -56,13 +54,14 @@ from .models import (
 )
 from .trading.order_builder import OrderBuilder
 from .utils.cache import AtomicNonceManager, MarketMetadataCache
+from .utils.numeric import quantize_price
 from .utils.rate_limiter import RateLimiter
 from .utils.retry import CircuitBreaker
 
-logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:
-    from .models import LeaderboardTrader, PortfolioValue
+    from .api.websocket_models import LastTradePriceMessage
+
+logger = logging.getLogger(__name__)
 
 
 class PolymarketClient:
@@ -74,24 +73,14 @@ class PolymarketClient:
     - Automatic rate limiting
     - Retry logic with circuit breaker
     - Typed exceptions
-    - Production-ready
+    - Explicit lifecycle and operational controls
 
     Usage:
         client = PolymarketClient()
-        client.add_wallet(wallet_config, wallet_id="strategy1")
+        await client.add_wallet(wallet_config, wallet_id="primary")
         markets = await client.get_markets(active=True)
-        response = await client.place_order(order, wallet_id="strategy1")
+        response = await client.place_order(order, wallet_id="primary")
     """
-
-    # The installed official py-clob-client v0.28.0 exposes an authenticated
-    # GET /data/order/{order_id}, so an already-known provider order ID can be
-    # reconciled authoritatively.  It does *not* expose a provider-backed
-    # client order ID or idempotency token that is known before POST /order.
-    # Deterministic signing salt is not the same contract: it cannot safely
-    # identify whether an ambiguous submit was accepted without assuming
-    # undocumented provider behavior.
-    supports_authoritative_order_lookup = True
-    supports_preplacement_durable_order_identity = False
 
     def __init__(
         self,
@@ -191,6 +180,16 @@ class PolymarketClient:
             circuit_breaker=self.circuit_breaker,
         )
 
+        # Keyless CLOB market truth uses the public-data breaker even though it
+        # shares CLOB response models/parsers with authenticated trading calls.
+        # Metadata outages must not open the breaker that guards cancel/order.
+        self.market_clob = CLOBAPI(
+            settings=self.settings,
+            authenticator=self.authenticator,
+            rate_limiter=self.rate_limiter,
+            circuit_breaker=self.public_clob_circuit_breaker,
+        )
+
         self.data = DataAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
@@ -211,19 +210,29 @@ class PolymarketClient:
         # Balance monitoring
         self._min_balance_warning = 10.0  # USDC
 
-        # Track inflight orders for graceful shutdown
-        # MEMORY OPTIMIZATION: Bounded deque prevents unbounded growth
+        # Retained for health reporting/API compatibility. Applications own
+        # shutdown and any open-order cancellation policy.
+        # MEMORY OPTIMIZATION: Bounded deque prevents unbounded growth.
         from collections import deque
 
         self._inflight_orders: deque = deque(maxlen=10000)  # Max 10K recent orders
-        self._shutdown_requested = False
 
         # Nonce management (thread-safe atomic counter)
         self._nonce_manager = AtomicNonceManager()
 
         # WebSocket client (lazy initialized)
         self._ws: Optional[WebSocketClient] = None
+        # One CLOB transport owns one endpoint channel. MARKET and USER are
+        # separate Polymarket endpoints, and a USER transport is additionally
+        # bound to one concrete wallet.
+        self._ws_wallet_id: Optional[str] = None
+        self._ws_channel_type: Optional[str] = None
         self._ws_callbacks: Dict[str, List[Callable]] = {}
+        self._ws_callbacks_lock = threading.RLock()
+        self._last_clob_websocket_telemetry_v1 = (
+            WebSocketTelemetrySnapshotV1.disconnected()
+        )
+        self._ws_detach_generation = 0
 
         # Real-Time Data Service client (lazy initialized)
         self._rtds: Optional[RealTimeDataClient] = None
@@ -246,10 +255,9 @@ class PolymarketClient:
         # WebSocket client lock (thread-safe initialization)
         self._ws_lock = threading.Lock()
 
-        # Register cleanup handlers (use sync wrapper for async close)
+        # Best-effort process-exit cleanup. Applications retain ownership of
+        # SIGINT/SIGTERM and should await close() from their shutdown path.
         atexit.register(self._close_sync)
-        signal.signal(signal.SIGTERM, self._shutdown_handler)
-        signal.signal(signal.SIGINT, self._shutdown_handler)
 
         logger.info("Polymarket client initialized")
 
@@ -601,7 +609,7 @@ class PolymarketClient:
 
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Get order book for token."""
-        return await self.clob.get_orderbook(token_id)
+        return await self.market_clob.get_orderbook(token_id)
 
     async def get_midpoint(self, token_id: str) -> Optional[float]:
         """
@@ -613,11 +621,11 @@ class PolymarketClient:
         Returns:
             Midpoint price or None if unavailable
         """
-        return await self.clob.get_midpoint(token_id)
+        return await self.market_clob.get_midpoint(token_id)
 
     async def get_price(self, token_id: str, side: Side) -> Optional[float]:
         """Get price for token on specific side."""
-        return await self.clob.get_price(token_id, side.value)
+        return await self.market_clob.get_price(token_id, side.value)
 
     async def get_last_trade_price(self, token_id: str) -> Optional[float]:
         """
@@ -625,7 +633,7 @@ class PolymarketClient:
 
         Faster than fetching full orderbook when you only need last price.
         """
-        return await self.clob.get_last_trade_price(token_id)
+        return await self.market_clob.get_last_trade_price(token_id)
 
     async def get_last_trades_prices(self, token_ids: List[str]) -> Dict[str, Optional[float]]:
         """
@@ -633,7 +641,7 @@ class PolymarketClient:
 
         Batch endpoint - more efficient than individual calls.
         """
-        return await self.clob.get_last_trades_prices(token_ids)
+        return await self.market_clob.get_last_trades_prices(token_ids)
 
     async def get_server_time(self) -> int:
         """
@@ -641,7 +649,7 @@ class PolymarketClient:
 
         Use for GTD order validation and clock synchronization.
         """
-        return await self.clob.get_server_time()
+        return await self.market_clob.get_server_time()
 
     async def get_ok(self) -> bool:
         """
@@ -649,7 +657,7 @@ class PolymarketClient:
 
         Returns True if CLOB server is operational.
         """
-        return await self.clob.get_ok()
+        return await self.market_clob.get_ok()
 
     async def get_simplified_markets(self, next_cursor: str = "MA==") -> Dict[str, Any]:
         """
@@ -657,7 +665,7 @@ class PolymarketClient:
 
         Lightweight alternative to full market queries.
         """
-        return await self.clob.get_simplified_markets(next_cursor)
+        return await self.market_clob.get_simplified_markets(next_cursor)
 
     # ========== Public CLOB API (New Methods) ==========
 
@@ -797,7 +805,10 @@ class PolymarketClient:
 
     async def get_market_trades_events(self, condition_id: str) -> List[Dict[str, Any]]:
         """
-        Get trade events for a market.
+        Compatibility-only list facade for trade events.
+
+        API-B and provenance-sensitive consumers must use
+        :meth:`get_market_trades_events_result_v1`.
 
         Public endpoint.
 
@@ -809,6 +820,12 @@ class PolymarketClient:
         """
         return await self.public_clob.get_market_trades_events(condition_id)
 
+    async def get_market_trades_events_result_v1(
+        self, condition_id: str
+    ) -> MarketTradeEventsResultV1:
+        """Truthful public CLOB market-trade result with provenance and counts."""
+        return await self.public_clob.get_market_trades_events_result_v1(condition_id)
+
     async def get_prices_history(
         self,
         token_id: str,
@@ -817,9 +834,59 @@ class PolymarketClient:
         end_ts: Optional[int] = None,
         fidelity: Optional[int] = None,
     ) -> List[PricePoint]:
-        """Keyless historical prices for one outcome token (public CLOB)."""
+        """Compatibility-only list facade for public CLOB price history.
+
+        API-B and Gate V must use :meth:`get_prices_history_result_v1`.
+        """
         return await self.public_clob.get_prices_history(
             token_id, interval=interval, start_ts=start_ts, end_ts=end_ts, fidelity=fidelity
+        )
+
+    async def get_prices_history_result_v1(
+        self,
+        token_id: str,
+        interval: Optional[str] = None,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        fidelity: Optional[int] = None,
+    ) -> PriceHistoryResultV1:
+        """Truthful versioned price-history result for one outcome token."""
+        return await self.public_clob.get_prices_history_result_v1(
+            token_id,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            fidelity=fidelity,
+        )
+
+    async def get_market_trades_result_v1(
+        self,
+        market: Optional[str] = None,
+        *,
+        user: Optional[str] = None,
+        event_id: Optional[str] = None,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+        limit: int = 100,
+        offset: int = 0,
+        taker_only: bool = True,
+        filter_type: Optional[str] = None,
+        filter_amount: Optional[float] = None,
+        side: Optional[Side] = None,
+    ) -> DataTradesResultV1:
+        """Truthful Data ``/trades`` result for public wallet/market flow."""
+        return await self.data.get_trades_result_v1(
+            user=user,
+            market=market,
+            event_id=event_id,
+            start=start,
+            end=end,
+            limit=limit,
+            offset=offset,
+            taker_only=taker_only,
+            filter_type=filter_type,
+            filter_amount=filter_amount,
+            side=side,
         )
 
     async def get_market_trades(
@@ -833,7 +900,11 @@ class PolymarketClient:
         filter_amount: Optional[float] = None,
         side: Optional[Side] = None,
     ) -> List[Trade]:
-        """Keyless market-wide recent trades (Data API /trades with user=None)."""
+        """Compatibility-only keyless Data ``/trades`` list facade.
+
+        API-B and provenance-sensitive consumers must use
+        :meth:`get_market_trades_result_v1`.
+        """
         return await self.data.get_trades(
             user=None,
             market=market,
@@ -857,6 +928,14 @@ class PolymarketClient:
                 f"Invalid wallet address: {address!r} (expected '0x' followed by 40 hex characters)"
             )
         return await self.data.get_activity(user=address, **kwargs)
+
+    async def get_address_positions(self, address: str, **kwargs) -> List[Position]:
+        """Keyless open positions for an arbitrary wallet address."""
+        if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            raise ValueError(
+                f"Invalid wallet address: {address!r} (expected '0x' followed by 40 hex characters)"
+            )
+        return await self.data.get_positions(user=address, **kwargs)
 
     async def get_market_trades_window(
         self,
@@ -892,20 +971,68 @@ class PolymarketClient:
 
     async def is_order_scoring(self, order_id: str) -> bool:
         """
-        Check if order earns maker rebates (Strategy-4 enhancement).
+        Check the exchange's current rewards-program scoring status.
 
-        Returns True if order is earning 2% maker rebates on Polymarket.
+        A true result does not prove a fixed rebate, fill, or future reward.
         """
         return await self.clob.is_order_scoring(order_id)
 
     async def are_orders_scoring(self, order_ids: List[str]) -> Dict[str, bool]:
         """
-        Check if multiple orders earn maker rebates (Strategy-4 enhancement).
+        Check current rewards-program scoring for multiple orders.
 
         Batch version of is_order_scoring().
         Returns dict mapping order_id to scoring status.
         """
         return await self.clob.are_orders_scoring(order_ids)
+
+    async def get_fee_rate_bps(self, token_id: str) -> int:
+        """Return the CLOB protocol base-fee value used for order metadata."""
+        return await self._resolve_fee_rate(token_id)
+
+    async def get_tick_size(self, token_id: str) -> Decimal:
+        """Return the authoritative minimum price tick for a token."""
+        return Decimal(str(await self._resolve_tick_size(token_id)))
+
+    async def get_fee_info(self, token_id: str) -> FeeInfo:
+        """Return complete economic fee metadata for sizing and P&L.
+
+        CLOB V2 ``/clob-markets/{condition_id}`` ``fd`` is the authoritative
+        runtime curve, matching the official V2 SDK. Gamma ``feeSchedule`` is
+        still represented on :class:`Market`, but is not substituted when the
+        order-facing CLOB metadata is unavailable.
+        """
+        cached = self.metadata_cache.get_fee_info(token_id)
+        if cached is not None:
+            return cached
+
+        base_fee_bps, schedule = await asyncio.gather(
+            self._resolve_fee_rate(token_id),
+            self.market_clob.get_fee_schedule(token_id),
+        )
+        if schedule is None:
+            if base_fee_bps > 0:
+                raise TradingError(
+                    f"Token {token_id} has base_fee={base_fee_bps} but no CLOB fd schedule"
+                )
+            fee_info = FeeInfo(base_fee_bps=base_fee_bps, rate_bps=0)
+        else:
+            rate_bps_decimal = schedule.rate * Decimal("10000")
+            if rate_bps_decimal != rate_bps_decimal.to_integral_value():
+                raise TradingError(
+                    f"Fee rate for token {token_id} is not representable in bps: "
+                    f"{schedule.rate}"
+                )
+            fee_info = FeeInfo(
+                base_fee_bps=base_fee_bps,
+                rate_bps=int(rate_bps_decimal),
+                exponent=schedule.exponent,
+                taker_only=schedule.taker_only,
+                rebate_rate=schedule.rebate_rate,
+            )
+
+        self.metadata_cache.set_fee_info(token_id, fee_info)
+        return fee_info
 
     # ========== Trading Operations ==========
 
@@ -915,6 +1042,9 @@ class PolymarketClient:
         wallet_id: Optional[str] = None,
         skip_balance_check: bool = False,
         idempotency_key: Optional[str] = None,
+        pre_submit: Optional[Callable[[str, Decimal], Awaitable[None]]] = None,
+        timestamp_ms: Optional[int] = None,
+        tick_size: Optional[Decimal] = None,
     ) -> OrderResponse:
         """
         Place limit order with balance monitoring.
@@ -923,8 +1053,12 @@ class PolymarketClient:
             order: Order request
             wallet_id: Wallet to use (uses default if not specified)
             skip_balance_check: Skip pre-flight balance check
-            idempotency_key: Optional key for deterministic order hash
-                           (prevents duplicate orders on retry)
+            idempotency_key: Optional key for deterministic salt generation.
+                Rebuilding the same V2 order also requires the same
+                ``timestamp_ms`` and order payload.
+            timestamp_ms: Optional fixed creation timestamp in milliseconds.
+                Reuse it with ``idempotency_key`` when a caller rebuilds an
+                order on retry.
 
         Returns:
             Order response
@@ -934,11 +1068,21 @@ class PolymarketClient:
             InsufficientBalanceError: If insufficient balance
             OrderRejectedError: If order is rejected
         """
+        # Resolve the default once for the complete placement lifecycle. If the
+        # process default changes concurrently, authentication, reservation,
+        # submission, and cleanup must still refer to the same wallet.
+        wallet_id = self._resolve_wallet_id(wallet_id)
         start_time = time.time()
 
-        # Tentative BUY reservation that should be released if submission fails.
+        # Tentative BUY reservation. Once the deterministic identity is durably
+        # persisted by pre_submit, an ambiguous transport outcome must retain it
+        # until exact reconciliation proves a terminal result.
         reserved_for_cleanup = Decimal("0")
         buy_pre_reserved = False
+        pre_submit_started = False
+        submission_started = False
+        fee_info: Optional[FeeInfo] = None
+        resolved_tick_size: Optional[Decimal] = None
 
         try:
             credentials = self.key_manager.get_wallet(wallet_id)
@@ -957,20 +1101,73 @@ class PolymarketClient:
                 min_size=self.settings.min_order_size,
             )
 
+            resolved_tick_size = (
+                Decimal(str(tick_size))
+                if tick_size is not None
+                else Decimal(str(await self._resolve_tick_size(order.token_id)))
+            )
+            order = self._normalize_order_for_tick(order, resolved_tick_size)
+
+            # Complete economic fee metadata is part of the order-facing market
+            # truth for both sides. A SELL must not bypass an unavailable fd
+            # schedule merely because it has no collateral fee calculation.
+            fee_info = await self.get_fee_info(order.token_id)
+
             # Pre-flight balance check
-            if not skip_balance_check:
-                if order.side == Side.BUY:
+            if order.side == Side.BUY:
+                if not skip_balance_check:
                     reserved_for_cleanup = await self._check_and_reserve_buy_balance(
-                        order, wallet_id
+                        order, wallet_id, fee_info=fee_info
                     )
-                    buy_pre_reserved = True
                 else:
-                    await self._check_balance(order, wallet_id)
+                    reserved_for_cleanup = self._calculate_buy_collateral(
+                        order,
+                        fee_rate_bps=fee_info.rate_bps,
+                        fee_exponent=fee_info.exponent,
+                    )
+                    await self._reserve_balance(
+                        reserved_for_cleanup,
+                        wallet_id,
+                    )
+                buy_pre_reserved = True
+            elif not skip_balance_check:
+                await self._check_balance(order, wallet_id)
 
             # Build and sign order
-            signed_order = await self._build_signed_order(order, credentials, idempotency_key)
+            signed_order = await self._build_signed_order(
+                order,
+                credentials,
+                idempotency_key,
+                timestamp_ms=timestamp_ms,
+                tick_size=resolved_tick_size,
+            )
+            expected_order_hash = signed_order.get("_orderHash")
+
+            # Persist-before-submit hook (core-loop B2): the V2 EIP-712 order
+            # hash IS the exchange orderID and is known before submission.
+            # Callers persist it here so a crash between submit and response
+            # can neither double-place nor orphan silently (startup orphan
+            # recovery adjudicates by this id). A raising hook aborts the
+            # placement before anything reaches the exchange.
+            if pre_submit is not None:
+                order_hash = expected_order_hash
+                if not isinstance(order_hash, str) or not order_hash:
+                    raise TradingError(
+                        "Signed order is missing the deterministic order hash"
+                    )
+                pre_submit_started = True
+                try:
+                    await pre_submit(order_hash, reserved_for_cleanup)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A completed callback is the durability boundary. A normal
+                    # callback failure aborts before transport and is releasable.
+                    pre_submit_started = False
+                    raise
 
             # Submit order
+            submission_started = True
             response = await self.clob.post_order(
                 signed_order=signed_order,
                 address=credentials.address,
@@ -979,11 +1176,37 @@ class PolymarketClient:
                 api_passphrase=credentials.api_passphrase,
                 order_type=order.order_type.value,
             )
+            if response.success:
+                if not isinstance(expected_order_hash, str) or not expected_order_hash:
+                    raise TradingError(
+                        "Signed order is missing its local deterministic order hash"
+                    )
+                if not response.order_id:
+                    raise TradingError(
+                        "Successful order response is missing the deterministic order ID"
+                    )
+                if response.order_id.lower() != expected_order_hash.lower():
+                    raise TradingError(
+                        "Exchange order ID does not match the deterministic "
+                        "local order hash"
+                    )
+            elif response.definitive_rejection is not True:
+                raise TradingError(
+                    "Unsuccessful order response was not a definitive rejection"
+                )
 
             if order.side == Side.BUY:
                 if response.success and response.order_id:
                     if not buy_pre_reserved:
-                        reserved_amount = self._calculate_buy_collateral(order)
+                        if fee_info is None:
+                            raise TradingError(
+                                f"Missing BUY fee metadata for {order.token_id}"
+                            )
+                        reserved_amount = self._calculate_buy_collateral(
+                            order,
+                            fee_rate_bps=fee_info.rate_bps,
+                            fee_exponent=fee_info.exponent,
+                        )
                         await self._reserve_balance(reserved_amount, wallet_id, response.order_id)
                         reserved_for_cleanup = reserved_amount
 
@@ -1009,13 +1232,47 @@ class PolymarketClient:
 
             return response
 
-        except Exception as e:
-            # CRITICAL FIX: Release reserved balance if we reserved it before the error
-            # This prevents balance leaks if code after reservation fails
-            if reserved_for_cleanup > Decimal("0"):
+        except asyncio.CancelledError:
+            # asyncio.wait_for() cancels this coroutine on an ambiguous submit
+            # timeout. CancelledError is a BaseException, so the generic error
+            # cleanup below never runs unless it is handled explicitly.
+            if (
+                reserved_for_cleanup > Decimal("0")
+                and not pre_submit_started
+                and not submission_started
+            ):
                 await self.release_reserved_balance(reserved_for_cleanup, wallet_id)
                 logger.warning(
-                    f"Released ${reserved_for_cleanup:.2f} reserved balance due to exception: {e}"
+                    f"Released ${reserved_for_cleanup:.2f} reserved balance after cancelled submission"
+                )
+                reserved_for_cleanup = Decimal("0")
+            elif reserved_for_cleanup > Decimal("0"):
+                logger.warning(
+                    "Retaining $%.2f reservation for durably persisted ambiguous order",
+                    reserved_for_cleanup,
+                )
+            raise
+        except Exception as e:
+            definitive_rejection = is_definitive_order_rejection(e)
+            if reserved_for_cleanup > Decimal("0") and (
+                (
+                    not pre_submit_started
+                    and not submission_started
+                )
+                or definitive_rejection
+            ):
+                await self.release_reserved_balance(reserved_for_cleanup, wallet_id)
+                logger.warning(
+                    f"Released ${reserved_for_cleanup:.2f} reserved balance due to "
+                    f"{'definitive rejection' if definitive_rejection else 'exception'}: {e}"
+                )
+                reserved_for_cleanup = Decimal("0")
+            elif reserved_for_cleanup > Decimal("0"):
+                logger.warning(
+                    "Retaining $%.2f reservation after ambiguous error for durably "
+                    "persisted order: %s",
+                    reserved_for_cleanup,
+                    e,
                 )
 
             self.metrics.track_order(
@@ -1044,7 +1301,9 @@ class PolymarketClient:
             market_order: Market order request
             wallet_id: Wallet to use
             skip_balance_check: Skip pre-flight balance check
-            idempotency_key: Optional key for deterministic order hash
+            idempotency_key: Optional deterministic salt input. This method
+                recomputes the executable order from the current book, so it
+                does not promise the same order hash across separate calls.
 
         Returns:
             Order response
@@ -1085,9 +1344,10 @@ class PolymarketClient:
             cumulative = Decimal("0")
             market_price = Decimal("0")
             for level in orderbook.asks:  # Already sorted low to high
-                level_value = level.price * level.size
+                level_price, level_size = level
+                level_value = level_price * level_size
                 cumulative += level_value
-                market_price = level.price
+                market_price = level_price
                 if cumulative >= market_order.amount:
                     break
 
@@ -1111,8 +1371,9 @@ class PolymarketClient:
             cumulative_tokens = Decimal("0")
             market_price = Decimal("0")
             for level in orderbook.bids:  # Already sorted high to low
-                cumulative_tokens += level.size
-                market_price = level.price
+                level_price, level_size = level
+                cumulative_tokens += level_size
+                market_price = level_price
                 if cumulative_tokens >= market_order.amount:
                     break
 
@@ -1152,6 +1413,7 @@ class PolymarketClient:
             wallet_id=wallet_id,
             skip_balance_check=skip_balance_check,
             idempotency_key=idempotency_key,
+            tick_size=orderbook.tick_size,
         )
 
     async def release_reserved_balance(
@@ -1184,13 +1446,6 @@ class PolymarketClient:
             if not isinstance(amount, Decimal):
                 amount = Decimal(str(amount))
 
-            if not amount.is_finite() or amount < Decimal("0"):
-                raise BalanceTrackingError(
-                    f"Release amount must be finite and non-negative: {amount}"
-                )
-            if amount == Decimal("0"):
-                return
-
             # Check for over-release (raise instead of silent clamping)
             if amount > current:
                 raise BalanceTrackingError(
@@ -1205,54 +1460,6 @@ class PolymarketClient:
                 f"Released ${amount:.2f} for order {order_id or 'unknown'} "
                 f"(remaining reserved: ${self._reserved_balances[wallet_key]:.2f})"
             )
-
-    async def restore_reserved_balance(
-        self,
-        amount: Decimal,
-        wallet_id: Optional[str] = None,
-    ) -> None:
-        """Restore the durable reservation projection during startup.
-
-        The caller's durable order ledger is authoritative across process
-        restarts.  This setter is intentionally one-shot: replacing a non-zero
-        runtime projection could erase a provisional BUY reservation that has
-        not yet reached durable storage.
-        """
-        try:
-            restored = Decimal(str(amount))
-        except Exception as error:
-            raise BalanceTrackingError(
-                f"Reserved balance must be a finite Decimal: {amount!r}"
-            ) from error
-        if not restored.is_finite() or restored < Decimal("0"):
-            raise BalanceTrackingError(
-                f"Reserved balance must be finite and non-negative: {restored}"
-            )
-
-        async with self._balance_lock:
-            wallet_key = self._wallet_key(wallet_id)
-            current = Decimal(str(self._reserved_balances.get(wallet_key, 0)))
-            if current not in {Decimal("0"), restored}:
-                raise BalanceTrackingError(
-                    f"Cannot replace active reservation projection for wallet "
-                    f"{wallet_key}: current=${current}, durable=${restored}"
-                )
-            self._reserved_balances[wallet_key] = restored
-
-        logger.info(
-            "Restored $%.2f durable reserved balance for wallet %s",
-            restored,
-            wallet_key,
-        )
-
-    async def reapply_reserved_balance(
-        self,
-        amount: Decimal,
-        wallet_id: Optional[str] = None,
-        order_id: Optional[str] = None,
-    ) -> None:
-        """Compensate a local release when its durable transaction rolls back."""
-        await self._reserve_balance(amount, wallet_id=wallet_id, order_id=order_id)
 
     async def get_reserved_balance(self, wallet_id: Optional[str] = None) -> Decimal:
         """
@@ -1270,13 +1477,84 @@ class PolymarketClient:
             current = self._reserved_balances.get(wallet_key, 0)
             return Decimal(str(current)) if not isinstance(current, Decimal) else current
 
-    def _wallet_key(self, wallet_id: Optional[str]) -> str:
-        """Normalize wallet identifier for balance tracking."""
-        return wallet_id or "default"
+    async def restore_reserved_balance(
+        self,
+        amount: Decimal,
+        wallet_id: Optional[str] = None,
+    ) -> None:
+        """Replace the process-local reservation with the durable ledger total."""
+        restored = Decimal(str(amount))
+        if not restored.is_finite() or restored < Decimal("0"):
+            raise BalanceTrackingError(
+                f"Invalid durable reserved balance: {restored}"
+            )
+        async with self._balance_lock:
+            self._reserved_balances[self._wallet_key(wallet_id)] = restored
 
-    def _calculate_buy_collateral(self, order: OrderRequest) -> Decimal:
-        """Calculate USD collateral required for a BUY order."""
-        return Decimal(str(order.size)) * Decimal(str(order.price))
+    def _resolve_wallet_id(self, wallet_id: Optional[str]) -> str:
+        """Resolve the optional facade alias to KeyManager's concrete wallet ID."""
+        if wallet_id is not None:
+            return wallet_id
+
+        default_wallet = self.key_manager.get_default_wallet()
+        if default_wallet is None:
+            raise AuthenticationError("No wallets configured")
+        return default_wallet
+
+    def _wallet_key(self, wallet_id: Optional[str]) -> str:
+        """Return the concrete wallet ID used for process-local balance tracking."""
+        return self._resolve_wallet_id(wallet_id)
+
+    def _calculate_buy_collateral(
+        self,
+        order: OrderRequest,
+        *,
+        fee_rate_bps: int = 0,
+        fee_exponent: Decimal = Decimal("1"),
+    ) -> Decimal:
+        """Calculate BUY collateral including the market's taker-fee curve."""
+        from .utils.fees import calculate_net_cost
+
+        notional = Decimal(str(order.size)) * Decimal(str(order.price))
+        total, _ = calculate_net_cost(
+            Side.BUY,
+            Decimal(str(order.price)),
+            notional,
+            fee_rate_bps,
+            fee_exponent,
+        )
+        return total
+
+    @staticmethod
+    def _normalize_order_for_tick(
+        order: OrderRequest,
+        tick_size: Decimal,
+    ) -> OrderRequest:
+        """Align a computed order price to its live tick before any sizing."""
+        # Stay inside the caller's adverse-price bound: BUY may round down and
+        # SELL may round up, never the other way around.
+        rounding = ROUND_FLOOR if order.side == Side.BUY else ROUND_CEILING
+        price = quantize_price(
+            Decimal(str(order.price)),
+            tick_size,
+            rounding=rounding,
+        )
+        maximum = Decimal("1") - tick_size
+        if order.side == Side.BUY:
+            if price < tick_size:
+                raise ValidationError(
+                    f"No valid tick price is at or below BUY limit {order.price}"
+                )
+            price = min(maximum, price)
+        else:
+            if price > maximum:
+                raise ValidationError(
+                    f"No valid tick price is at or above SELL limit {order.price}"
+                )
+            price = max(tick_size, price)
+        if price == order.price:
+            return order
+        return order.model_copy(update={"price": price})
 
     async def _reserve_balance(
         self, amount: Decimal, wallet_id: Optional[str] = None, order_id: Optional[str] = None
@@ -1290,13 +1568,6 @@ class PolymarketClient:
 
             if not isinstance(amount, Decimal):
                 amount = Decimal(str(amount))
-
-            if not amount.is_finite() or amount < Decimal("0"):
-                raise BalanceTrackingError(
-                    f"Reservation amount must be finite and non-negative: {amount}"
-                )
-            if amount == Decimal("0"):
-                return
 
             self._reserved_balances[wallet_key] = current + amount
 
@@ -1317,6 +1588,8 @@ class PolymarketClient:
         self,
         order: OrderRequest,
         wallet_id: Optional[str],
+        *,
+        fee_info: Optional[FeeInfo] = None,
     ) -> Decimal:
         """
         Atomically validate and reserve BUY collateral.
@@ -1325,8 +1598,14 @@ class PolymarketClient:
         and the later reservation update for concurrent BUY orders.
         """
         try:
+            if fee_info is None:
+                fee_info = await self.get_fee_info(order.token_id)
             balance = await self.get_balances(wallet_id=wallet_id)
-            required = self._calculate_buy_collateral(order)
+            required = self._calculate_buy_collateral(
+                order,
+                fee_rate_bps=fee_info.rate_bps,
+                fee_exponent=fee_info.exponent,
+            )
 
             async with self._balance_lock:
                 wallet_key = self._wallet_key(wallet_id)
@@ -1360,41 +1639,35 @@ class PolymarketClient:
         CRITICAL FIX: Accounts for reserved balance (pending orders) to prevent over-ordering.
         """
         try:
-            balance = await self.get_balances(wallet_id=wallet_id)
-
-            # Get reserved balance for this wallet (now returns Decimal)
-            reserved = await self.get_reserved_balance(wallet_id)
-
-            if order.side == Side.BUY:
-                # BUY: Need size * price USDC (size is in tokens, price is per token)
-                required = self._calculate_buy_collateral(order)
-                available = Decimal(str(balance.collateral)) - reserved
-
-                if available < required:
-                    raise InsufficientBalanceError(
-                        f"Insufficient available USDC: need {required:.2f}, "
-                        f"have {available:.2f} (total: {balance.collateral:.2f}, reserved: {reserved:.2f})"
-                    )
-            else:
-                # SELL: Query position balance from CLOB positions API
-                # NOTE: On-chain CONDITIONAL balance often shows 0 due to Polymarket's
-                # batched settlement. The positions API reflects CLOB's internal accounting
-                # which is what matters for order placement.
-                token_balance = await self.get_position_balance(
-                    token_id=order.token_id, wallet_id=wallet_id
+            if order.side == Side.SELL:
+                token_balance = await self.get_token_balance(
+                    token_id=order.token_id,
+                    wallet_id=wallet_id,
                 )
-
-                # CRITICAL: OrderRequest.size is ALREADY in tokens (not USD)
-                # This is consistent with py-clob-client OrderArgs.size semantics
-                tokens_needed = order.size
-
-                # Use small tolerance (1%) for Decimal precision issues
-                tolerance = Decimal("0.01")
-                if token_balance < tokens_needed * (Decimal("1") - tolerance):
+                tokens_needed = Decimal(str(order.size))
+                if token_balance < tokens_needed:
                     raise InsufficientBalanceError(
                         f"Insufficient position balance: need {tokens_needed:.2f} tokens, "
                         f"have {token_balance:.2f} tokens"
                     )
+                return
+
+            balance = await self.get_balances(wallet_id=wallet_id)
+            reserved = await self.get_reserved_balance(wallet_id)
+            fee_info = await self.get_fee_info(order.token_id)
+            required = self._calculate_buy_collateral(
+                order,
+                fee_rate_bps=fee_info.rate_bps,
+                fee_exponent=fee_info.exponent,
+            )
+            available = Decimal(str(balance.collateral)) - reserved
+
+            if available < required:
+                raise InsufficientBalanceError(
+                    f"Insufficient available USDC: need {required:.2f}, "
+                    f"have {available:.2f} (total: {balance.collateral:.2f}, "
+                    f"reserved: {reserved:.2f})"
+                )
 
             if balance.collateral < self._min_balance_warning:
                 logger.warning(f"Low balance: {balance.collateral:.2f} USDC")
@@ -1406,32 +1679,43 @@ class PolymarketClient:
         self._set_balance_metric(wallet_id, Decimal(str(balance.collateral)))
 
     async def _check_batch_balance(
-        self, orders: List[OrderRequest], wallet_id: Optional[str]
-    ) -> None:
-        """Pre-flight balance check for batched orders."""
+        self,
+        orders: List[OrderRequest],
+        wallet_id: Optional[str],
+        *,
+        fee_info_by_token: Optional[Dict[str, FeeInfo]] = None,
+    ) -> List[Decimal]:
+        """Validate a batch and atomically reserve its fee-inclusive BUY collateral."""
         if not orders:
-            return
+            return []
 
         try:
-            balance = await self.get_balances(wallet_id=wallet_id)
-            reserved = await self.get_reserved_balance(wallet_id)
-
-            buy_collateral = sum(
-                (
-                    self._calculate_buy_collateral(order)
-                    for order in orders
-                    if order.side == Side.BUY
-                ),
-                Decimal("0"),
-            )
-            available_collateral = Decimal(str(balance.collateral)) - reserved
-
-            if available_collateral < buy_collateral:
-                raise InsufficientBalanceError(
-                    f"Insufficient available USDC for batch: need {buy_collateral:.2f}, "
-                    f"have {available_collateral:.2f} "
-                    f"(total: {balance.collateral:.2f}, reserved: {reserved:.2f})"
+            if fee_info_by_token is None:
+                buy_tokens = list(
+                    dict.fromkeys(
+                        order.token_id for order in orders if order.side == Side.BUY
+                    )
                 )
+                fee_infos = await asyncio.gather(
+                    *(self.get_fee_info(token_id) for token_id in buy_tokens)
+                )
+                fee_info_by_token = dict(zip(buy_tokens, fee_infos))
+            buy_reservations = [
+                (
+                    self._calculate_buy_collateral(
+                        order,
+                        fee_rate_bps=fee_info_by_token[order.token_id].rate_bps,
+                        fee_exponent=fee_info_by_token[order.token_id].exponent,
+                    )
+                    if order.side == Side.BUY
+                    else Decimal("0")
+                )
+                for order in orders
+            ]
+            buy_collateral = sum(buy_reservations, Decimal("0"))
+            balance: Optional[Balance] = None
+            if buy_collateral > Decimal("0"):
+                balance = await self.get_balances(wallet_id=wallet_id)
 
             sell_requirements: Dict[str, Decimal] = {}
             for order in orders:
@@ -1441,31 +1725,60 @@ class PolymarketClient:
                     order.token_id, Decimal("0")
                 ) + Decimal(str(order.size))
 
-            tolerance = Decimal("0.01")
             for token_id, tokens_needed in sell_requirements.items():
-                token_balance = await self.get_position_balance(
+                token_balance = await self.get_token_balance(
                     token_id=token_id, wallet_id=wallet_id
                 )
-                if token_balance < tokens_needed * (Decimal("1") - tolerance):
+                if token_balance < tokens_needed:
                     raise InsufficientBalanceError(
                         f"Insufficient position balance for batch: token {token_id} "
                         f"needs {tokens_needed:.2f}, have {token_balance:.2f}"
                     )
 
-            if balance.collateral < self._min_balance_warning:
+            # The exchange balance read can happen outside the local lock, but
+            # the availability comparison and reservation update cannot.
+            if balance is not None:
+                async with self._balance_lock:
+                    wallet_key = self._wallet_key(wallet_id)
+                    reserved = self._reserved_balances.get(
+                        wallet_key, Decimal("0")
+                    )
+                    if not isinstance(reserved, Decimal):
+                        reserved = Decimal(str(reserved))
+                    available_collateral = (
+                        Decimal(str(balance.collateral)) - reserved
+                    )
+                    if available_collateral < buy_collateral:
+                        raise InsufficientBalanceError(
+                            "Insufficient available USDC for batch: "
+                            f"need {buy_collateral:.2f}, "
+                            f"have {available_collateral:.2f} "
+                            f"(total: {balance.collateral:.2f}, "
+                            f"reserved: {reserved:.2f})"
+                        )
+                    self._reserved_balances[wallet_key] = (
+                        reserved + buy_collateral
+                    )
+
+            if balance is not None and balance.collateral < self._min_balance_warning:
                 logger.warning(f"Low balance: {balance.collateral:.2f} USDC")
         except InsufficientBalanceError:
             raise
         except Exception as exc:
             raise TradingError(f"Batch balance preflight failed: {exc}") from exc
 
-        self._set_balance_metric(wallet_id, Decimal(str(balance.collateral)))
+        if balance is not None:
+            self._set_balance_metric(wallet_id, Decimal(str(balance.collateral)))
+        return buy_reservations
 
     async def _build_signed_order(
         self,
         order: OrderRequest,
         credentials: WalletCredentials,
         idempotency_key: Optional[str] = None,
+        *,
+        timestamp_ms: Optional[int] = None,
+        tick_size: Optional[Decimal] = None,
     ) -> dict:
         """
         Build and sign order.
@@ -1476,8 +1789,9 @@ class PolymarketClient:
         Args:
             order: Order request
             credentials: Wallet credentials
-            idempotency_key: Optional key for deterministic salt generation
-                           (prevents duplicate orders on retry)
+            idempotency_key: Optional key for deterministic salt generation.
+                Full V2 retry identity also requires the same timestamp and
+                order payload.
 
         Returns:
             Signed order dict
@@ -1492,7 +1806,8 @@ class PolymarketClient:
         nonce = 0
 
         # Resolve tick size from API (Phase 6 enhancement)
-        tick_size = await self._resolve_tick_size(order.token_id)
+        if tick_size is None:
+            tick_size = Decimal(str(await self._resolve_tick_size(order.token_id)))
 
         # Resolve fee rate from API (Phase 6 enhancement)
         fee_rate_bps = await self._resolve_fee_rate(order.token_id)
@@ -1512,6 +1827,7 @@ class PolymarketClient:
             idempotency_key=idempotency_key,
             signature_type=int(credentials.signature_type),
             funder=credentials.funder,
+            timestamp_ms=timestamp_ms,
         )
 
         # CRITICAL FIX: Don't increment nonce here - already incremented by get_and_increment()
@@ -1632,42 +1948,22 @@ class PolymarketClient:
         Raises:
             TradingError: If fetch fails
         """
-        # Check cache first
-        cached = self.metadata_cache.get_tick_size(token_id)
-        if cached is not None:
-            logger.debug(f"Using cached tick size {cached} for {token_id}")
-            return cached
-
-        # Fetch from CLOB API
-        try:
-            tick_size = await self.clob.get_tick_size(token_id)
-
-            # Cache it
-            self.metadata_cache.set_tick_size(token_id, tick_size)
-
-            logger.debug(f"Fetched tick size {tick_size} for {token_id}")
-            return tick_size
-
-        except Exception as e:
-            # Fallback to default if API fails
-            logger.warning(f"Failed to fetch tick size for {token_id}, using default: {e}")
-            default_tick_size = 0.01
-            self.metadata_cache.set_tick_size(token_id, default_tick_size)
-            return default_tick_size
+        # Tick sizes can change while a market is live. Always refresh before
+        # an order instead of trusting the general five-minute metadata cache.
+        tick_size = await self.market_clob.get_tick_size(token_id)
+        self.metadata_cache.set_tick_size(token_id, tick_size)
+        logger.debug(f"Fetched tick size {tick_size} for {token_id}")
+        return tick_size
 
     async def _resolve_fee_rate(self, token_id: str) -> int:
         """
         Resolve fee rate for token from CLOB API.
 
-        NOTE: Polymarket has NO trading fees (https://docs.polymarket.com/polymarket-learn/trading/fees).
-        This function exists for order signing compatibility with the CLOB protocol.
-        Always returns 0.
-
         Args:
             token_id: Token ID
 
         Returns:
-            Fee rate in basis points (always 0)
+            CLOB protocol base-fee value
         """
         # Check cache first
         cached = self.metadata_cache.get_fee_rate(token_id)
@@ -1675,22 +1971,10 @@ class PolymarketClient:
             logger.debug(f"Using cached fee rate {cached}bps for {token_id}")
             return cached
 
-        # Fetch from CLOB API (always returns 0 for Polymarket)
-        try:
-            fee_rate_bps = await self.clob.get_fee_rate_bps(token_id)
-
-            # Cache it
-            self.metadata_cache.set_fee_rate(token_id, fee_rate_bps)
-
-            logger.debug(f"Fetched fee rate {fee_rate_bps}bps for {token_id}")
-            return fee_rate_bps
-
-        except Exception as e:
-            # Fallback to default if API fails
-            logger.debug(f"Failed to fetch fee rate for {token_id}, using default 0: {e}")
-            default_fee_rate = 0  # Polymarket has no trading fees
-            self.metadata_cache.set_fee_rate(token_id, default_fee_rate)
-            return default_fee_rate
+        fee_rate_bps = await self.market_clob.get_fee_rate_bps(token_id)
+        self.metadata_cache.set_fee_rate(token_id, fee_rate_bps)
+        logger.debug(f"Fetched fee rate {fee_rate_bps}bps for {token_id}")
+        return fee_rate_bps
 
     async def _resolve_neg_risk(self, token_id: str) -> bool:
         """
@@ -1713,38 +1997,32 @@ class PolymarketClient:
             logger.debug(f"Using cached neg risk {cached} for {token_id}")
             return cached
 
-        # Fetch from CLOB API
-        try:
-            neg_risk = await self.clob.get_neg_risk(token_id)
-
-            # Cache it
-            self.metadata_cache.set_neg_risk(token_id, neg_risk)
-
-            logger.debug(f"Fetched neg risk {neg_risk} for {token_id}")
-            return neg_risk
-
-        except Exception as e:
-            # Fallback to default if API fails
-            logger.warning(f"Failed to fetch neg risk for {token_id}, using default: {e}")
-            default_neg_risk = False
-            self.metadata_cache.set_neg_risk(token_id, default_neg_risk)
-            return default_neg_risk
+        neg_risk = await self.market_clob.get_neg_risk(token_id)
+        self.metadata_cache.set_neg_risk(token_id, neg_risk)
+        logger.debug(f"Fetched neg risk {neg_risk} for {token_id}")
+        return neg_risk
 
     async def place_orders_batch(
         self,
         orders: List[OrderRequest],
         wallet_id: Optional[str] = None,
         skip_balance_check: bool = False,
+        pre_submit: Optional[
+            Callable[[List[tuple[str, Decimal]]], Awaitable[None]]
+        ] = None,
     ) -> List[OrderResponse]:
         """
         Place multiple orders in a single batch request.
 
-        CRITICAL for Strategy-3: 10x faster than sequential orders.
+        Submit multiple orders through the batch endpoint.
 
         Args:
             orders: List of order requests
             wallet_id: Wallet to use (uses default if None)
             skip_balance_check: Skip pre-flight balance validation
+            pre_submit: Optional atomic durability hook receiving every
+                ``(order_hash, BUY reservation)`` before transport. SELL
+                reservations are zero.
 
         Returns:
             List of order responses (one per order)
@@ -1766,7 +2044,12 @@ class PolymarketClient:
         """
         if not orders:
             return []
+        if len(orders) > 15:
+            raise ValidationError(
+                "Polymarket batch placement supports at most 15 orders"
+            )
 
+        wallet_id = self._resolve_wallet_id(wallet_id)
         credentials = self.key_manager.get_wallet(wallet_id)
         if not self.key_manager.has_api_credentials(wallet_id):
             raise AuthenticationError(f"Wallet {wallet_id} has no API credentials")
@@ -1786,54 +2069,210 @@ class PolymarketClient:
             except Exception as e:
                 raise ValidationError(f"Order {idx} invalid: {e}")
 
-        if not skip_balance_check:
-            await self._check_batch_balance(orders, wallet_id)
-
-        # Build and sign all orders
-        signed_orders = []
-        for order in orders:
-            # Note: Batch orders use random salts (no idempotency key)
-            # Each order in a batch is treated as independent
-            signed_order = await self._build_signed_order(order, credentials, idempotency_key=None)
-            signed_orders.append(signed_order)
-
-        # Submit batch
-        responses = await self.clob.post_orders_batch(
-            signed_orders=signed_orders,
-            address=credentials.address,
-            api_key=credentials.api_key,
-            api_secret=credentials.api_secret,
-            api_passphrase=credentials.api_passphrase,
+        all_tokens = list(dict.fromkeys(order.token_id for order in orders))
+        tick_sizes = await asyncio.gather(
+            *(self._resolve_tick_size(token_id) for token_id in all_tokens)
         )
+        tick_size_by_token = {
+            token_id: Decimal(str(tick_size))
+            for token_id, tick_size in zip(all_tokens, tick_sizes)
+        }
+        orders = [
+            self._normalize_order_for_tick(
+                order,
+                tick_size_by_token[order.token_id],
+            )
+            for order in orders
+        ]
 
-        # Track metrics
-        successful = sum(1 for r in responses if r.success)
-        logger.info(f"Batch order placement: {successful}/{len(orders)} successful")
+        fee_infos = await asyncio.gather(
+            *(self.get_fee_info(token_id) for token_id in all_tokens)
+        )
+        fee_info_by_token = dict(zip(all_tokens, fee_infos))
 
-        for order, response in zip(orders, responses):
-            if order.side != Side.BUY or not response.success or not response.order_id:
-                continue
-
-            try:
-                await self._reserve_balance(
-                    self._calculate_buy_collateral(order),
-                    wallet_id=wallet_id,
-                    order_id=response.order_id,
+        buy_reservations: List[Decimal]
+        reserved_for_cleanup = Decimal("0")
+        pre_submit_started = False
+        submission_started = False
+        try:
+            if not skip_balance_check:
+                buy_reservations = await self._check_batch_balance(
+                    orders,
+                    wallet_id,
+                    fee_info_by_token=fee_info_by_token,
                 )
-            except Exception as exc:
+            else:
+                buy_reservations = [
+                    (
+                        self._calculate_buy_collateral(
+                            order,
+                            fee_rate_bps=fee_info_by_token[
+                                order.token_id
+                            ].rate_bps,
+                            fee_exponent=fee_info_by_token[
+                                order.token_id
+                            ].exponent,
+                        )
+                        if order.side == Side.BUY
+                        else Decimal("0")
+                    )
+                    for order in orders
+                ]
+                skipped_check_reservation = sum(
+                    buy_reservations, Decimal("0")
+                )
+                if skipped_check_reservation > Decimal("0"):
+                    await self._reserve_balance(
+                        skipped_check_reservation,
+                        wallet_id=wallet_id,
+                    )
+            reserved_for_cleanup = sum(buy_reservations, Decimal("0"))
+
+            # Build and sign all orders. Until submission starts, every failure
+            # is known local and the tentative reservation is releasable.
+            signed_orders = []
+            for order in orders:
+                signed_order = await self._build_signed_order(
+                    order,
+                    credentials,
+                    idempotency_key=None,
+                    tick_size=tick_size_by_token[order.token_id],
+                )
+                signed_orders.append(signed_order)
+
+            if pre_submit is not None:
+                batch_intents: List[tuple[str, Decimal]] = []
+                for index, (signed_order, reservation) in enumerate(
+                    zip(signed_orders, buy_reservations)
+                ):
+                    order_hash = signed_order.get("_orderHash")
+                    if not isinstance(order_hash, str) or not order_hash:
+                        raise TradingError(
+                            f"Signed batch order {index} is missing its "
+                            "deterministic order hash"
+                        )
+                    batch_intents.append((order_hash, reservation))
+                pre_submit_started = True
+                try:
+                    await pre_submit(batch_intents)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Match single-order placement: a normal failure from the
+                    # atomic hook proves that submission can abort locally,
+                    # while cancellation may have arrived after persistence.
+                    pre_submit_started = False
+                    raise
+
+            submission_started = True
+            responses = await self.clob.post_orders_batch(
+                signed_orders=signed_orders,
+                address=credentials.address,
+                api_key=credentials.api_key,
+                api_secret=credentials.api_secret,
+                api_passphrase=credentials.api_passphrase,
+                order_types=[order.order_type.value for order in orders],
+            )
+
+            if not isinstance(responses, list) or len(responses) != len(orders):
+                raise TradingError(
+                    "Batch submission returned an incomplete response set"
+                )
+            if any(not isinstance(response, OrderResponse) for response in responses):
+                raise TradingError(
+                    "Batch submission returned an invalid response item"
+                )
+
+            # Release only per-item failures the adapter classified as
+            # definitive. Duplicate, delayed, and unknown failures may identify
+            # orders already accepted by the exchange and retain their cap.
+            failed_buy_collateral = sum(
+                (
+                    reservation
+                    for reservation, response in zip(
+                        buy_reservations, responses
+                    )
+                    if (
+                        not response.success
+                        and response.definitive_rejection is True
+                    )
+                ),
+                Decimal("0"),
+            )
+            if failed_buy_collateral > Decimal("0"):
+                await self.release_reserved_balance(
+                    failed_buy_collateral,
+                    wallet_id=wallet_id,
+                )
+                reserved_for_cleanup -= failed_buy_collateral
+
+            for index, (signed_order, response) in enumerate(
+                zip(signed_orders, responses)
+            ):
+                if not response.success:
+                    continue
+                expected_order_id = signed_order.get("_orderHash")
+                if (
+                    not isinstance(expected_order_id, str)
+                    or not expected_order_id
+                ):
+                    raise TradingError(
+                        f"Signed batch order {index} is missing its local order hash"
+                    )
+                if (
+                    not response.order_id
+                    or response.order_id.lower() != expected_order_id.lower()
+                ):
+                    raise TradingError(
+                        f"Batch order {index} exchange ID does not match its "
+                        "precomputed order hash"
+                    )
+
+            successful = sum(1 for response in responses if response.success)
+            logger.info(
+                f"Batch order placement: {successful}/{len(orders)} successful"
+            )
+            return responses
+        except asyncio.CancelledError:
+            if (
+                reserved_for_cleanup > Decimal("0")
+                and not pre_submit_started
+                and not submission_started
+            ):
+                await self.release_reserved_balance(
+                    reserved_for_cleanup,
+                    wallet_id=wallet_id,
+                )
+            elif reserved_for_cleanup > Decimal("0"):
                 logger.warning(
-                    "Failed to reserve collateral for batch order %s: %s",
-                    response.order_id,
+                    "Retaining $%.2f for batch orders after cancellation "
+                    "during durability or transport",
+                    reserved_for_cleanup,
+                )
+            raise
+        except Exception as exc:
+            definitive_rejection = is_definitive_order_rejection(exc)
+            if reserved_for_cleanup > Decimal("0") and (
+                not submission_started or definitive_rejection
+            ):
+                await self.release_reserved_balance(
+                    reserved_for_cleanup,
+                    wallet_id=wallet_id,
+                )
+            elif reserved_for_cleanup > Decimal("0"):
+                logger.warning(
+                    "Retaining $%.2f for batch orders after ambiguous "
+                    "submission error: %s",
+                    reserved_for_cleanup,
                     exc,
                 )
-
-        return responses
+            raise
 
     async def get_orderbooks_batch(self, token_ids: List[str]) -> Dict[str, OrderBook]:
         """
         Get orderbooks for multiple tokens simultaneously.
 
-        CRITICAL for Strategy-3: 10x faster than sequential fetches.
+        Fetch multiple order books through the batch endpoint.
 
         Args:
             token_ids: List of token IDs
@@ -1851,7 +2290,7 @@ class PolymarketClient:
             >>> for token_id, book in books.items():
             ...     print(f"{token_id}: bid={book.best_bid}, ask={book.best_ask}")
         """
-        return await self.clob.get_orderbooks_batch(token_ids)
+        return await self.market_clob.get_orderbooks_batch(token_ids)
 
     async def cancel_order(self, order_id: str, wallet_id: Optional[str] = None) -> bool:
         """
@@ -1947,17 +2386,9 @@ class PolymarketClient:
         )
 
     async def get_order(
-        self,
-        order_id: str,
-        wallet_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Fetch authoritative status and matched-size evidence for one order.
-
-        The locally installed official provider client exposes this as
-        ``GET /data/order/{order_id}``.  A raw dictionary is returned because
-        the provider package does not publish a response model for this
-        endpoint; money-state callers must validate every required field.
-        """
+        self, order_id: str, wallet_id: Optional[str] = None
+    ) -> Optional[Order]:
+        """Get one authenticated order by its exchange order hash."""
         credentials = self.key_manager.get_wallet(wallet_id)
         return await self.clob.get_order(
             order_id=order_id,
@@ -1965,6 +2396,21 @@ class PolymarketClient:
             api_key=credentials.api_key,
             api_secret=credentials.api_secret,
             api_passphrase=credentials.api_passphrase,
+        )
+
+    async def get_clob_trades(
+        self,
+        wallet_id: Optional[str] = None,
+        **filters,
+    ):
+        """Get the wallet's authenticated CLOB execution records."""
+        credentials = self.key_manager.get_wallet(wallet_id)
+        return await self.clob.get_trades(
+            address=credentials.address,
+            api_key=credentials.api_key,
+            api_secret=credentials.api_secret,
+            api_passphrase=credentials.api_passphrase,
+            **filters,
         )
 
     async def get_balances(self, wallet_id: Optional[str] = None) -> Balance:
@@ -1982,7 +2428,7 @@ class PolymarketClient:
         # For proxy wallets:
         # - address: EOA address (for API authentication/signing)
         # - signature_type: 2 (PROXY)
-        # - funder: Proxy address (where USDC is actually held)
+        # - funder: Smart-contract wallet address (where pUSD is held)
         # The API returns balance for the funder address when signature_type=PROXY
         return await self.clob.get_balances(
             address=credentials.address,  # EOA for auth
@@ -2067,21 +2513,25 @@ class PolymarketClient:
             )
             # balance = Decimal("1.02") if you own 1.02 shares
         """
-        try:
-            positions = await self.get_positions(wallet_id=wallet_id)
+        credentials = self.key_manager.get_wallet(wallet_id)
+        funder = credentials.funder or credentials.address
+        positions = await self.data.get_positions_complete(
+            user=funder,
+            size_threshold=0,
+        )
 
-            # Find position matching this token_id
-            for pos in positions:
-                if pos.asset == token_id:
-                    logger.debug(f"Position balance for {token_id[:20]}...: {pos.size} shares")
-                    return Decimal(str(pos.size))
+        for position in positions:
+            asset = getattr(position, "asset", None) or getattr(
+                position, "token_id", None
+            )
+            if asset == token_id:
+                logger.debug(
+                    f"Position balance for {token_id[:20]}...: {position.size} shares"
+                )
+                return Decimal(str(position.size))
 
-            # No position found for this token
-            logger.debug(f"No position found for {token_id[:20]}...")
-            return Decimal("0")
-        except Exception as e:
-            logger.warning(f"Failed to get position balance: {e}")
-            return Decimal("0")
+        logger.debug(f"No position found for {token_id[:20]}...")
+        return Decimal("0")
 
     async def update_balance_allowance(
         self,
@@ -2092,12 +2542,12 @@ class PolymarketClient:
         """
         Update balance & allowance from on-chain state.
 
-        This syncs Polymarket's API balance with the actual on-chain USDC balance.
-        Call this after depositing USDC to make funds visible to the API.
+        This syncs Polymarket's API balance with the actual on-chain pUSD balance.
+        Call this after funding pUSD to make funds visible to the CLOB.
 
         Args:
             wallet_id: Wallet to update
-            asset_type: "COLLATERAL" for USDC, "CONDITIONAL" for CTF tokens
+            asset_type: "COLLATERAL" for pUSD, "CONDITIONAL" for CTF tokens
             token_id: Required if asset_type="CONDITIONAL"
 
         Returns:
@@ -2285,21 +2735,67 @@ class PolymarketClient:
         return await self.data.get_holders(market=market, limit=limit, min_balance=min_balance)
 
     async def get_leaderboard(
-        self, limit: int = 100, min_pnl: Optional[float] = None
+        self,
+        category: str = "OVERALL",
+        time_period: str = "MONTH",
+        order_by: str = "PNL",
+        limit: int = 50,
+        offset: int = 0,
     ) -> List["LeaderboardTrader"]:
         """
-        Get leaderboard of top traders.
+        Get leaderboard of top traders (`GET /v1/leaderboard`).
 
         Args:
-            limit: Max traders to return (default: 100)
-            min_pnl: Minimum PnL filter (optional)
+            category: OVERALL | POLITICS | SPORTS | ESPORTS | CRYPTO | ...
+            time_period: DAY | WEEK | MONTH | ALL
+            order_by: PNL | VOL
+            limit: Max traders to return (server cap 50)
+            offset: Paging offset (server cap 1000)
 
         Returns:
             List of leaderboard traders ordered by rank
         """
-        return await self.data.get_leaderboard(limit=limit, min_pnl=min_pnl)
+        return await self.data.get_leaderboard(
+            category=category,
+            time_period=time_period,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+        )
 
-    # ========== Multi-Wallet Batch Operations (Strategy-3 Optimized) ==========
+    async def get_closed_positions(
+        self,
+        user: str,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: Optional[str] = None,
+        sort_direction: str = "DESC",
+    ) -> List["ClosedPosition"]:
+        """
+        Get a user's closed positions with realized PnL (`GET /closed-positions`).
+
+        Args:
+            user: Proxy wallet address
+            limit: Max rows per page
+            offset: Paging offset
+            sort_by: ``TIMESTAMP``, ``REALIZEDPNL``, ``AVGPRICE``, ``PRICE`` or
+                ``TITLE``. Unset means the endpoint's own default, which is
+                ``REALIZEDPNL`` descending — biggest wins first, so any
+                truncated read is a winner-biased sample, not a history.
+            sort_direction: ``ASC`` or ``DESC``
+
+        Returns:
+            List of closed positions (``realized_pnl``/``total_bought`` populated)
+        """
+        return await self.data.get_closed_positions(
+            user,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        )
+
+    # ========== Multi-Wallet Batch Operations ==========
 
     async def get_positions_batch(
         self, wallet_addresses: List[str], **kwargs
@@ -2307,7 +2803,7 @@ class PolymarketClient:
         """
         Get positions for multiple wallets efficiently.
 
-        Optimized for Strategy-3's 100+ wallet tracking with concurrent requests.
+        Fetch positions for many public wallet addresses concurrently.
 
         Args:
             wallet_addresses: List of wallet addresses
@@ -2425,7 +2921,7 @@ class PolymarketClient:
         """
         Detect consensus signals from multiple wallets.
 
-        Strategy-3 specific: Find markets where N+ wallets agree.
+        Find markets where at least N wallets agree.
 
         Args:
             wallet_addresses: List of wallet addresses to track
@@ -2446,54 +2942,11 @@ class PolymarketClient:
 
     # ========== Production Operations ==========
 
-    def _shutdown_handler(self, signum, frame):
-        """
-        Graceful shutdown handler for SIGTERM/SIGINT.
-
-        Cancels all inflight orders before exiting.
-        Note: Signal handlers cannot be async, so we use sync wrapper.
-        """
-        logger.warning(f"Shutdown signal {signum} received")
-        self._shutdown_requested = True
-
-        # Cancel all inflight orders using sync wrapper
-        if self._inflight_orders:
-            logger.info(f"Cancelling {len(self._inflight_orders)} inflight orders")
-            for order_id in list(self._inflight_orders):  # Copy to avoid mutation during iteration
-                try:
-                    self._cancel_order_sync(order_id)
-                    logger.info(f"Cancelled order {order_id}")
-                except Exception as e:
-                    logger.error(f"Failed to cancel order {order_id}: {e}")
-
-        self._close_sync()
-        sys.exit(0)
-
-    def _cancel_order_sync(self, order_id: str) -> bool:
-        """
-        Synchronous wrapper for cancel_order (for signal handlers).
-
-        Signal handlers cannot be async, so we need this wrapper.
-        """
-        try:
-            # Try to get running loop (if we're in async context)
-            try:
-                loop = asyncio.get_running_loop()
-                # Can't block in running loop - schedule and return
-                future = asyncio.run_coroutine_threadsafe(self.cancel_order(order_id), loop)
-                return future.result(timeout=5.0)
-            except RuntimeError:
-                # No running loop - create new one
-                return asyncio.run(self.cancel_order(order_id))
-        except Exception as e:
-            logger.error(f"Sync cancel_order failed: {e}")
-            return False
-
     def _close_sync(self) -> None:
         """
-        Synchronous wrapper for close (for atexit/signal handlers).
+        Synchronous wrapper for close (for atexit and sync context managers).
 
-        atexit and signal handlers cannot be async, so we need this wrapper.
+        ``atexit`` and synchronous context managers cannot await directly.
         """
         try:
             # Try to get running loop
@@ -2520,7 +2973,7 @@ class PolymarketClient:
         """
         try:
             # Check CLOB connectivity
-            clob_health = await self.clob.health_check()
+            clob_health = await self.market_clob.health_check()
 
             # Check circuit breaker
             cb_state = self.get_circuit_breaker_state() or "disabled"
@@ -2542,6 +2995,69 @@ class PolymarketClient:
 
     # ========== Real-Time WebSocket ==========
 
+    def _register_clob_market_handler(
+        self,
+        token_id: str,
+        callback: Callable[[Any], None],
+        wallet_id: Optional[str] = None,
+    ) -> None:
+        """Fan out one official CLOB Market Channel subscription per token."""
+        if not token_id:
+            raise ValueError("token_id is required")
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+
+        self._ensure_websocket(wallet_id, channel_type="MARKET")
+        # Serialize ownership through the subscribe call. A concurrent teardown
+        # can detach either before this lock (and registration fails) or after
+        # the wire registration (and then disconnects it), but cannot leave an
+        # orphan subscription on a transport no longer owned by this client.
+        with self._ws_lock:
+            transport = self._ws
+            if transport is None:
+                raise RuntimeError("CLOB WebSocket client was detached during registration")
+
+            # Callback delivery already takes the transport lock before invoking
+            # this registry. Preserve that order during registration to avoid an
+            # ABBA deadlock between subscription and delivery threads.
+            with transport._lock:
+                with self._ws_callbacks_lock:
+                    handlers = self._ws_callbacks.setdefault(token_id, [])
+                    handlers.append(callback)
+                    if len(handlers) > 1:
+                        return
+
+                    def dispatch(message: Any) -> None:
+                        with self._ws_callbacks_lock:
+                            registered = tuple(self._ws_callbacks.get(token_id, ()))
+                        first_failure: Optional[Exception] = None
+                        failure_count = 0
+                        for handler in registered:
+                            try:
+                                handler(message)
+                            except Exception as exc:
+                                failure_count += 1
+                                if first_failure is None:
+                                    first_failure = exc
+                                logger.error(
+                                    "Error processing CLOB Market Channel update for %s: %s",
+                                    token_id,
+                                    exc,
+                                )
+                        # Preserve fanout: every handler gets its chance. Then let
+                        # WebSocketClient account one failed delivery callback;
+                        # its dispatch boundary catches this aggregate exception.
+                        if first_failure is not None:
+                            raise RuntimeError(
+                                f"{failure_count} CLOB Market callback(s) failed"
+                            ) from first_failure
+
+                    try:
+                        transport.subscribe_market(token_id, dispatch)
+                    except Exception:
+                        self._ws_callbacks.pop(token_id, None)
+                        raise
+
     def subscribe_orderbook(
         self, token_id: str, callback: Callable[[OrderBook], None], wallet_id: Optional[str] = None
     ) -> None:
@@ -2562,8 +3078,6 @@ class PolymarketClient:
         """
         from .api.websocket_models import OrderbookMessage, WebSocketMessage
 
-        self._ensure_websocket(wallet_id)
-
         def handle_market_update(message: WebSocketMessage):
             try:
                 # Only process orderbook messages
@@ -2579,13 +3093,36 @@ class PolymarketClient:
             except Exception as e:
                 logger.error(f"Error processing orderbook update: {e}")
 
-        self._ws.subscribe_market(token_id, handle_market_update)
+        self._register_clob_market_handler(token_id, handle_market_update, wallet_id)
         logger.info(f"Subscribed to orderbook updates for {token_id}")
+
+    def subscribe_clob_market_last_trade_price(
+        self,
+        token_id: str,
+        callback: Callable[["LastTradePriceMessage"], None],
+    ) -> None:
+        """Subscribe to typed official CLOB Market Channel trade prints.
+
+        This is distinct from :meth:`subscribe_market_last_trade_price`, which
+        uses the legacy undocumented RTDS topic.
+        """
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+
+        from .api.websocket_models import LastTradePriceMessage, WebSocketMessage
+
+        def handle_market_update(message: WebSocketMessage) -> None:
+            if isinstance(message, LastTradePriceMessage):
+                callback(message)
+
+        self._register_clob_market_handler(token_id, handle_market_update)
+        logger.info("Subscribed to official CLOB last-trade prices for %s", token_id)
 
     def subscribe_user_orders(
         self,
         callback: Callable[[Any], None],  # TradeMessage | OrderMessage
         wallet_id: Optional[str] = None,
+        on_failure_callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         """
         Subscribe to real-time order fill notifications via WebSocket.
@@ -2595,6 +3132,7 @@ class PolymarketClient:
         Args:
             callback: Function called on order updates (receives TradeMessage or OrderMessage)
             wallet_id: Wallet to track
+            on_failure_callback: Optional callback for permanent transport failure
 
         Example:
             >>> from .api.websocket_models import TradeMessage, OrderMessage
@@ -2607,7 +3145,12 @@ class PolymarketClient:
         """
         from .api.websocket_models import WebSocketMessage
 
-        self._ensure_websocket(wallet_id)
+        wallet_id = self._resolve_wallet_id(wallet_id)
+        self._ensure_websocket(
+            wallet_id,
+            on_failure_callback=on_failure_callback,
+            channel_type="USER",
+        )
 
         def handle_user_update(message: WebSocketMessage):
             try:
@@ -2616,8 +3159,34 @@ class PolymarketClient:
             except Exception as e:
                 logger.error(f"Error processing user update: {e}")
 
-        self._ws.subscribe_user(handle_user_update)
+        with self._ws_lock:
+            transport = self._ws
+            if transport is None:
+                raise RuntimeError(
+                    "CLOB WebSocket client was detached during USER registration"
+                )
+            transport.subscribe_user(handle_user_update)
         logger.info("Subscribed to user order updates")
+
+    def wait_until_websocket_connected(self, timeout: float = 5.0) -> bool:
+        """Wait for the facade-owned CLOB WebSocket transport to become ready."""
+
+        with self._ws_lock:
+            transport = self._ws
+        if transport is None:
+            return False
+
+        if not transport.wait_until_connected(timeout):
+            return False
+
+        # A concurrent unsubscribe may detach the transport while the wait is
+        # completing. Only report readiness for the transport still owned by
+        # this facade.
+        with self._ws_lock:
+            return (
+                self._ws is transport
+                and transport.telemetry_snapshot_v1().connected
+            )
 
     def unsubscribe_all(self) -> None:
         """
@@ -2626,9 +3195,27 @@ class PolymarketClient:
         Example:
             >>> client.unsubscribe_all()
         """
-        if self._ws:
-            self._ws.disconnect()
+        with self._ws_lock:
+            transport = self._ws
             self._ws = None
+            self._ws_wallet_id = None
+            self._ws_channel_type = None
+            with self._ws_callbacks_lock:
+                self._ws_callbacks.clear()
+            detach_generation = None
+            if transport is not None:
+                self._ws_detach_generation = (
+                    getattr(self, "_ws_detach_generation", 0) + 1
+                )
+                detach_generation = self._ws_detach_generation
+        if transport:
+            try:
+                transport.disconnect()
+            finally:
+                self._retain_detached_clob_websocket_telemetry_v1(
+                    transport,
+                    detach_generation,
+                )
             logger.info("Unsubscribed from all WebSocket feeds")
 
     def is_websocket_connected(self) -> bool:
@@ -2642,37 +3229,130 @@ class PolymarketClient:
             >>> if client.is_websocket_connected():
             >>>     print("WebSocket is active")
         """
-        return self._ws is not None and self._ws._running
+        return self.get_clob_websocket_telemetry_v1().connected
 
-    def _ensure_websocket(self, wallet_id: Optional[str] = None) -> None:
+    def get_clob_websocket_telemetry_v1(self) -> WebSocketTelemetrySnapshotV1:
+        """Return immutable aggregate telemetry for the official CLOB transport.
+
+        The snapshot contains no channel, token, wallet, or message identifiers.
+        Reconnect-silence intervals are locally observed transport downtime, not
+        evidence of source sequence completeness. If no transport is attached,
+        this returns the most recent identifier-free post-disconnect snapshot,
+        or a stable-schema zero snapshot if no transport has existed.
+        """
+        with self._ws_lock:
+            transport = self._ws
+            if transport is not None:
+                return transport.telemetry_snapshot_v1()
+            return getattr(
+                self,
+                "_last_clob_websocket_telemetry_v1",
+                WebSocketTelemetrySnapshotV1.disconnected(),
+            )
+
+    def _retain_detached_clob_websocket_telemetry_v1(
+        self,
+        transport: WebSocketClient,
+        detach_generation: Optional[int],
+    ) -> None:
+        """Retain one final aggregate snapshot without reviving transport ownership."""
+        if detach_generation is None:
+            return
+        try:
+            snapshot = transport.telemetry_snapshot_v1()
+        except Exception as exc:
+            logger.warning("Failed to capture final CLOB WebSocket telemetry: %s", exc)
+            return
+        if not isinstance(snapshot, WebSocketTelemetrySnapshotV1):
+            logger.warning("Ignoring invalid final CLOB WebSocket telemetry snapshot")
+            return
+        with self._ws_lock:
+            if detach_generation == getattr(self, "_ws_detach_generation", 0):
+                self._last_clob_websocket_telemetry_v1 = snapshot
+
+    def _ensure_websocket(
+        self,
+        wallet_id: Optional[str] = None,
+        *,
+        on_failure_callback: Optional[Callable[[str], None]] = None,
+        channel_type: Optional[str] = None,
+    ) -> None:
         """
         Ensure WebSocket is initialized (thread-safe).
 
         Uses lock to prevent race condition where multiple threads
         could create multiple WebSocketClient instances.
         """
-        # Fast path: already initialized
-        if self._ws is not None:
-            return
+        selected_channel = (
+            str(channel_type).strip().upper()
+            if channel_type is not None
+            else ("USER" if wallet_id is not None else "MARKET")
+        )
+        if selected_channel not in {"MARKET", "USER"}:
+            raise ValueError(f"Invalid CLOB WebSocket channel: {channel_type!r}")
 
         # Thread-safe initialization
         with self._ws_lock:
-            # Double-check after acquiring lock
             if self._ws is not None:
+                existing_channel = getattr(
+                    self, "_ws_channel_type", None
+                )
+                if existing_channel != selected_channel:
+                    raise RuntimeError(
+                        "MARKET and USER subscriptions require separate "
+                        "Polymarket WebSocket transports"
+                    )
+                existing_wallet_id = getattr(self, "_ws_wallet_id", None)
+                if (
+                    selected_channel == "USER"
+                    and wallet_id is not None
+                    and existing_wallet_id != wallet_id
+                ):
+                    existing_label = (
+                        existing_wallet_id
+                        if existing_wallet_id is not None
+                        else "unauthenticated"
+                    )
+                    raise AuthenticationError(
+                        "CLOB WebSocket transport is already bound to "
+                        f"{existing_label}; cannot subscribe USER channel for "
+                        f"{wallet_id}"
+                    )
+                if on_failure_callback is not None:
+                    self._ws.on_failure_callback = on_failure_callback
                 return
 
-            # Get API key if wallet provided
+            selected_wallet_id = (
+                wallet_id if selected_channel == "USER" else None
+            )
+            if selected_channel == "USER" and selected_wallet_id is None:
+                selected_wallet_id = self.key_manager.get_default_wallet()
+                if selected_wallet_id is None:
+                    raise AuthenticationError(
+                        "No wallets configured for USER WebSocket channel"
+                    )
+
+            # Get USER-channel credentials if a concrete wallet is available.
             api_key = None
-            if wallet_id:
-                credentials = self.key_manager.get_wallet(wallet_id)
+            api_secret = None
+            api_passphrase = None
+            if selected_wallet_id is not None:
+                credentials = self.key_manager.get_wallet(selected_wallet_id)
                 api_key = credentials.api_key
+                api_secret = credentials.api_secret
+                api_passphrase = credentials.api_passphrase
 
             self._ws = WebSocketClient(
                 ws_url=self.settings.ws_url,
                 api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
                 reconnect_delay=self.settings.ws_reconnect_delay,
                 max_reconnects=self.settings.ws_max_reconnects,
+                on_failure_callback=on_failure_callback,
             )
+            self._ws_wallet_id = selected_wallet_id
+            self._ws_channel_type = selected_channel
             # Connection deferred until first subscription (lazy connect pattern)
             logger.info("WebSocket client initialized (will connect on first subscription)")
 
@@ -2864,6 +3544,16 @@ class PolymarketClient:
         """
         try:
             logger.info(f"RTDS status changed: {status.value}", extra={"status": status.value})
+
+            # Emit metrics if enabled
+            if self.metrics:
+                status_map = {
+                    ConnectionStatus.CONNECTING: 0,
+                    ConnectionStatus.CONNECTED: 1,
+                    ConnectionStatus.DISCONNECTED: 2,
+                }
+                # Record status change event
+                # Note: metrics.record_rtds_status() would go here if implemented
 
         except Exception as e:
             logger.error(f"Error in RTDS status change callback: {e}", exc_info=True)
@@ -3509,13 +4199,32 @@ class PolymarketClient:
         try:
             logger.info("Closing Polymarket client...")
 
-            # Disconnect WebSocket
-            if self._ws:
+            # Detach WebSocket ownership before disconnecting. Registration uses
+            # the same lock, so it cannot subscribe an unowned transport.
+            with self._ws_lock:
+                transport = self._ws
+                self._ws = None
+                self._ws_wallet_id = None
+                self._ws_channel_type = None
+                with self._ws_callbacks_lock:
+                    self._ws_callbacks.clear()
+                detach_generation = None
+                if transport is not None:
+                    self._ws_detach_generation = (
+                        getattr(self, "_ws_detach_generation", 0) + 1
+                    )
+                    detach_generation = self._ws_detach_generation
+            if transport:
                 try:
-                    self._ws.disconnect()
+                    transport.disconnect()
                     logger.info("WebSocket disconnected")
                 except Exception as e:
                     logger.error(f"Error disconnecting WebSocket: {e}")
+                finally:
+                    self._retain_detached_clob_websocket_telemetry_v1(
+                        transport,
+                        detach_generation,
+                    )
 
             # Disconnect RTDS (under _rtds_lock: blocks a concurrent
             # _ensure_rtds re-init until teardown completes)
@@ -3539,6 +4248,7 @@ class PolymarketClient:
             # Close API clients (await async close methods)
             await self.gamma.close()
             await self.clob.close()
+            await self.market_clob.close()
             await self.data.close()
             await self.public_clob.close()  # Fix: was missing, causing session leak
 

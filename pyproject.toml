@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-python-infrastructure"
+version = "3.7.0"
+description = "Unofficial async Python infrastructure for Polymarket data, trading, and streams"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Chaeho Shin" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "aiohttp>=3.10.0",
+    "eth-account>=0.13.7",
+    "eth-utils>=5.3.1",
+    "orjson>=3.10.0",
+    "poly_eip712_structs==0.0.1",
+    "prometheus-client>=0.23.1",
+    "pydantic>=2.12.3",
+    "pydantic-settings>=2.7.0",
+    "py_order_utils==0.3.2",
+    "python-json-logger>=4.0.0",
+    "requests>=2.32.3",
+    "websocket-client>=1.8.0",
+]
+
+[project.optional-dependencies]
+onchain = ["web3>=7.14.0"]
+test = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.24.0",
+]
+examples = [
+    "loguru>=0.7.0",
+    "python-dotenv>=1.0.0",
+]
+dev = [
+    "loguru>=0.7.0",
+    "python-dotenv>=1.0.0",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.24.0",
+    "web3>=7.14.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/perpetual-s/polymarket-python-infrastructure"
+Issues = "https://github.com/perpetual-s/polymarket-python-infrastructure/issues"
+Source = "https://github.com/perpetual-s/polymarket-python-infrastructure"
+
+[tool.setuptools.packages.find]
+include = ["polymarket*"]

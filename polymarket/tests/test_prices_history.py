@@ -7,6 +7,7 @@ import pytest
 
 from polymarket.api.clob_public import PublicCLOBAPI
 from polymarket.exceptions import APIError
+from polymarket.models import PricePoint
 
 
 def _api():
@@ -66,6 +67,7 @@ async def test_get_prices_history_null_history_returns_empty():
     assert await api.get_prices_history("t", interval="1h") == []
 
 
+@pytest.mark.live_network
 @pytest.mark.asyncio
 async def test_prices_history_live_contract():
     """Guarded live-contract test (spec §8.1). Opt-in: RUN_LIVE_CONTRACT_TESTS=1."""

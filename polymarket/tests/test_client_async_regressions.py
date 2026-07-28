@@ -1,11 +1,9 @@
 """Regression tests for async PolymarketClient behavior and trading safety."""
 
 import asyncio
-import subprocess
-import sys
+import signal
 import threading
 from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -13,9 +11,14 @@ import pytest
 
 from polymarket.client import PolymarketClient
 from polymarket.config import PolymarketSettings
-from polymarket.exceptions import InsufficientBalanceError, TradingError
+from polymarket.exceptions import (
+    InsufficientBalanceError,
+    OrderRejectedError,
+    TradingError,
+)
 from polymarket.models import (
     Balance,
+    FeeInfo,
     MarketOrderRequest,
     OrderRequest,
     OrderResponse,
@@ -26,14 +29,14 @@ from polymarket.models import (
 
 
 def build_test_client() -> PolymarketClient:
-    """Construct a lightweight client with patched process-level handlers."""
+    """Construct a lightweight client with best-effort exit cleanup patched."""
     settings = PolymarketSettings(
         enable_rate_limiting=False,
         enable_metrics=False,
         enable_rtds=False,
     )
 
-    with patch("polymarket.client.signal.signal"), patch("polymarket.client.atexit.register"):
+    with patch("polymarket.client.atexit.register"):
         client = PolymarketClient(
             settings=settings,
             enable_rate_limiting=False,
@@ -55,8 +58,56 @@ def build_test_client() -> PolymarketClient:
     client.metrics.track_order = Mock()
     client.metrics.track_order_latency = Mock()
     client.metrics.set_balance = Mock()
-    client._build_signed_order = AsyncMock(return_value={"order": "signed"})
+    client._build_signed_order = AsyncMock(
+        return_value={"order": "signed", "_orderHash": "order-1"}
+    )
+    client._resolve_tick_size = AsyncMock(return_value=Decimal("0.01"))
+    client.get_fee_info = AsyncMock(
+        return_value=FeeInfo(base_fee_bps=0, rate_bps=0)
+    )
     return client
+
+
+@pytest.mark.asyncio
+async def test_constructor_preserves_application_signal_handler_identity() -> None:
+    settings = PolymarketSettings(
+        enable_rate_limiting=False,
+        enable_metrics=False,
+        enable_rtds=False,
+    )
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def application_sigint(signum, frame) -> None:
+        return None
+
+    def application_sigterm(signum, frame) -> None:
+        return None
+
+    client = None
+    try:
+        signal.signal(signal.SIGINT, application_sigint)
+        signal.signal(signal.SIGTERM, application_sigterm)
+        with patch("polymarket.client.atexit.register") as register_exit_cleanup:
+            client = PolymarketClient(
+                settings=settings,
+                enable_rate_limiting=False,
+                enable_circuit_breaker=False,
+            )
+
+        register_exit_cleanup.assert_called_once_with(client._close_sync)
+        assert signal.getsignal(signal.SIGINT) is application_sigint
+        assert signal.getsignal(signal.SIGTERM) is application_sigterm
+
+        await client.close()
+
+        assert signal.getsignal(signal.SIGINT) is application_sigint
+        assert signal.getsignal(signal.SIGTERM) is application_sigterm
+    finally:
+        if client is not None:
+            await client.close()
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def make_order(
@@ -76,51 +127,16 @@ def make_order(
     )
 
 
-@pytest.mark.asyncio
-async def test_get_order_delegates_credentials_and_preserves_raw_truth() -> None:
-    client = build_test_client()
-    provider_order = {
-        "id": "order-1",
-        "status": "MATCHED",
-        "original_size": "10",
-        "size_matched": "10",
-    }
-    client.clob.get_order = AsyncMock(return_value=provider_order)
-
-    try:
-        result = await client.get_order("order-1", wallet_id="WALLET_TEST")
-    finally:
-        await client.close()
-
-    assert result is provider_order
-    client.key_manager.get_wallet.assert_called_with("WALLET_TEST")
-    client.clob.get_order.assert_awaited_once_with(
-        order_id="order-1",
-        address="0x1234567890abcdef1234567890abcdef12345678",
-        api_key="key",
-        api_secret="secret",
-        api_passphrase="passphrase",
+def set_batch_order_hashes(
+    client: PolymarketClient,
+    *order_ids: str,
+) -> None:
+    client._build_signed_order = AsyncMock(
+        side_effect=[
+            {"order": f"signed-{index}", "_orderHash": order_id}
+            for index, order_id in enumerate(order_ids)
+        ]
     )
-
-
-def test_provider_capabilities_expose_lookup_but_block_preplacement_identity() -> None:
-    assert PolymarketClient.supports_authoritative_order_lookup is True
-    assert PolymarketClient.supports_preplacement_durable_order_identity is False
-
-
-def test_core_package_import_does_not_eagerly_load_optional_web3() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys; import polymarket.config; assert 'web3' not in sys.modules",
-        ],
-        cwd=Path(__file__).resolve().parents[2],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.asyncio
@@ -294,6 +310,306 @@ async def test_place_order_reserves_buy_notional() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_place_order_retains_reservation_after_transport_starts() -> None:
+    client = build_test_client()
+    try:
+        client._check_and_reserve_buy_balance = AsyncMock(return_value=Decimal("5.50"))
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with pytest.raises(asyncio.CancelledError):
+            await client.place_order(make_order(), wallet_id="test-wallet")
+
+        client.release_reserved_balance.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_place_order_retains_durable_presubmit_reservation() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "0xorder"}
+        )
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.50")
+        )
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock(side_effect=asyncio.CancelledError)
+        persisted = AsyncMock()
+
+        with pytest.raises(asyncio.CancelledError):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                pre_submit=persisted,
+            )
+
+        persisted.assert_awaited_once_with("0xorder", Decimal("5.50"))
+        client.release_reserved_balance.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unclassified_response_retains_durable_presubmit_reservation() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "0xorder"}
+        )
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.50")
+        )
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock(
+            return_value=OrderResponse(success=False, error_msg="rejected")
+        )
+        persisted = AsyncMock()
+
+        with pytest.raises(TradingError, match="not a definitive rejection"):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                pre_submit=persisted,
+            )
+
+        persisted.assert_awaited_once_with("0xorder", Decimal("5.50"))
+        client.release_reserved_balance.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_typed_exchange_rejection_releases_durable_reservation() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "0xorder"}
+        )
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.50")
+        )
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock(
+            side_effect=OrderRejectedError(
+                "exchange rejected order",
+                reason="INVALID_ORDER",
+            )
+        )
+        persisted = AsyncMock()
+
+        with pytest.raises(OrderRejectedError):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                pre_submit=persisted,
+            )
+
+        persisted.assert_awaited_once_with("0xorder", Decimal("5.50"))
+        client.release_reserved_balance.assert_awaited_once_with(
+            Decimal("5.50"),
+            "test-wallet",
+        )
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_exchange_identity_retains_durable_reservation() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "0xorder"}
+        )
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.50")
+        )
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock(
+            side_effect=OrderRejectedError(
+                "duplicate order",
+                reason="DUPLICATE",
+            )
+        )
+
+        with pytest.raises(OrderRejectedError):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                pre_submit=AsyncMock(),
+            )
+
+        client.release_reserved_balance.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_presubmit_requires_deterministic_order_hash() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(return_value={"order": "signed"})
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.50")
+        )
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock()
+        persisted = AsyncMock()
+
+        with pytest.raises(TradingError, match="order hash"):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                pre_submit=persisted,
+            )
+
+        persisted.assert_not_awaited()
+        client.clob.post_order.assert_not_awaited()
+        client.release_reserved_balance.assert_awaited_once_with(
+            Decimal("5.50"), "test-wallet"
+        )
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_presubmit_receives_tick_aligned_fee_inclusive_reservation() -> None:
+    client = build_test_client()
+    try:
+        client._resolve_tick_size = AsyncMock(return_value=Decimal("0.05"))
+        client.get_fee_info = AsyncMock(
+            return_value=FeeInfo(
+                base_fee_bps=100,
+                rate_bps=100,
+                exponent=Decimal("1"),
+            )
+        )
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "0xorder"}
+        )
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.05")
+        )
+        client.clob.post_order = AsyncMock(
+            return_value=OrderResponse(
+                success=True,
+                order_id="0xorder",
+                status=OrderStatus.LIVE,
+            )
+        )
+        persisted = AsyncMock()
+
+        await client.place_order(
+            make_order(price="0.57", size="10"),
+            wallet_id="test-wallet",
+            pre_submit=persisted,
+        )
+
+        persisted.assert_awaited_once_with("0xorder", Decimal("5.05"))
+        normalized = client._build_signed_order.await_args.args[0]
+        assert normalized.price == Decimal("0.55")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        OrderResponse(success=True, order_id=None, status=OrderStatus.LIVE),
+        OrderResponse(
+            success=True,
+            order_id="0x" + "b" * 64,
+            status=OrderStatus.LIVE,
+        ),
+    ],
+)
+async def test_success_response_must_match_durable_presubmit_identity(
+    response: OrderResponse,
+) -> None:
+    client = build_test_client()
+    order_hash = "0x" + "a" * 64
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": order_hash}
+        )
+        client._check_and_reserve_buy_balance = AsyncMock(
+            return_value=Decimal("5.50")
+        )
+        client.release_reserved_balance = AsyncMock()
+        client.clob.post_order = AsyncMock(return_value=response)
+        persisted = AsyncMock()
+
+        with pytest.raises(TradingError, match="deterministic"):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                pre_submit=persisted,
+            )
+
+        persisted.assert_awaited_once_with(order_hash, Decimal("5.50"))
+        client.release_reserved_balance.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        OrderResponse(success=True, order_id=None, status=OrderStatus.LIVE),
+        OrderResponse(
+            success=True,
+            order_id="different-order",
+            status=OrderStatus.LIVE,
+        ),
+    ],
+)
+async def test_success_response_must_match_local_identity_without_callback(
+    response: OrderResponse,
+) -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "expected-order"}
+        )
+        client.clob.post_order = AsyncMock(return_value=response)
+
+        with pytest.raises(TradingError, match="deterministic|local order hash"):
+            await client.place_order(
+                make_order(),
+                wallet_id="test-wallet",
+                skip_balance_check=True,
+            )
+
+        assert await client.get_reserved_balance("test-wallet") == Decimal("5.50")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_order_threads_fixed_timestamp_into_signing() -> None:
+    client = build_test_client()
+    try:
+        client.clob.post_order = AsyncMock(
+            return_value=OrderResponse(success=True, order_id="order-1", status=OrderStatus.LIVE)
+        )
+
+        await client.place_order(
+            make_order(side=Side.SELL),
+            wallet_id="test-wallet",
+            skip_balance_check=True,
+            timestamp_ms=1_700_000_000_123,
+        )
+
+        assert client._build_signed_order.await_args.kwargs["timestamp_ms"] == 1_700_000_000_123
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_place_order_fails_closed_when_balance_lookup_errors() -> None:
     client = build_test_client()
     try:
@@ -353,26 +669,90 @@ async def test_place_orders_batch_fails_closed_when_balance_lookup_errors() -> N
 async def test_place_orders_batch_reserves_only_successful_buy_notional() -> None:
     client = build_test_client()
     try:
+        set_batch_order_hashes(client, "order-1", "rejected-order")
         client.get_balances = AsyncMock(
             return_value=Balance(collateral=Decimal("100.00"), tokens={})
         )
         client.get_position_balance = AsyncMock(return_value=Decimal("0"))
-        client.clob.post_orders_batch = AsyncMock(
-            return_value=[
+        observed_at_transport = []
+
+        async def post_batch(**kwargs):
+            observed_at_transport.append(
+                await client.get_reserved_balance("test-wallet")
+            )
+            return [
                 OrderResponse(success=True, order_id="order-1", status=OrderStatus.LIVE),
-                OrderResponse(success=False, error_msg="rejected"),
+                OrderResponse(
+                    success=False,
+                    error_msg="INVALID_PRICE",
+                    definitive_rejection=True,
+                ),
             ]
-        )
+
+        client.clob.post_orders_batch = AsyncMock(side_effect=post_batch)
 
         orders = [
             make_order(price="0.50", size="10"),
-            make_order(token_id="67890", price="0.25", size="4"),
+            make_order(
+                token_id="67890",
+                price="0.25",
+                size="4",
+            ).model_copy(update={"order_type": OrderType.FAK}),
         ]
 
         responses = await client.place_orders_batch(orders, wallet_id="test-wallet")
 
         assert len(responses) == 2
+        assert observed_at_transport == [Decimal("6.00")]
         assert await client.get_reserved_balance("test-wallet") == Decimal("5.00")
+        assert client.clob.post_orders_batch.await_args.kwargs["order_types"] == [
+            "GTC",
+            "FAK",
+        ]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_reserves_fee_inclusive_collateral_before_transport() -> None:
+    client = build_test_client()
+    try:
+        set_batch_order_hashes(client, "order-1")
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.get_fee_info = AsyncMock(
+            return_value=FeeInfo(
+                base_fee_bps=125,
+                rate_bps=125,
+                exponent=Decimal("1"),
+            )
+        )
+
+        async def post_batch(**kwargs):
+            assert (
+                await client.get_reserved_balance("test-wallet")
+                == Decimal("5.031250")
+            )
+            return [
+                OrderResponse(
+                    success=True,
+                    order_id="order-1",
+                    status=OrderStatus.LIVE,
+                )
+            ]
+
+        client.clob.post_orders_batch = AsyncMock(side_effect=post_batch)
+
+        await client.place_orders_batch(
+            [make_order(price="0.50", size="10")],
+            wallet_id="test-wallet",
+        )
+
+        assert (
+            await client.get_reserved_balance("test-wallet")
+            == Decimal("5.031250")
+        )
     finally:
         await client.close()
 
@@ -381,10 +761,12 @@ async def test_place_orders_batch_reserves_only_successful_buy_notional() -> Non
 async def test_place_orders_batch_supports_mixed_buy_and_sell_preflight() -> None:
     client = build_test_client()
     try:
+        set_batch_order_hashes(client, "buy-order", "sell-order")
         client.get_balances = AsyncMock(
             return_value=Balance(collateral=Decimal("100.00"), tokens={})
         )
-        client.get_position_balance = AsyncMock(return_value=Decimal("3.00"))
+        client.get_token_balance = AsyncMock(return_value=Decimal("3.00"))
+        client.get_position_balance = AsyncMock(side_effect=AssertionError("public Data API used"))
         client.clob.post_orders_batch = AsyncMock(
             return_value=[
                 OrderResponse(success=True, order_id="buy-order", status=OrderStatus.LIVE),
@@ -401,38 +783,331 @@ async def test_place_orders_batch_supports_mixed_buy_and_sell_preflight() -> Non
 
         assert [response.order_id for response in responses] == ["buy-order", "sell-order"]
         assert await client.get_reserved_balance("test-wallet") == Decimal("5.00")
-        client.get_position_balance.assert_awaited_once_with(
+        client.get_token_balance.assert_awaited_once_with(
             token_id="67890", wallet_id="test-wallet"
         )
+        client.get_position_balance.assert_not_awaited()
     finally:
         await client.close()
 
 
 @pytest.mark.asyncio
-async def test_place_orders_batch_returns_responses_when_reservation_update_fails() -> None:
+async def test_place_orders_batch_rejects_success_identity_mismatch() -> None:
     client = build_test_client()
     try:
+        set_batch_order_hashes(client, "expected-order")
         client.get_balances = AsyncMock(
             return_value=Balance(collateral=Decimal("100.00"), tokens={})
         )
-        client.get_position_balance = AsyncMock(return_value=Decimal("0"))
         client.clob.post_orders_batch = AsyncMock(
             return_value=[
-                OrderResponse(success=True, order_id="order-1", status=OrderStatus.LIVE),
-                OrderResponse(success=True, order_id="order-2", status=OrderStatus.LIVE),
+                OrderResponse(
+                    success=True,
+                    order_id="different-order",
+                    status=OrderStatus.LIVE,
+                )
             ]
         )
-        client._reserve_balance = AsyncMock(side_effect=[None, RuntimeError("reserve broke")])
+
+        with pytest.raises(TradingError, match="precomputed order hash"):
+            await client.place_orders_batch(
+                [make_order(price="0.50", size="10")],
+                wallet_id="test-wallet",
+            )
+
+        # The exchange acknowledged some identity, so collateral remains
+        # reserved until exact reconciliation can decide what landed.
+        assert await client.get_reserved_balance("test-wallet") == Decimal("5.00")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_sell_uses_authenticated_conditional_balance_without_data_api() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "sell-order"}
+        )
+        client.get_balances = AsyncMock(side_effect=AssertionError("collateral read used"))
+        client.get_position_balance = AsyncMock(side_effect=RuntimeError("Data API unavailable"))
+        client.get_token_balance = AsyncMock(return_value=Decimal("0.50"))
+        client.clob.post_order = AsyncMock(
+            return_value=OrderResponse(
+                success=True,
+                order_id="sell-order",
+                status=OrderStatus.LIVE,
+            )
+        )
+
+        response = await client.place_order(
+            make_order(price="0.55", size="0.50", side=Side.SELL),
+            wallet_id="test-wallet",
+        )
+
+        assert response.success is True
+        client.get_token_balance.assert_awaited_once_with(
+            token_id="12345", wallet_id="test-wallet"
+        )
+        client.get_position_balance.assert_not_awaited()
+        client.get_balances.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_sell_balance_error_is_unknown_and_never_submitted() -> None:
+    client = build_test_client()
+    try:
+        client.get_token_balance = AsyncMock(side_effect=TimeoutError("balance timeout"))
+        client.clob.post_order = AsyncMock()
+
+        with pytest.raises(TradingError, match="Balance preflight failed"):
+            await client.place_order(
+                make_order(price="0.55", size="0.50", side=Side.SELL),
+                wallet_id="test-wallet",
+            )
+
+        client.clob.post_order.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_sell_requires_exact_authenticated_share_balance() -> None:
+    client = build_test_client()
+    try:
+        client.get_token_balance = AsyncMock(return_value=Decimal("0.99"))
+        client.clob.post_order = AsyncMock()
+
+        with pytest.raises(InsufficientBalanceError):
+            await client.place_order(
+                make_order(price="0.55", size="1.00", side=Side.SELL),
+                wallet_id="test-wallet",
+            )
+
+        client.clob.post_order.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_reservation_failure_prevents_transport() -> None:
+    client = build_test_client()
+    try:
+        client.clob.post_orders_batch = AsyncMock()
+        client._reserve_balance = AsyncMock(
+            side_effect=RuntimeError("reserve broke")
+        )
 
         orders = [
             make_order(price="0.50", size="10"),
             make_order(token_id="67890", price="0.25", size="4"),
         ]
 
-        responses = await client.place_orders_batch(orders, wallet_id="test-wallet")
+        with pytest.raises(RuntimeError, match="reserve broke"):
+            await client.place_orders_batch(
+                orders,
+                wallet_id="test-wallet",
+                skip_balance_check=True,
+            )
 
-        assert [response.order_id for response in responses] == ["order-1", "order-2"]
-        assert client._reserve_balance.await_count == 2
+        client.clob.post_orders_batch.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_retains_buy_reservations_on_ambiguous_transport() -> None:
+    client = build_test_client()
+    try:
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.clob.post_orders_batch = AsyncMock(
+            side_effect=TradingError("transport outcome unknown")
+        )
+
+        orders = [
+            make_order(price="0.50", size="10"),
+            make_order(token_id="67890", price="0.25", size="4"),
+        ]
+
+        with pytest.raises(TradingError, match="transport outcome unknown"):
+            await client.place_orders_batch(
+                orders,
+                wallet_id="test-wallet",
+            )
+
+        assert await client.get_reserved_balance("test-wallet") == Decimal("6.00")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_persists_each_identity_before_ambiguous_transport() -> None:
+    client = build_test_client()
+    try:
+        set_batch_order_hashes(client, "order-a", "order-b")
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.clob.post_orders_batch = AsyncMock(
+            side_effect=TradingError("transport outcome unknown")
+        )
+        persisted: list[tuple[str, Decimal]] = []
+
+        async def persist_batch(
+            intents: list[tuple[str, Decimal]],
+        ) -> None:
+            persisted.extend(intents)
+
+        with pytest.raises(TradingError, match="transport outcome unknown"):
+            await client.place_orders_batch(
+                [
+                    make_order(price="0.50", size="10"),
+                    make_order(
+                        token_id="67890",
+                        price="0.25",
+                        size="4",
+                    ),
+                ],
+                wallet_id="test-wallet",
+                pre_submit=persist_batch,
+            )
+
+        assert persisted == [
+            ("order-a", Decimal("5.00")),
+            ("order-b", Decimal("1.00")),
+        ]
+        assert await client.get_reserved_balance("test-wallet") == Decimal("6.00")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_retains_reservations_when_presubmit_is_cancelled() -> None:
+    client = build_test_client()
+    try:
+        set_batch_order_hashes(client, "order-a", "order-b")
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.clob.post_orders_batch = AsyncMock()
+        persisted: list[tuple[str, Decimal]] = []
+
+        async def persist_then_cancel(
+            intents: list[tuple[str, Decimal]],
+        ) -> None:
+            persisted.extend(intents)
+            raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            await client.place_orders_batch(
+                [
+                    make_order(price="0.50", size="10"),
+                    make_order(
+                        token_id="67890",
+                        price="0.25",
+                        size="4",
+                    ),
+                ],
+                wallet_id="test-wallet",
+                pre_submit=persist_then_cancel,
+            )
+
+        assert persisted == [
+            ("order-a", Decimal("5.00")),
+            ("order-b", Decimal("1.00")),
+        ]
+        assert await client.get_reserved_balance("test-wallet") == Decimal("6.00")
+        client.clob.post_orders_batch.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_duplicate_item_retains_buy_reservation() -> None:
+    client = build_test_client()
+    try:
+        set_batch_order_hashes(client, "duplicate-order")
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.clob.post_orders_batch = AsyncMock(
+            return_value=[
+                OrderResponse(
+                    success=False,
+                    error_msg="DUPLICATE_ORDER",
+                    definitive_rejection=False,
+                )
+            ]
+        )
+
+        responses = await client.place_orders_batch(
+            [make_order(price="0.50", size="10")],
+            wallet_id="test-wallet",
+        )
+
+        assert responses[0].success is False
+        assert await client.get_reserved_balance("test-wallet") == Decimal("5.00")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_releases_buy_reservations_on_definitive_rejection() -> None:
+    client = build_test_client()
+    try:
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.clob.post_orders_batch = AsyncMock(
+            side_effect=OrderRejectedError(
+                "batch rejected",
+                reason="INVALID_ORDER",
+            )
+        )
+
+        with pytest.raises(OrderRejectedError, match="batch rejected"):
+            await client.place_orders_batch(
+                [make_order(price="0.50", size="10")],
+                wallet_id="test-wallet",
+            )
+
+        assert await client.get_reserved_balance("test-wallet") == Decimal("0")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_place_orders_batch_releases_reservations_on_local_signing_failure() -> None:
+    client = build_test_client()
+    try:
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client._build_signed_order = AsyncMock(
+            side_effect=[
+                {"order": "signed-1"},
+                RuntimeError("signing failed"),
+            ]
+        )
+        client.clob.post_orders_batch = AsyncMock()
+
+        orders = [
+            make_order(price="0.50", size="10"),
+            make_order(token_id="67890", price="0.25", size="4"),
+        ]
+
+        with pytest.raises(RuntimeError, match="signing failed"):
+            await client.place_orders_batch(
+                orders,
+                wallet_id="test-wallet",
+            )
+
+        assert await client.get_reserved_balance("test-wallet") == Decimal("0")
+        client.clob.post_orders_batch.assert_not_awaited()
     finally:
         await client.close()
 
@@ -441,35 +1116,14 @@ async def test_place_orders_batch_returns_responses_when_reservation_update_fail
 async def test_async_wrappers_await_underlying_clients() -> None:
     client = build_test_client()
     try:
-        client.clob.get_server_time = AsyncMock(return_value=1234567890)
-        client.clob.get_last_trade_price = AsyncMock(return_value=Decimal("0.55"))
-        client.clob.get_last_trades_prices = AsyncMock(
-            return_value={"12345": Decimal("0.55")}
-        )
-        client.clob.get_ok = AsyncMock(return_value=True)
-        client.clob.get_simplified_markets = AsyncMock(
-            return_value={"data": [], "next_cursor": "LTE="}
-        )
+        client.market_clob.get_server_time = AsyncMock(return_value=1234567890)
         client.public_clob.get_best_bid_ask = AsyncMock(
             return_value=(Decimal("0.45"), Decimal("0.47"))
         )
 
         assert await client.get_server_time() == 1234567890
-        assert await client.get_last_trade_price("12345") == Decimal("0.55")
-        assert await client.get_last_trades_prices(["12345"]) == {
-            "12345": Decimal("0.55")
-        }
-        assert await client.get_ok() is True
-        assert await client.get_simplified_markets("cursor-1") == {
-            "data": [],
-            "next_cursor": "LTE=",
-        }
         assert await client.get_best_bid_ask("12345") == (Decimal("0.45"), Decimal("0.47"))
-        client.clob.get_server_time.assert_awaited_once()
-        client.clob.get_last_trade_price.assert_awaited_once_with("12345")
-        client.clob.get_last_trades_prices.assert_awaited_once_with(["12345"])
-        client.clob.get_ok.assert_awaited_once_with()
-        client.clob.get_simplified_markets.assert_awaited_once_with("cursor-1")
+        client.market_clob.get_server_time.assert_awaited_once()
         client.public_clob.get_best_bid_ask.assert_awaited_once_with("12345")
     finally:
         await client.close()
@@ -551,13 +1205,17 @@ async def test_get_positions_batch_returns_materialized_results() -> None:
 async def test_place_market_order_buy_reserves_usd_amount() -> None:
     client = build_test_client()
     try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "market-order"}
+        )
         client.get_balances = AsyncMock(
             return_value=Balance(collateral=Decimal("100.00"), tokens={})
         )
         client.get_orderbook = AsyncMock(
             return_value=SimpleNamespace(
-                asks=[SimpleNamespace(price=Decimal("0.40"), size=Decimal("100"))],
+                asks=[(Decimal("0.40"), Decimal("100"))],
                 bids=[],
+                tick_size=Decimal("0.01"),
             )
         )
         client.clob.post_order = AsyncMock(
@@ -583,64 +1241,87 @@ async def test_place_market_order_buy_reserves_usd_amount() -> None:
 
 
 @pytest.mark.asyncio
+async def test_place_market_order_sell_uses_tuple_book_and_book_tick() -> None:
+    client = build_test_client()
+    try:
+        client._build_signed_order = AsyncMock(
+            return_value={"order": "signed", "_orderHash": "market-sell"}
+        )
+        client.get_balances = AsyncMock(
+            return_value=Balance(collateral=Decimal("100.00"), tokens={})
+        )
+        client.get_token_balance = AsyncMock(return_value=Decimal("20"))
+        client.get_orderbook = AsyncMock(
+            return_value=SimpleNamespace(
+                asks=[],
+                bids=[(Decimal("0.40"), Decimal("100"))],
+                tick_size=Decimal("0.01"),
+            )
+        )
+        client.clob.post_order = AsyncMock(
+            return_value=OrderResponse(
+                success=True, order_id="market-sell", status=OrderStatus.LIVE
+            )
+        )
+
+        response = await client.place_market_order(
+            MarketOrderRequest(
+                token_id="12345",
+                amount=Decimal("10"),
+                side=Side.SELL,
+                order_type=OrderType.FOK,
+            ),
+            wallet_id="test-wallet",
+        )
+
+        assert response.order_id == "market-sell"
+        signed_request = client._build_signed_order.await_args.args[0]
+        assert signed_request.price == Decimal("0.40")
+        assert client._build_signed_order.await_args.kwargs[
+            "tick_size"
+        ] == Decimal("0.01")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+async def test_market_order_fok_rejects_shallow_tuple_book(side: Side) -> None:
+    client = build_test_client()
+    try:
+        client.get_orderbook = AsyncMock(
+            return_value=SimpleNamespace(
+                asks=[(Decimal("0.40"), Decimal("10"))],
+                bids=[(Decimal("0.40"), Decimal("10"))],
+                tick_size=Decimal("0.01"),
+            )
+        )
+
+        with pytest.raises(TradingError, match="Insufficient liquidity"):
+            await client.place_market_order(
+                MarketOrderRequest(
+                    token_id="12345",
+                    amount=Decimal("20"),
+                    side=side,
+                    order_type=OrderType.FOK,
+                ),
+                wallet_id="test-wallet",
+            )
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_health_check_awaits_async_clob_probe() -> None:
     client = build_test_client()
     try:
-        client.clob.health_check = AsyncMock(return_value={"status": "healthy"})
+        client.market_clob.health_check = AsyncMock(return_value={"status": "healthy"})
 
         health = await client.health_check()
 
         assert health["status"] == "healthy"
         assert health["clob"]["status"] == "healthy"
-        client.clob.health_check.assert_awaited_once()
-    finally:
-        await client.close()
-
-
-@pytest.mark.asyncio
-async def test_add_wallet_registers_then_initializes_credentials() -> None:
-    client = build_test_client()
-    wallet_config = MagicMock()
-    client.key_manager.add_wallet = Mock(return_value="wallet-a")
-    client._initialize_api_credentials = AsyncMock()
-
-    try:
-        wallet_id = await client.add_wallet(
-            wallet_config,
-            wallet_id="wallet-a",
-            set_default=True,
-        )
-    finally:
-        await client.close()
-
-    assert wallet_id == "wallet-a"
-    client.key_manager.add_wallet.assert_called_once_with(
-        wallet_config,
-        wallet_id="wallet-a",
-        set_default=True,
-    )
-    client._initialize_api_credentials.assert_awaited_once_with("wallet-a")
-
-
-@pytest.mark.asyncio
-async def test_orderbook_websocket_facade_subscribes_and_disconnects() -> None:
-    client = build_test_client()
-    client._ensure_websocket = Mock()
-    websocket = MagicMock()
-    client._ws = websocket
-
-    try:
-        callback = Mock()
-        client.subscribe_orderbook("token-1", callback)
-
-        client._ensure_websocket.assert_called_once_with(None)
-        websocket.subscribe_market.assert_called_once()
-        assert websocket.subscribe_market.call_args.args[0] == "token-1"
-        assert callable(websocket.subscribe_market.call_args.args[1])
-
-        client.unsubscribe_all()
-        websocket.disconnect.assert_called_once_with()
-        assert client._ws is None
+        client.market_clob.health_check.assert_awaited_once()
     finally:
         await client.close()
 
@@ -650,7 +1331,7 @@ def test_unknown_settings_override_raises_type_error() -> None:
         enable_rate_limiting=False, enable_metrics=False, enable_rtds=False
     )
 
-    with patch("polymarket.client.signal.signal"), patch("polymarket.client.atexit.register"):
+    with patch("polymarket.client.atexit.register"):
         with pytest.raises(TypeError, match="Unknown PolymarketClient setting override"):
             PolymarketClient(settings=settings, not_a_setting=123)
 
@@ -664,7 +1345,7 @@ async def test_constructor_overrides_do_not_mutate_caller_settings() -> None:
         pool_connections=50,
     )
 
-    with patch("polymarket.client.signal.signal"), patch("polymarket.client.atexit.register"):
+    with patch("polymarket.client.atexit.register"):
         client = PolymarketClient(
             settings=settings,
             pool_connections=75,

@@ -189,6 +189,28 @@ class FOKNotFilledError(TradingError):
         self.requested_size = self.details["requested_size"]
 
 
+def is_definitive_order_rejection(error: Exception) -> bool:
+    """Return whether the exchange proved that this submission did not land."""
+    if isinstance(error, OrderRejectedError):
+        reason = str(error.reason or "").strip().upper()
+        # A duplicate response means the same exchange identity may already
+        # exist and therefore still requires exact-order reconciliation.
+        return reason != "DUPLICATE"
+    return isinstance(
+        error,
+        (
+            AuthenticationError,
+            FOKNotFilledError,
+            InsufficientAllowanceError,
+            InsufficientBalanceError,
+            InvalidOrderError,
+            MarketNotReadyError,
+            OrderExpiredError,
+            TickSizeError,
+        ),
+    )
+
+
 # Market data exceptions
 class MarketDataError(PolymarketError):
     """Market data unavailable or invalid."""

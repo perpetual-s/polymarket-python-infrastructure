@@ -46,7 +46,7 @@ async def testnet_client(testnet_enabled):
     # Add testnet wallet
     private_key = os.getenv("TESTNET_PRIVATE_KEY")
     wallet = WalletConfig(private_key=private_key)
-    client.add_wallet(wallet, wallet_id="testnet", set_default=True)
+    await client.add_wallet(wallet, wallet_id="testnet", set_default=True)
 
     yield client
 

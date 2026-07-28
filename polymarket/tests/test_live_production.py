@@ -9,10 +9,14 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from polymarket import PolymarketClient, WalletConfig
+
+pytestmark = [pytest.mark.live_network, pytest.mark.manual_operator]
 
 
 async def test_production_api():
@@ -39,7 +43,7 @@ async def test_production_api():
     # Add wallet
     print("\n2. Adding wallet...")
     wallet = WalletConfig(private_key=f"0x{private_key}" if not private_key.startswith("0x") else private_key)
-    client.add_wallet(wallet, wallet_id="production", set_default=True)
+    await client.add_wallet(wallet, wallet_id="production", set_default=True)
     print(f"✓ Wallet added: {wallet.address}")
 
     # Test 1: Get markets
@@ -84,11 +88,11 @@ async def test_production_api():
             total_value = sum(p.current_value for p in positions if p.current_value)
             total_pnl = sum(p.cash_pnl for p in positions if p.cash_pnl)
 
-            print("\n  Portfolio Summary:")
+            print(f"\n  Portfolio Summary:")
             print(f"    Total Value:  ${total_value:.2f}")
             print(f"    Total P&L:    ${total_pnl:.2f}")
 
-            print("\n  Top 3 Positions:")
+            print(f"\n  Top 3 Positions:")
             for i, pos in enumerate(positions[:3], 1):
                 print(f"\n  {i}. {pos.title}")
                 print(f"     Outcome: {pos.outcome}")
@@ -107,7 +111,7 @@ async def test_production_api():
         print(f"✓ Found {len(trades)} recent trades")
 
         if trades:
-            print("\n  Recent Trades:")
+            print(f"\n  Recent Trades:")
             for i, trade in enumerate(trades[:3], 1):
                 print(f"\n  {i}. {trade.market if hasattr(trade, 'market') else 'Unknown Market'}")
                 print(f"     Side: {trade.side if hasattr(trade, 'side') else 'N/A'}")

@@ -380,7 +380,7 @@ class MarketMetadataCache:
     """
     Specialized cache for market metadata.
 
-    Caches tick sizes, fee rates, and negative risk flags.
+    Caches tick sizes, complete fee metadata, and negative risk flags.
     """
 
     def __init__(self, ttl: float = 300.0):
@@ -408,6 +408,14 @@ class MarketMetadataCache:
     def set_fee_rate(self, token_id: str, fee_rate: int) -> None:
         """Cache fee rate for token."""
         self.cache.set(f"fee_rate:{token_id}", fee_rate)
+
+    def get_fee_info(self, token_id: str) -> Optional[Any]:
+        """Get cached economic fee metadata for token."""
+        return self.cache.get(f"fee_info:{token_id}")
+
+    def set_fee_info(self, token_id: str, fee_info: Any) -> None:
+        """Cache economic fee metadata for token."""
+        self.cache.set(f"fee_info:{token_id}", fee_info)
 
     def get_neg_risk(self, token_id: str) -> Optional[bool]:
         """Get cached negative risk flag for token."""

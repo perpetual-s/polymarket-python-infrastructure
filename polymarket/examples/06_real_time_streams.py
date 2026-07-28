@@ -13,16 +13,13 @@ Based on Phase 2: Real-Time Data Client
 
 import time
 
-try:
-    from polymarket.api.real_time_data import ClobApiKeyCreds, RealTimeDataClient, StreamHelpers
-except ImportError:  # downstream project vendored path
-    from shared.polymarket.api.real_time_data import (
-        ClobApiKeyCreds,
-        RealTimeDataClient,
-        StreamHelpers,
-    )
+from polymarket.api.real_time_data import (
+    ClobApiKeyCreds,
+    RealTimeDataClient,
+    StreamHelpers,
+)
 
-# ========== Example 1: Market Trades (Strategy-2 use case) ==========
+# ========== Example 1: Market Trades ==========
 
 
 def example_market_trades():
@@ -96,7 +93,7 @@ def example_event_comments():
         client.disconnect()
 
 
-# ========== Example 3: Crypto Prices (Strategy-1 Hedging) ==========
+# ========== Example 3: Crypto Prices ==========
 
 
 def example_crypto_prices():
@@ -176,7 +173,7 @@ def example_market_lifecycle():
         client.disconnect()
 
 
-# ========== Example 5: Price Changes (Strategy-1) ==========
+# ========== Example 5: Price Changes ==========
 
 
 def example_price_changes():

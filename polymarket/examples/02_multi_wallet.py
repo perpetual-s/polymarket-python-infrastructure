@@ -1,19 +1,14 @@
 """
-Example 2: Multi-Wallet Tracking for Strategy-3
+Example 2: Multi-Wallet Tracking
 
 Shows how to track 100+ wallets simultaneously with batch operations.
-Copy this pattern for your Strategy-3 dashboard backend.
 """
 
 import asyncio
 from typing import List
 
-try:
-    from polymarket import PolymarketClient
-    from polymarket.config import PolymarketSettings
-except ImportError:  # downstream project vendored path
-    from shared.polymarket import PolymarketClient
-    from shared.polymarket.config import PolymarketSettings
+from polymarket import PolymarketClient
+from polymarket.config import PolymarketSettings
 
 
 async def main():

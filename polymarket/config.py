@@ -4,10 +4,13 @@ Configuration management for Polymarket client.
 Loads settings from environment variables with validation.
 """
 
-from typing import Optional
-
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Polygon's current documented public mainnet endpoint. The former
+# polygon-rpc.com anonymous endpoint now returns HTTP 401.
+DEFAULT_POLYGON_RPC_URL = "https://polygon.drpc.org"
 
 
 class PolymarketSettings(BaseSettings):
@@ -32,7 +35,7 @@ class PolymarketSettings(BaseSettings):
 
     # Chain configuration
     chain_id: int = Field(default=137, description="Polygon chain ID")
-    rpc_url: Optional[str] = Field(None, description="Polygon RPC URL")
+    rpc_url: str = Field(DEFAULT_POLYGON_RPC_URL, description="Polygon RPC URL")
 
     # Timeouts and retries
     request_timeout: float = Field(default=30.0, ge=1.0, description="Request timeout (seconds)")
@@ -119,37 +122,38 @@ class PolymarketSettings(BaseSettings):
 
 
 # Rate limit configurations per endpoint
-# Source: https://docs.polymarket.com/quickstart/introduction/rate-limits
-# Audited against official docs on 2026-04-23.
+# Source: https://docs.polymarket.com/api-reference/rate-limits
+# Audited against official docs on 2026-07-17 (trading ceilings rose through
+# 2026; see changelog entries 2026-04-08 and 2026-06-01).
 # Every rate_limit_key passed from the api/*.py modules is listed below;
 # unknown keys fall through to "default" which is intentionally conservative.
 RATE_LIMITS = {
     # === CLOB API - Trading (burst + sustained) ===
     # Official limits have increased since the earlier project defaults.
     "POST:/order": {
-        "burst": 3500,
-        "limit": 3500,
+        "burst": 5000,
+        "limit": 5000,
         "window": 10,
-        "sustained": 36000,
+        "sustained": 120000,
         "sustained_window": 600,
     },
     "DELETE:/order": {
-        "burst": 3000,
-        "limit": 3000,
+        "burst": 5000,
+        "limit": 5000,
         "window": 10,
-        "sustained": 30000,
+        "sustained": 120000,
         "sustained_window": 600,
     },
     "POST:/orders": {
-        "burst": 1000,
-        "limit": 1000,
+        "burst": 2000,
+        "limit": 2000,
         "window": 10,
-        "sustained": 15000,
+        "sustained": 21000,
         "sustained_window": 600,
     },
     "DELETE:/orders": {
-        "burst": 1000,
-        "limit": 1000,
+        "burst": 2000,
+        "limit": 2000,
         "window": 10,
         "sustained": 15000,
         "sustained_window": 600,
@@ -162,10 +166,10 @@ RATE_LIMITS = {
         "sustained_window": 600,
     },
     "DELETE:/cancel-market-orders": {
-        "burst": 1000,
-        "limit": 1000,
+        "burst": 1500,
+        "limit": 1500,
         "window": 10,
-        "sustained": 1500,
+        "sustained": 21000,
         "sustained_window": 600,
     },
     # === CLOB API - Market Data ===

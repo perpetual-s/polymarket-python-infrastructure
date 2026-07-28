@@ -11,10 +11,9 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from ..exceptions import ValidationError, OrderExpiredError
 
 
-MIN_PRICE = Decimal("0.01")
-MAX_PRICE = Decimal("0.99")
+MIN_PRICE = Decimal("0")
+MAX_PRICE = Decimal("1")
 MIN_SIZE = Decimal("0.01")  # Minimum tokens (actual min is per-market)
-PRICE_DECIMALS = Decimal("0.01")  # 2 decimal places
 SIZE_DECIMALS = Decimal("0.01")   # 2 decimal places
 
 
@@ -45,15 +44,13 @@ def validate_price(price: Any) -> Decimal:
         raise ValidationError(f"Invalid price format: {price}") from e
 
     # Range check
-    if not (MIN_PRICE <= price_dec <= MAX_PRICE):
+    if not (MIN_PRICE < price_dec < MAX_PRICE):
         raise ValidationError(
-            f"Price must be between {MIN_PRICE} and {MAX_PRICE}, got {price_dec}"
+            f"Price must be strictly between {MIN_PRICE} and {MAX_PRICE}, got {price_dec}"
         )
 
-    # Quantize to 2 decimals (tick size)
-    normalized = price_dec.quantize(PRICE_DECIMALS, rounding=ROUND_HALF_UP)
-
-    return normalized
+    # The order builder validates and rounds against the market's actual tick.
+    return price_dec
 
 
 def validate_size(size: Any, min_size: Optional[Decimal] = None) -> Decimal:

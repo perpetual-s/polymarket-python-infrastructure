@@ -15,21 +15,37 @@ from .client import PolymarketClient
 from .exceptions import (
     APIError,
     AuthenticationError,
+    BalanceTrackingError,
     CircuitBreakerError,
+    FOKNotFilledError,
+    InsufficientAllowanceError,
     InsufficientBalanceError,
     InvalidOrderError,
+    MarketDataError,
+    MarketNotFoundError,
     MarketNotReadyError,
+    OrderBookError,
+    OrderDelayedError,
+    OrderExpiredError,
+    OrderNotFoundError,
     OrderRejectedError,
     PolymarketError,
     PriceUnavailableError,
     RateLimitError,
+    TickSizeError,
     TimeoutError,
     TradingError,
     ValidationError,
+    WebSocketConnectionError,
+    WebSocketDisconnectedError,
+    WebSocketError,
 )
 from .market_manager import MarketManager, MarketManagerConfig, MarketStats
 from .models import (
     Balance,
+    ClosedPosition,
+    FeeInfo,
+    FeeSchedule,
     LeaderboardTrader,
     Market,
     MarketOrderRequest,
@@ -45,10 +61,16 @@ from .models import (
     SignatureType,
     WalletConfig,
 )
+from .wallet_identity import (
+    ResolvedWalletIdentity,
+    ResolvedWalletRouting,
+    abbreviate_address,
+    resolve_wallet_config,
+    resolve_wallet_identity_from_env,
+    resolve_wallet_routing_from_env,
+)
 
 # Fee calculation utilities
-# NOTE: Polymarket has NO trading fees (https://docs.polymarket.com/polymarket-learn/trading/fees)
-# These functions return 0 fees for API compatibility only
 from .utils.fees import (
     calculate_net_cost,
     calculate_order_fee,
@@ -99,10 +121,11 @@ def __getattr__(name: str):
 def __dir__() -> list[str]:
     return sorted(set(globals()) | _CTF_EXPORTS)
 
+
 __all__ = [
     # Main client
     "PolymarketClient",
-    # Market Manager (real-time market data)
+    # Market manager
     "MarketManager",
     "MarketManagerConfig",
     "MarketStats",
@@ -113,14 +136,23 @@ __all__ = [
     "SignatureType",
     "OrderRequest",
     "MarketOrderRequest",
+    "ClosedPosition",
     "OrderResponse",
     "Order",
     "Position",
     "Balance",
+    "FeeInfo",
+    "FeeSchedule",
     "Market",
     "OrderBook",
     "PricePoint",
     "WalletConfig",
+    "ResolvedWalletIdentity",
+    "ResolvedWalletRouting",
+    "abbreviate_address",
+    "resolve_wallet_config",
+    "resolve_wallet_identity_from_env",
+    "resolve_wallet_routing_from_env",
     "LeaderboardTrader",
     # Exceptions
     "PolymarketError",
@@ -131,11 +163,24 @@ __all__ = [
     "TimeoutError",
     "CircuitBreakerError",
     "TradingError",
+    "BalanceTrackingError",
+    "InsufficientAllowanceError",
     "InsufficientBalanceError",
+    "FOKNotFilledError",
+    "OrderDelayedError",
+    "OrderExpiredError",
+    "OrderNotFoundError",
     "OrderRejectedError",
     "MarketNotReadyError",
     "InvalidOrderError",
+    "TickSizeError",
+    "MarketDataError",
+    "MarketNotFoundError",
+    "OrderBookError",
     "PriceUnavailableError",
+    "WebSocketError",
+    "WebSocketConnectionError",
+    "WebSocketDisconnectedError",
     # CTF - Neg-Risk adapter
     "NegRiskAdapter",
     "ConversionCalculator",

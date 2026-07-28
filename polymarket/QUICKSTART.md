@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-pip install -r polymarket/requirements.txt
+python -m pip install -e .
 ```
 
 ## 1. Public Market Data
@@ -49,14 +49,18 @@ Useful public methods:
 
 ```python
 import asyncio
+import os
 
-from polymarket import PolymarketClient, WalletConfig
+from polymarket import PolymarketClient, SignatureType, WalletConfig
 
 
 async def main():
     async with PolymarketClient() as client:
         await client.add_wallet(
-            WalletConfig(private_key="0x..."),
+            WalletConfig(
+                private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
+                signature_type=SignatureType.EOA,
+            ),
             wallet_id="main",
             set_default=True,
         )
@@ -69,15 +73,26 @@ asyncio.run(main())
 
 ```python
 import asyncio
+import os
 from decimal import Decimal
 
-from polymarket import PolymarketClient, WalletConfig, OrderRequest, OrderType, Side
+from polymarket import (
+    OrderRequest,
+    OrderType,
+    PolymarketClient,
+    Side,
+    SignatureType,
+    WalletConfig,
+)
 
 
 async def main():
     async with PolymarketClient() as client:
         await client.add_wallet(
-            WalletConfig(private_key="0x..."),
+            WalletConfig(
+                private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
+                signature_type=SignatureType.EOA,
+            ),
             wallet_id="main",
             set_default=True,
         )
@@ -100,9 +115,13 @@ asyncio.run(main())
 Important semantics:
 
 - `OrderRequest.size` is token quantity, not USD.
-- BUY preflight checks require `size * price` in collateral.
+- BUY preflight reserves `size * price` collateral plus the current taker fee.
 - SELL preflight checks require enough token balance from the positions API.
-- Use `skip_balance_check=True` only when you intentionally want fail-open behavior at the caller layer.
+- `skip_balance_check=True` skips the exchange-balance preflight. It does not
+  skip tick normalization, fee metadata, signing checks, or local BUY
+  reservation accounting.
+- Running this example can place a real order. Use a dedicated low-value wallet
+  and replace the token ID only after inspecting the market.
 
 ## 4. Batch Operations
 
@@ -151,6 +170,7 @@ asyncio.run(main())
 
 ## Recommended Reading
 
-- [README.md](./README.md)
+- [Project overview](../README.md)
+- [Package overview](./README.md)
 - [API_REFERENCE.md](./API_REFERENCE.md)
 - [`examples/`](./examples)

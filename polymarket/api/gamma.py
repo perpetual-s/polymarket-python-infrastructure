@@ -91,6 +91,9 @@ class GammaAPI(BaseAPIClient):
             order_min_size=data.get("orderMinSize"),
             order_price_min_tick_size=data.get("orderPriceMinTickSize"),
             accepting_orders=data.get("acceptingOrders"),
+            fees_enabled=data.get("feesEnabled"),
+            taker_base_fee=data.get("takerBaseFee"),
+            fee_schedule=data.get("feeSchedule"),
             # UMA oracle fields
             question_id=data.get("questionID"),
             uma_bond=data.get("umaBond"),

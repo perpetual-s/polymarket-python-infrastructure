@@ -78,12 +78,15 @@ class CircuitBreaker:
         try:
             result = func(*args, **kwargs)
 
-            # Success - reset on half-open or keep closed
+            # A successful call ends the current failure streak. Without this
+            # reset, isolated failures separated by healthy responses
+            # accumulate until they incorrectly open the circuit.
             with self._lock:
                 if self._state == "HALF_OPEN":
                     logger.info(f"Circuit breaker {self.name}: HALF_OPEN -> CLOSED")
-                    self._state = "CLOSED"
-                    self._failures = 0
+                self._state = "CLOSED"
+                self._failures = 0
+                self._last_failure_time = None
 
             return result
 
@@ -265,8 +268,9 @@ class RetryStrategy:
                             logger.info(
                                 f"Circuit breaker {self.circuit_breaker.name}: HALF_OPEN -> CLOSED"
                             )
-                            self.circuit_breaker._state = "CLOSED"
-                            self.circuit_breaker._failures = 0
+                        self.circuit_breaker._state = "CLOSED"
+                        self.circuit_breaker._failures = 0
+                        self.circuit_breaker._last_failure_time = None
 
                 return result
 
@@ -354,9 +358,9 @@ class RetryStrategy:
                 # Success - update circuit breaker with proper locking
                 if self.circuit_breaker:
                     with self.circuit_breaker._lock:
-                        if self.circuit_breaker._state == "HALF_OPEN":
-                            self.circuit_breaker._state = "CLOSED"
-                            self.circuit_breaker._failures = 0
+                        self.circuit_breaker._state = "CLOSED"
+                        self.circuit_breaker._failures = 0
+                        self.circuit_breaker._last_failure_time = None
 
                 return result
 

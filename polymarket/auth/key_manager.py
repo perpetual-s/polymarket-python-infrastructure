@@ -11,10 +11,19 @@ from dataclasses import dataclass, field
 import logging
 
 from ..models import WalletConfig, SignatureType
-from ..exceptions import AuthenticationError, ValidationError
-from ..utils.validators import validate_private_key, validate_address
+from ..exceptions import AuthenticationError
+from ..wallet_identity import abbreviate_address, resolve_wallet_config
 
 logger = logging.getLogger(__name__)
+
+
+def _display_wallet_id(wallet_id: str) -> str:
+    """Keep logical IDs readable and abbreviate address-shaped IDs."""
+    return (
+        abbreviate_address(wallet_id)
+        if str(wallet_id).lower().startswith("0x")
+        else str(wallet_id)
+    )
 
 
 @dataclass
@@ -69,39 +78,12 @@ class KeyManager:
             AuthenticationError: If wallet already exists
         """
         try:
-            # Validate private key
-            private_key = validate_private_key(wallet_config.private_key.get_secret_value())
-
-            # ALWAYS derive signer address from private key
-            # This is the address that signs transactions (EOA address)
-            try:
-                from web3 import Web3
-                account = Web3().eth.account.from_key(private_key)
-                signer_address = account.address
-            except ImportError:
-                raise AuthenticationError(
-                    "web3 not installed, cannot derive address from private key"
-                )
-
-            # For proxy wallets: address field = proxy address, funder = not used
-            # For EOA wallets: address field = EOA address, funder = None
-            # Official py-clob-client convention:
-            #   - Signer always uses EOA's private key and address
-            #   - For proxy wallets, the "funder" is the proxy address (confusing name!)
-            funder = None
-            if wallet_config.signature_type in (SignatureType.MAGIC, SignatureType.PROXY):
-                # For proxy wallets, the provided address IS the proxy address (funder)
-                if not wallet_config.address:
-                    raise ValidationError(
-                        f"Proxy address required in 'address' field for signature type "
-                        f"{wallet_config.signature_type}"
-                    )
-                funder = validate_address(wallet_config.address)  # Store proxy as funder
-                # Use signer address for authentication
-                address = signer_address
-            else:
-                # For EOA wallets, use signer address
-                address = signer_address
+            identity = resolve_wallet_config(wallet_config)
+            normalized_config = identity.wallet_config
+            private_key = normalized_config.private_key.get_secret_value()
+            address = identity.signer_address
+            funder = identity.funder_address
+            signature_type = identity.signature_type
 
             # Use address as wallet_id if not provided
             if not wallet_id:
@@ -110,13 +92,15 @@ class KeyManager:
             with self._lock:
                 # Check if wallet already exists
                 if wallet_id in self._wallets:
-                    raise AuthenticationError(f"Wallet {wallet_id} already exists")
+                    raise AuthenticationError(
+                        f"Wallet {_display_wallet_id(wallet_id)} already exists"
+                    )
 
                 # Create credentials
                 credentials = WalletCredentials(
                     address=address,
                     private_key=private_key,
-                    signature_type=wallet_config.signature_type,
+                    signature_type=signature_type,
                     funder=funder
                 )
 
@@ -127,14 +111,17 @@ class KeyManager:
                     self._default_wallet = wallet_id
 
                 logger.info(
-                    f"Added wallet {wallet_id} ({address}) "
-                    f"with signature type {wallet_config.signature_type}"
+                    "Added wallet %s (signer=%s, funder=%s, signature_type=%s)",
+                    _display_wallet_id(wallet_id),
+                    abbreviate_address(address),
+                    abbreviate_address(funder),
+                    int(signature_type),
                 )
 
             return wallet_id
 
         except Exception as e:
-            logger.error(f"Failed to add wallet: {e}")
+            logger.error("Failed to add wallet: %s", e)
             raise
 
     def remove_wallet(self, wallet_id: str) -> None:
@@ -149,7 +136,9 @@ class KeyManager:
         """
         with self._lock:
             if wallet_id not in self._wallets:
-                raise AuthenticationError(f"Wallet {wallet_id} not found")
+                raise AuthenticationError(
+                    f"Wallet {_display_wallet_id(wallet_id)} not found"
+                )
 
             del self._wallets[wallet_id]
 
@@ -157,7 +146,7 @@ class KeyManager:
             if self._default_wallet == wallet_id:
                 self._default_wallet = next(iter(self._wallets), None)
 
-            logger.info(f"Removed wallet {wallet_id}")
+            logger.info("Removed wallet %s", _display_wallet_id(wallet_id))
 
     def get_wallet(self, wallet_id: Optional[str] = None) -> WalletCredentials:
         """
@@ -180,7 +169,9 @@ class KeyManager:
                     raise AuthenticationError("No wallets configured")
 
             if wallet_id not in self._wallets:
-                raise AuthenticationError(f"Wallet {wallet_id} not found")
+                raise AuthenticationError(
+                    f"Wallet {_display_wallet_id(wallet_id)} not found"
+                )
 
             return self._wallets[wallet_id]
 
@@ -209,7 +200,10 @@ class KeyManager:
             credentials.api_secret = api_secret
             credentials.api_passphrase = api_passphrase
 
-            logger.info(f"Set API credentials for wallet {wallet_id}")
+            logger.info(
+                "Set API credentials for wallet %s",
+                _display_wallet_id(wallet_id),
+            )
 
     def has_api_credentials(self, wallet_id: Optional[str] = None) -> bool:
         """
@@ -262,10 +256,15 @@ class KeyManager:
         """
         with self._lock:
             if wallet_id not in self._wallets:
-                raise AuthenticationError(f"Wallet {wallet_id} not found")
+                raise AuthenticationError(
+                    f"Wallet {_display_wallet_id(wallet_id)} not found"
+                )
 
             self._default_wallet = wallet_id
-            logger.info(f"Set default wallet to {wallet_id}")
+            logger.info(
+                "Set default wallet to %s",
+                _display_wallet_id(wallet_id),
+            )
 
     def clear(self) -> None:
         """Clear all wallets."""

@@ -23,8 +23,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Add repository root to path so local `polymarket` imports resolve
-repo_root = Path(__file__).resolve().parent.parent.parent
+# Add the standalone repository root so `polymarket` imports resolve.
+repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
 from polymarket import PolymarketClient  # noqa: E402

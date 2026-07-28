@@ -8,43 +8,95 @@ Tests:
 - Contract address verification
 """
 
-import pytest
+import inspect
 from decimal import Decimal
-from polymarket.models import Market, Event
-from polymarket.utils.allowances import EXCHANGE_CONTRACTS, USDC_ADDRESS, CTF_ADDRESS
+
+import pytest
+
+from polymarket.config import DEFAULT_POLYGON_RPC_URL, PolymarketSettings
+from polymarket.ctf.adapter import NegRiskAdapter
+from polymarket.models import Event, Market
+from polymarket.utils.allowances import (
+    AllowanceManager,
+    COLLATERAL_ADDRESS,
+    CTF_ADDRESS,
+    EXCHANGE_CONTRACTS_V2,
+)
 
 
 class TestContractAddresses:
-    """Test that contract addresses match official Polymarket agents repo."""
+    """Approval targets match the CLOB V2 canon (docs.polymarket.com/resources/contracts)."""
 
     def test_exchange_contracts_count(self):
-        """Verify we have all 3 exchange contracts."""
-        assert len(EXCHANGE_CONTRACTS) == 3, "Should have 3 exchange contracts"
+        """Verify we have all 3 V2 approval targets."""
+        assert len(EXCHANGE_CONTRACTS_V2) == 3, "Should have 3 exchange contracts"
 
-    def test_exchange_contracts_include_neg_risk_adapter(self):
-        """Verify Neg Risk Adapter is included."""
-        NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
-        assert NEG_RISK_ADAPTER in EXCHANGE_CONTRACTS, "Missing Neg Risk Adapter"
+    def test_exchange_contracts_include_neg_risk_adapter_v2(self):
+        """Verify the V2 NegRiskCtfCollateralAdapter is included."""
+        NEG_RISK_ADAPTER_V2 = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
+        assert NEG_RISK_ADAPTER_V2 in EXCHANGE_CONTRACTS_V2, "Missing Neg Risk Adapter V2"
 
-    def test_ctf_exchange_included(self):
-        """Verify CTF Exchange is included."""
-        CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
-        assert CTF_EXCHANGE in EXCHANGE_CONTRACTS, "Missing CTF Exchange"
+    def test_ctf_exchange_v2_included(self):
+        """Verify CTF Exchange V2 is included."""
+        CTF_EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"
+        assert CTF_EXCHANGE_V2 in EXCHANGE_CONTRACTS_V2, "Missing CTF Exchange V2"
 
-    def test_neg_risk_ctf_exchange_included(self):
-        """Verify Neg Risk CTF Exchange is included."""
-        NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
-        assert NEG_RISK_EXCHANGE in EXCHANGE_CONTRACTS, "Missing Neg Risk CTF Exchange"
+    def test_neg_risk_ctf_exchange_v2_included(self):
+        """Verify Neg Risk CTF Exchange V2 is included."""
+        NEG_RISK_EXCHANGE_V2 = "0xe2222d279d744050d28e00520010520000310F59"
+        assert NEG_RISK_EXCHANGE_V2 in EXCHANGE_CONTRACTS_V2, "Missing Neg Risk CTF Exchange V2"
 
-    def test_usdc_address_matches_official(self):
-        """Verify USDC address matches official (case-insensitive for EIP-55 checksum)."""
-        OFFICIAL_USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-        assert USDC_ADDRESS.lower() == OFFICIAL_USDC.lower(), f"USDC address mismatch: {USDC_ADDRESS}"
+    def test_collateral_is_pusd(self):
+        """Verify the collateral token is pUSD (replaced USDC.e in CLOB V2)."""
+        OFFICIAL_PUSD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        assert COLLATERAL_ADDRESS.lower() == OFFICIAL_PUSD.lower(), (
+            f"collateral address mismatch: {COLLATERAL_ADDRESS}"
+        )
 
     def test_ctf_address_matches_official(self):
         """Verify CTF address matches official (case-insensitive for EIP-55 checksum)."""
         OFFICIAL_CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
         assert CTF_ADDRESS.lower() == OFFICIAL_CTF.lower(), f"CTF address mismatch: {CTF_ADDRESS}"
+
+    def test_current_polygon_rpc_is_the_shared_default(self):
+        """All on-chain helpers use Polygon's current documented public RPC."""
+        assert DEFAULT_POLYGON_RPC_URL == "https://polygon.drpc.org"
+        assert PolymarketSettings().rpc_url == DEFAULT_POLYGON_RPC_URL
+        assert (
+            inspect.signature(AllowanceManager.__init__)
+            .parameters["web3_provider"]
+            .default
+            == DEFAULT_POLYGON_RPC_URL
+        )
+        assert (
+            inspect.signature(NegRiskAdapter.__init__)
+            .parameters["web3_provider"]
+            .default
+            == DEFAULT_POLYGON_RPC_URL
+        )
+
+    def test_allowance_checks_cover_all_v2_targets(self):
+        """The read path must iterate the actual V2 target list without a NameError."""
+
+        class Call:
+            def call(self):
+                return 123
+
+        class Functions:
+            def allowance(self, _wallet, _spender):
+                return Call()
+
+        class Token:
+            functions = Functions()
+
+        manager = object.__new__(AllowanceManager)
+        manager.usdc = Token()
+        manager.ctf = Token()
+
+        result = manager.check_allowances("0x1111111111111111111111111111111111111111")
+
+        assert result["USDC"] == {target: 123 for target in EXCHANGE_CONTRACTS_V2}
+        assert result["CTF"] == {target: 123 for target in EXCHANGE_CONTRACTS_V2}
 
 
 class TestMarketFieldsAdded:

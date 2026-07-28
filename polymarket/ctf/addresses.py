@@ -1,8 +1,10 @@
 """
-Contract addresses for Polymarket Neg-Risk CTF Adapter.
+Contract addresses for Polymarket (Polygon mainnet).
 
-Source: https://github.com/Polymarket/neg-risk-ctf-adapter/blob/main/addresses.json
-Network: Polygon Mainnet (Chain ID: 137)
+V2 sources (2026-07-18): https://docs.polymarket.com/resources/contracts,
+cross-checked against py-clob-client-v2 config.py. V1 constants below are
+kept for reference but the V1 exchanges reject orders since 2026-04-28 and
+the V1 neg-risk adapter is retired as of 2026-07-17.
 License: MIT
 """
 
@@ -13,8 +15,23 @@ CHAIN_ID = 137
 
 # Core CTF Contracts
 CTF_ADDRESS = "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
-USDC_ADDRESS = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"
+USDC_ADDRESS = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"  # legacy collateral
 
+# --- CLOB V2 (current) -----------------------------------------------------
+CTF_EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"
+NEG_RISK_CTF_EXCHANGE_V2 = "0xe2222d279d744050d28e00520010520000310F59"
+NEG_RISK_ADAPTER_V2 = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"  # NegRiskCtfCollateralAdapter
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"  # CollateralToken proxy
+COLLATERAL_ADDRESS = PUSD_ADDRESS
+
+# All V2 contracts that need pUSD + CTF approval
+EXCHANGE_CONTRACTS_V2 = [
+    CTF_EXCHANGE_V2,
+    NEG_RISK_CTF_EXCHANGE_V2,
+    NEG_RISK_ADAPTER_V2,
+]
+
+# --- CLOB V1 (deprecated; orders rejected since 2026-04-28) -----------------
 # Neg-Risk CTF Adapter Contracts (Polygon Mainnet)
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
@@ -57,6 +74,10 @@ CORE_CONTRACTS: Dict[str, str] = {
 ALL_CONTRACTS: Dict[str, str] = {
     **CORE_CONTRACTS,
     **NEG_RISK_CONTRACTS,
+    "ctf_exchange_v2": CTF_EXCHANGE_V2,
+    "neg_risk_exchange_v2": NEG_RISK_CTF_EXCHANGE_V2,
+    "neg_risk_adapter_v2": NEG_RISK_ADAPTER_V2,
+    "pusd": PUSD_ADDRESS,
 }
 
 

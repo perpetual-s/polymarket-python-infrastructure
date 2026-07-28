@@ -1,89 +1,52 @@
 #!/usr/bin/env python3
-"""Check balances of all configured wallets."""
+"""Read balances for wallets explicitly configured in the environment.
+
+For each ``WALLET_<NAME>_PRIVATE_KEY``, optional companion values are:
+
+- ``WALLET_<NAME>_SIGNATURE_TYPE``: integer 0-3, default 0 (EOA)
+- ``WALLET_<NAME>_FUNDER_ADDRESS``: required by proxy/Safe/deposit wallets
+
+The script reads account state but does not submit or cancel orders.
+"""
 
 import asyncio
 import os
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-
-from dotenv import load_dotenv
-from loguru import logger
-
-load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
-
-try:
-    from polymarket import PolymarketClient, WalletConfig
-    from polymarket.models import SignatureType
-except ImportError:  # downstream project vendored path
-    from shared.polymarket import PolymarketClient, WalletConfig
-    from shared.polymarket.models import SignatureType
+from polymarket import PolymarketClient, SignatureType, WalletConfig
 
 
-async def main():
-    """Check all wallet balances."""
-    client = PolymarketClient()
+async def main() -> None:
+    prefixes = sorted(
+        key.removesuffix("_PRIVATE_KEY")
+        for key in os.environ
+        if key.startswith("WALLET_") and key.endswith("_PRIVATE_KEY")
+    )
+    if not prefixes:
+        raise RuntimeError("No WALLET_<NAME>_PRIVATE_KEY variables were found")
 
-    # Find all wallets in env
-    wallet_ids = []
-    for key in os.environ:
-        if key.startswith("WALLET_") and key.endswith("_PRIVATE_KEY"):
-            wallet_id = key.replace("_PRIVATE_KEY", "")
-            wallet_ids.append(wallet_id)
-
-    wallet_ids.sort()
-    logger.info(f"Found {len(wallet_ids)} wallets")
-
-    results = []
-
-    for wallet_id in wallet_ids:
-        private_key = os.getenv(f"{wallet_id}_PRIVATE_KEY")
-        eoa_address = os.getenv(f"{wallet_id}_ADDRESS")
-        proxy_address = os.getenv(f"{wallet_id}_PROXY_ADDRESS")
-
-        if not private_key:
-            continue
-
-        try:
-            wallet_config = WalletConfig(
-                private_key=private_key,
-                address=proxy_address if proxy_address else eoa_address,
-                signature_type=SignatureType.PROXY if proxy_address else SignatureType.EOA,
+    async with PolymarketClient() as client:
+        for prefix in prefixes:
+            signature_type = SignatureType(
+                int(os.environ.get(f"{prefix}_SIGNATURE_TYPE", "0"))
             )
-            await client.add_wallet(wallet_config, wallet_id=wallet_id)
-
+            funder = os.environ.get(f"{prefix}_FUNDER_ADDRESS")
+            wallet_id = await client.add_wallet(
+                WalletConfig(
+                    private_key=os.environ[f"{prefix}_PRIVATE_KEY"],
+                    address=funder,
+                    signature_type=signature_type,
+                ),
+                wallet_id=prefix.lower(),
+            )
             balance = await client.get_balances(wallet_id=wallet_id)
-            results.append(
+            print(
                 {
                     "wallet_id": wallet_id,
-                    "address": proxy_address or eoa_address,
-                    "balance": float(balance.collateral),
+                    "signature_type": signature_type.value,
+                    "funder": funder,
+                    "collateral": str(balance.collateral),
                 }
             )
-            logger.info(f"{wallet_id}: ${balance.collateral:.2f} (proxy: {bool(proxy_address)})")
-
-        except Exception as e:
-            logger.error(f"{wallet_id}: Error - {e}")
-            results.append(
-                {
-                    "wallet_id": wallet_id,
-                    "address": proxy_address or eoa_address,
-                    "balance": 0,
-                    "error": str(e),
-                }
-            )
-
-    await client.close()
-
-    # Summary
-    total = sum(r.get("balance", 0) for r in results)
-    logger.info(f"\nTotal across all wallets: ${total:.2f}")
-
-    # Find wallet with highest balance
-    if results:
-        best = max(results, key=lambda x: x.get("balance", 0))
-        logger.info(f"Best wallet: {best['wallet_id']} with ${best['balance']:.2f}")
 
 
 if __name__ == "__main__":

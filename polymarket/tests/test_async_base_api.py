@@ -15,19 +15,21 @@ Tests verify:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from decimal import Decimal
+from typing import Any, Dict
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import aiohttp
 import pytest
 import pytest_asyncio
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 from polymarket.api.base import BaseAPIClient
 from polymarket.config import PolymarketSettings
 from polymarket.exceptions import APIError, AuthenticationError, RateLimitError
 from polymarket.exceptions import TimeoutError as PolymarketTimeoutError
 from polymarket.utils.rate_limiter import RateLimiter
-from polymarket.utils.retry import CircuitBreaker
+from polymarket.utils.retry import CircuitBreaker, RetryStrategy
 
 
 @pytest.fixture
@@ -192,11 +194,10 @@ class TestAsyncErrorHandling:
     async def test_timeout_logs_at_warning_not_error(self, base_client, caplog):
         """Transient request timeouts must log at WARNING, not ERROR.
 
-        ERROR-level logs gate marker eligibility via paper_evidence_report.
-        A 1-second network blip on `data-api.polymarket.com/activity`
-        should not block a paper-rehearsal marker, because the retry
-        strategy classifies these as retriable. Same pattern as the
-        WebSocket transient-close downgrade in Phase 2 (06bf0898).
+        A 1-second network blip on `data-api.polymarket.com/activity` is
+        retriable by design; logging it as ERROR would page the operator
+        for self-healing noise. Same pattern as the WebSocket
+        transient-close downgrade in Phase 2 (06bf0898).
         """
         import logging as stdlib_logging
 
@@ -246,7 +247,7 @@ class TestAsyncErrorHandling:
         """Transient aiohttp connection errors must log at WARNING, not ERROR.
 
         Same rationale as test_timeout_logs_at_warning_not_error: retriable
-        transient network failures should not block paper-rehearsal markers.
+        transient network failures are WARNING-grade noise, not ERRORs.
         """
         import logging as stdlib_logging
 
@@ -374,6 +375,148 @@ class TestAsyncCircuitBreaker:
         assert mock_request.call_count == 1
         assert base_client.circuit_breaker.state == "CLOSED"
         assert base_client.circuit_breaker.failures == 0
+
+
+class TestCircuitBreakerRecovery:
+    """Successful calls separate isolated failures into distinct incidents."""
+
+    def test_direct_breaker_alternating_failure_and_success_never_opens(self):
+        breaker = CircuitBreaker(failure_threshold=3, timeout=60.0, name="direct")
+
+        def fail():
+            raise APIError("isolated upstream failure", status_code=500)
+
+        for _ in range(5):
+            with pytest.raises(APIError):
+                breaker.call(fail)
+
+            assert breaker.call(lambda: "healthy") == "healthy"
+            assert breaker.state == "CLOSED"
+            assert breaker.failures == 0
+
+    def test_sync_retry_alternating_failure_and_success_never_opens(self):
+        breaker = CircuitBreaker(failure_threshold=3, timeout=60.0, name="sync")
+        strategy = RetryStrategy(max_retries=0, jitter=False, circuit_breaker=breaker)
+
+        def fail():
+            raise APIError("isolated upstream failure", status_code=500)
+
+        for _ in range(5):
+            with pytest.raises(APIError):
+                strategy.execute(fail)
+
+            assert strategy.execute(lambda: "healthy") == "healthy"
+            assert breaker.state == "CLOSED"
+            assert breaker.failures == 0
+
+    @pytest.mark.asyncio
+    async def test_async_retry_alternating_failure_and_success_never_opens(self):
+        breaker = CircuitBreaker(failure_threshold=3, timeout=60.0, name="async")
+        strategy = RetryStrategy(max_retries=0, jitter=False, circuit_breaker=breaker)
+
+        async def fail():
+            raise APIError("isolated upstream failure", status_code=500)
+
+        async def succeed():
+            return "healthy"
+
+        for _ in range(5):
+            with pytest.raises(APIError):
+                await strategy.execute_async(fail)
+
+            assert await strategy.execute_async(succeed) == "healthy"
+            assert breaker.state == "CLOSED"
+            assert breaker.failures == 0
+
+
+class TestRequestDeduplication:
+    """GET coalescing must preserve request identity."""
+
+    @staticmethod
+    def _blocking_response(request_headers, entered, release):
+        class ResponseContext:
+            async def __aenter__(self):
+                entered.set()
+                await release.wait()
+                response = AsyncMock()
+                response.status = 200
+                address = request_headers.get("POLY_ADDRESS", "public")
+                response.read = AsyncMock(
+                    return_value=f'{{"identity": "{address}"}}'.encode()
+                )
+                return response
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        return ResponseContext()
+
+    @pytest.mark.asyncio
+    async def test_authenticated_gets_do_not_coalesce_across_wallets(self, base_client):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        def request(*args, **kwargs):
+            return self._blocking_response(kwargs["headers"], entered, release)
+
+        with patch.object(base_client.session, "request", side_effect=request) as mock_request:
+            wallet_a = asyncio.create_task(
+                base_client._make_request(
+                    "GET",
+                    "/data/orders",
+                    headers={
+                        "POLY_ADDRESS": "wallet-a",
+                        "POLY_API_KEY": "opaque-key-a",
+                        "POLY_SIGNATURE": "opaque-signature-a",
+                    },
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            wallet_b = asyncio.create_task(
+                base_client._make_request(
+                    "GET",
+                    "/data/orders",
+                    headers={
+                        "POLY_ADDRESS": "wallet-b",
+                        "POLY_API_KEY": "opaque-key-b",
+                        "POLY_SIGNATURE": "opaque-signature-b",
+                    },
+                )
+            )
+            await asyncio.sleep(0)
+            assert base_client._inflight_requests == {}
+            release.set()
+
+            result_a, result_b = await asyncio.gather(wallet_a, wallet_b)
+
+        assert result_a == {"identity": "wallet-a"}
+        assert result_b == {"identity": "wallet-b"}
+        assert mock_request.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_identical_public_gets_still_coalesce(self, base_client):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        def request(*args, **kwargs):
+            return self._blocking_response(kwargs["headers"], entered, release)
+
+        with patch.object(base_client.session, "request", side_effect=request) as mock_request:
+            first = asyncio.create_task(
+                base_client._make_request("GET", "/markets", params={"limit": 25})
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            second = asyncio.create_task(
+                base_client._make_request("GET", "/markets", params={"limit": 25})
+            )
+            await asyncio.sleep(0)
+            release.set()
+
+            result_a, result_b = await asyncio.gather(first, second)
+
+        assert result_a == {"identity": "public"}
+        assert result_b == {"identity": "public"}
+        assert mock_request.call_count == 1
 
 
 class TestSessionLifecycle:

@@ -809,8 +809,6 @@ class TestOrderSignerBoundary:
         self, monkeypatch, caplog
     ):
         """A signer that echoes its key cannot reach logs or tracebacks."""
-        import sys
-        import types
         from decimal import Decimal
 
         from polymarket.exceptions import TradingError
@@ -821,26 +819,14 @@ class TestOrderSignerBoundary:
         # it, so only the fixed-message/``from None`` boundary protects it.
         private_key = "tiny-signer-secret"
 
-        class EchoingSigner:
-            def __init__(self, key: str) -> None:
-                raise ValueError(f"unprocessable signing key: {key}")
+        def fail_signing(_typed_data, key: str):
+            raise ValueError(f"unprocessable signing key: {key}")
 
-        package = types.ModuleType("py_order_utils")
-        builders = types.ModuleType("py_order_utils.builders")
-        signer = types.ModuleType("py_order_utils.signer")
-        model = types.ModuleType("py_order_utils.model")
-        builders.OrderBuilder = object  # unreached: Signer raises first
-        signer.Signer = EchoingSigner
-        model.OrderData = lambda **_kwargs: None
-        model.BUY = 0
-        model.SELL = 1
-        for name, module in {
-            "py_order_utils": package,
-            "py_order_utils.builders": builders,
-            "py_order_utils.signer": signer,
-            "py_order_utils.model": model,
-        }.items():
-            monkeypatch.setitem(sys.modules, name, module)
+        monkeypatch.setattr(
+            OrderBuilder,
+            "_sign_typed_data",
+            staticmethod(fail_signing),
+        )
 
         order = OrderRequest(
             token_id="1234567890",

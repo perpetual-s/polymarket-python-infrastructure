@@ -15,10 +15,7 @@ Web research findings: https://docs.polymarket.com/
 import asyncio
 import os
 
-try:
-    from polymarket import PolymarketClient, WalletConfig
-except ImportError:  # downstream project vendored path
-    from shared.polymarket import PolymarketClient, WalletConfig
+from polymarket import PolymarketClient, WalletConfig
 
 
 async def main():
@@ -43,7 +40,10 @@ async def main():
         private_key = f"0x{private_key}"
 
     if private_key:
-        client.add_wallet(wallet=WalletConfig(private_key=private_key), wallet_id="demo")
+        await client.add_wallet(
+            wallet=WalletConfig(private_key=private_key),
+            wallet_id="demo",
+        )
 
         # Get portfolio value with breakdown
         portfolio = await client.get_portfolio_value(wallet_id="demo")
@@ -175,8 +175,7 @@ async def main():
                 whale_activities = await client.data.get_activity(user=whale_address, limit=5)
                 print(f"Recent activity: {len(whale_activities)} records")
 
-                # This is how Strategy-3 tracks wallets!
-                print("\n✅ This demonstrates Strategy-3's wallet tracking capability")
+                print("\n✅ This demonstrates public wallet-activity tracking")
             except Exception as e:
                 print(f"Could not fetch whale data: {e}")
 
@@ -188,7 +187,7 @@ Key Takeaways:
 1. Portfolio Value: Get detailed breakdown (bets, cash, equity_total)
 2. Whale Discovery: Filter holders by minimum balance
 3. Activity Tracking: Monitor all onchain operations
-4. Strategy-3 Ready: Full infrastructure for copy trading
+4. Wallet Tracking: Reusable infrastructure for portfolio research
 
 Use Cases:
 - Portfolio Management: Track allocation and deployment

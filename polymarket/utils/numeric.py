@@ -95,24 +95,33 @@ def from_wei(wei: int, decimals: int = 6) -> Decimal:
     return Decimal(wei) / divisor
 
 
-def quantize_price(price: Decimal, tick_size: Decimal = Decimal("0.01")) -> Decimal:
+def quantize_price(
+    price: Decimal,
+    tick_size: Decimal,
+    *,
+    rounding: str = ROUND_HALF_UP,
+) -> Decimal:
     """
     Round price to tick size.
 
     Args:
         price: Price to round
-        tick_size: Minimum price increment (default: 0.01)
+        tick_size: Required minimum price increment
+        rounding: Decimal rounding mode for fractional tick counts
 
     Returns:
         Rounded price
 
     Examples:
-        >>> quantize_price(Decimal("0.655"))
+        >>> quantize_price(Decimal("0.655"), Decimal("0.01"))
         Decimal('0.66')
         >>> quantize_price(Decimal("0.333"), Decimal("0.01"))
         Decimal('0.33')
     """
-    return price.quantize(tick_size, rounding=ROUND_HALF_UP)
+    if tick_size <= 0:
+        raise ValueError(f"tick_size must be positive: {tick_size}")
+    tick_count = (price / tick_size).to_integral_value(rounding=rounding)
+    return tick_count * tick_size
 
 
 def quantize_size(size: Decimal, decimals: int = 2) -> Decimal:

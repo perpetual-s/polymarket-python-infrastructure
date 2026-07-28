@@ -214,11 +214,16 @@ class BaseAPIClient:
             TimeoutError: On timeout
             RateLimitError: On rate limit
         """
-        # Generate request key for deduplication (only for GET requests)
+        # Generate request key for deduplication only for public GET requests.
+        # Per-request headers can carry wallet authentication. Coalescing those
+        # requests without auth identity in the key can return one wallet's
+        # response to another; retaining credential-bearing headers in the
+        # inflight map is unnecessary. Authenticated/custom-header GETs therefore
+        # execute independently.
         request_key = None
         wait_event = None
 
-        if method == "GET":
+        if method == "GET" and not headers:
             request_key = self._get_request_key(method, path, params, json_data)
 
             # Check if same request is already inflight
@@ -515,7 +520,7 @@ class BaseAPIClient:
         try:
             # Quick connectivity check (no auth required)
             start = time.time()
-            await self._make_request("GET", "/", rate_limit_key=None)
+            response = await self._make_request("GET", "/", rate_limit_key=None)
             latency = time.time() - start
 
             return {

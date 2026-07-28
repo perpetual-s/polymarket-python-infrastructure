@@ -18,12 +18,10 @@ from ..exceptions import ValidationError
 logger = logging.getLogger(__name__)
 
 # Validation constants (using Decimal for precision)
-MIN_PRICE = Decimal("0.01")
-MAX_PRICE = Decimal("0.99")
+MIN_PRICE = Decimal("0")
+MAX_PRICE = Decimal("1")
 MIN_SIZE = Decimal("0.01")  # Minimum order size in USDC
-# NOTE: Polymarket has NO trading fees (https://docs.polymarket.com/polymarket-learn/trading/fees)
-# This constant exists for protocol compatibility only
-MAX_FEE_RATE_BPS = 1000  # Maximum theoretical fee (unused - Polymarket has 0% fees)
+MAX_FEE_RATE_BPS = 1000
 MIN_EXPIRATION_BUFFER = 60  # Minimum 60 seconds from now for GTD orders
 
 
@@ -32,7 +30,7 @@ def validate_order(order: OrderRequest) -> Tuple[bool, Optional[str]]:
     Comprehensive order validation before submission.
 
     Checks:
-    - Price bounds (0.01-0.99)
+    - Price bounds (strictly between 0 and 1)
     - Size constraints (> MIN_SIZE)
     - Fee rate limits (0-1000 bps)
     - Expiration validity (for GTD orders)
@@ -53,8 +51,8 @@ def validate_order(order: OrderRequest) -> Tuple[bool, Optional[str]]:
         ...     logger.error(f"Invalid order: {error}")
     """
     # Validate price
-    if not MIN_PRICE <= order.price <= MAX_PRICE:
-        return (False, f"Price {order.price} outside valid range [{MIN_PRICE}, {MAX_PRICE}]")
+    if not MIN_PRICE < order.price < MAX_PRICE:
+        return (False, f"Price {order.price} outside valid range ({MIN_PRICE}, {MAX_PRICE})")
 
     # Validate size
     if order.size < MIN_SIZE:
@@ -91,9 +89,9 @@ def validate_price_bounds(price: Decimal) -> bool:
     Raises:
         ValidationError: If price is invalid
     """
-    if not MIN_PRICE <= price <= MAX_PRICE:
+    if not MIN_PRICE < price < MAX_PRICE:
         raise ValidationError(
-            f"Price {price} outside valid range [{MIN_PRICE}, {MAX_PRICE}]"
+            f"Price {price} outside valid range ({MIN_PRICE}, {MAX_PRICE})"
         )
     return True
 
@@ -123,11 +121,10 @@ def validate_fee_rate(fee_rate_bps: int) -> bool:
     """
     Validate fee rate is within acceptable range.
 
-    NOTE: Polymarket has NO trading fees. This validation exists
-    for protocol compatibility only. Always pass 0.
+    Markets may return zero or a category-specific fee rate.
 
     Args:
-        fee_rate_bps: Fee rate in basis points (always 0 for Polymarket)
+        fee_rate_bps: Market fee rate in basis points
 
     Returns:
         True if valid
@@ -241,7 +238,8 @@ def validate_balance(
     size: Decimal,
     available_usdc: Decimal,
     available_tokens: Decimal = Decimal("0.0"),
-    fee_rate_bps: int = 0
+    fee_rate_bps: int = 0,
+    fee_exponent: Decimal = Decimal("1"),
 ) -> Tuple[bool, Optional[str]]:
     """
     Validate wallet has sufficient balance for order.
@@ -286,7 +284,9 @@ def validate_balance(
 
     if side == Side.BUY:
         # Calculate total cost including fees
-        net_cost, fee = calculate_net_cost(side, price, size, fee_rate_bps)
+        net_cost, fee = calculate_net_cost(
+            side, price, size, fee_rate_bps, fee_exponent
+        )
 
         if available_usdc < net_cost:
             return (
@@ -309,7 +309,9 @@ def validate_balance(
 
         # Validate that proceeds will be positive after fees
         # (fee is deducted from proceeds on SELL orders)
-        net_proceeds, fee = calculate_net_cost(side, price, size, fee_rate_bps)
+        net_proceeds, fee = calculate_net_cost(
+            side, price, size, fee_rate_bps, fee_exponent
+        )
         if net_proceeds <= 0:
             return (
                 False,
@@ -358,7 +360,8 @@ def check_order_profitability(
     exit_price: Decimal,
     size: Decimal,
     fee_rate_bps: int,
-    min_profit_usdc: Decimal = Decimal("0.10")
+    min_profit_usdc: Decimal = Decimal("0.10"),
+    fee_exponent: Decimal = Decimal("1"),
 ) -> Tuple[bool, Decimal]:
     """
     Check if round-trip trade would be profitable.
@@ -389,7 +392,9 @@ def check_order_profitability(
         exit_price,
         size,
         fee_rate_bps,
-        fee_rate_bps
+        fee_rate_bps,
+        fee_exponent,
+        fee_exponent,
     )
 
     net_profit = pnl['net_profit']

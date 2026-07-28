@@ -14,22 +14,13 @@ import asyncio
 import os
 import time
 
-try:
-    from polymarket import PolymarketClient, WalletConfig
-    from polymarket.api.websocket_models import (
-        OrderEventType,
-        OrderMessage,
-        TradeMessage,
-        TradeStatus,
-    )
-except ImportError:  # downstream project vendored path
-    from shared.polymarket import PolymarketClient, WalletConfig
-    from shared.polymarket.api.websocket_models import (
-        OrderEventType,
-        OrderMessage,
-        TradeMessage,
-        TradeStatus,
-    )
+from polymarket import PolymarketClient, WalletConfig
+from polymarket.api.websocket_models import (
+    OrderEventType,
+    OrderMessage,
+    TradeMessage,
+    TradeStatus,
+)
 
 
 async def main():
@@ -42,7 +33,7 @@ async def main():
     # 2. Add wallet
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     if private_key:
-        client.add_wallet(WalletConfig(private_key=private_key), wallet_id="strategy1")
+        await client.add_wallet(WalletConfig(private_key=private_key), wallet_id="strategy1")
 
     # 3. Get market to track
     print("\nFinding market...")

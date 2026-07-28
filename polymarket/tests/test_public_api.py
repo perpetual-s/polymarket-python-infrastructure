@@ -2,14 +2,19 @@
 Test Polymarket public API (no authentication required).
 """
 
+import os
 import sys
 import asyncio
 from pathlib import Path
+
+import pytest
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from polymarket import PolymarketClient
+
+pytestmark = pytest.mark.live_network
 
 
 async def test_public_api():
@@ -104,31 +109,31 @@ async def test_public_api():
 
             orderbook = await client.get_orderbook(token_id)
 
-            print("✓ Orderbook fetched:")
+            print(f"✓ Orderbook fetched:")
             if orderbook.best_bid is not None:
                 print(f"  Best Bid:  ${orderbook.best_bid:.4f}")
             else:
-                print("  Best Bid:  No bids")
+                print(f"  Best Bid:  No bids")
 
             if orderbook.best_ask is not None:
                 print(f"  Best Ask:  ${orderbook.best_ask:.4f}")
             else:
-                print("  Best Ask:  No asks")
+                print(f"  Best Ask:  No asks")
 
             if orderbook.spread is not None:
                 print(f"  Spread:    ${orderbook.spread:.4f}")
 
-            print("  Order Book Depth:")
+            print(f"  Order Book Depth:")
             print(f"    Bids: {len(orderbook.bids)}")
             print(f"    Asks: {len(orderbook.asks)}")
 
             if orderbook.bids:
-                print("\n  Top 3 Bids:")
+                print(f"\n  Top 3 Bids:")
                 for i, (price, size) in enumerate(orderbook.bids[:3], 1):
                     print(f"    {i}. ${price:.4f} x {size:.2f} shares")
 
             if orderbook.asks:
-                print("\n  Top 3 Asks:")
+                print(f"\n  Top 3 Asks:")
                 for i, (price, size) in enumerate(orderbook.asks[:3], 1):
                     print(f"    {i}. ${price:.4f} x {size:.2f} shares")
 

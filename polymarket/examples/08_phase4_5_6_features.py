@@ -13,10 +13,7 @@ import asyncio
 import time
 from datetime import datetime
 
-try:
-    from polymarket import PolymarketClient
-except ImportError:  # downstream project vendored path
-    from shared.polymarket import PolymarketClient
+from polymarket import PolymarketClient
 
 
 async def example_1_health_check():
@@ -218,7 +215,7 @@ async def example_6_tick_size_validation():
     print("\nCode Example:")
     print("""
     client = PolymarketClient()
-    client.add_wallet(WalletConfig(private_key="0x..."))
+    await client.add_wallet(WalletConfig(private_key="0x..."))
 
     # Tick size fetched automatically from API
     order = OrderRequest(

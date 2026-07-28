@@ -4,8 +4,9 @@ Integration test for atomic nonce management.
 Critical test to verify no race conditions under concurrent load.
 """
 
+import pytest
 import threading
-
+from unittest.mock import Mock, patch
 from polymarket.utils.cache import AtomicNonceManager
 
 

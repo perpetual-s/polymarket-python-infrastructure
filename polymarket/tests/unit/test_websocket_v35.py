@@ -8,21 +8,16 @@ Tests:
 - L3: WebSocket compression
 """
 
+import asyncio
+import json
 import logging
 import threading
 import time
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from polymarket.api.websocket import WebSocketClient
-
-
-@pytest.fixture(autouse=True)
-def _disable_metrics_server():
-    """Keep WebSocket feature tests from opening the Prometheus listener."""
-    with patch("polymarket.api.websocket.get_metrics", return_value=None):
-        yield
 
 
 class TestMessageDeduplication:
@@ -111,6 +106,88 @@ class TestMessageDeduplication:
 
         hash_value = ws._compute_message_hash(data)
         assert len(hash_value) == 64
+
+    def test_last_trade_prints_bypass_content_deduplication(self):
+        """Unknown print identity must not collapse distinct or identical fills."""
+        ws = WebSocketClient(
+            enable_metrics=False,
+            enable_queue=False,
+            enable_deduplication=True,
+        )
+        callback = Mock()
+        with patch.object(ws, "connect"):
+            ws.subscribe_market("asset-1", callback)
+
+        first = {
+            "event_type": "last_trade_price",
+            "asset_id": "asset-1",
+            "market": "condition-1",
+            "price": "0.55",
+            "side": "BUY",
+            "size": "10",
+            "fee_rate_bps": "0",
+            "timestamp": "1234567890000",
+        }
+        different_same_timestamp = {**first, "price": "0.56", "size": "3"}
+
+        ws._on_message(None, json.dumps(first))
+        ws._on_message(None, json.dumps(different_same_timestamp))
+        ws._on_message(None, json.dumps(first))
+
+        assert callback.call_count == 3
+        assert ws.stats()["duplicates_blocked"] == 0
+
+    def test_book_messages_keep_existing_deduplication(self):
+        """Stable book hashes still block an exact replay."""
+        ws = WebSocketClient(
+            enable_metrics=False,
+            enable_queue=False,
+            enable_deduplication=True,
+        )
+        callback = Mock()
+        with patch.object(ws, "connect"):
+            ws.subscribe_market("asset-1", callback)
+
+        book = {
+            "event_type": "book",
+            "asset_id": "asset-1",
+            "market": "condition-1",
+            "timestamp": "1234567890000",
+            "hash": "0xbook",
+            "buys": [],
+            "sells": [],
+        }
+
+        ws._on_message(None, json.dumps(book))
+        ws._on_message(None, json.dumps(book))
+
+        callback.assert_called_once()
+        assert ws.stats()["duplicates_blocked"] == 1
+
+    def test_unsubscribed_direct_message_does_not_poison_first_delivery(self):
+        ws = WebSocketClient(
+            enable_metrics=False,
+            enable_queue=False,
+            enable_deduplication=True,
+        )
+        callback = Mock()
+        book = {
+            "event_type": "book",
+            "asset_id": "asset-1",
+            "market": "condition-1",
+            "timestamp": "1234567890000",
+            "hash": "0xbook",
+            "buys": [],
+            "sells": [],
+        }
+
+        ws._on_message(None, json.dumps(book))
+        with patch.object(ws, "connect"):
+            ws.subscribe_market("asset-1", callback)
+        ws._on_message(None, json.dumps(book))
+
+        callback.assert_called_once()
+        assert ws.stats()["duplicates_blocked"] == 0
 
     def test_duplicate_detection(self):
         """Test duplicate message detection."""
@@ -248,7 +325,7 @@ class TestMultiTokenSubscription:
         from polymarket.api.websocket import ChannelType
 
         for token_id in token_ids:
-            channel = f"{ChannelType.MARKET}:{token_id}"
+            channel = f"{ChannelType.MARKET.value}:{token_id}"
             assert channel in ws._subscriptions
             assert ws._subscriptions[channel] == callback
 
@@ -261,6 +338,7 @@ class TestMultiTokenSubscription:
         # Mock WebSocket connection
         mock_ws = Mock()
         ws._ws = mock_ws
+        ws._connected = True
 
         callback = Mock()
         token_ids = ["token1", "token2", "token3"]
@@ -274,8 +352,11 @@ class TestMultiTokenSubscription:
         import json
 
         sent_message = json.loads(mock_ws.send.call_args[0][0])
-        assert sent_message["type"] == "MARKET"
-        assert sent_message["asset_ids"] == token_ids
+        assert sent_message == {
+            "operation": "subscribe",
+            "assets_ids": token_ids,
+            "custom_feature_enabled": False,
+        }
 
     def test_subscribe_markets_multi_empty_list(self):
         """Test subscribe_markets_multi with empty list."""
@@ -291,6 +372,33 @@ class TestMultiTokenSubscription:
 
         # Should not send message for empty list
         mock_ws.send.assert_not_called()
+
+    def test_subscribe_markets_multi_sends_only_new_assets(self):
+        ws = WebSocketClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws",
+            api_key="test_key",
+        )
+        mock_ws = Mock()
+        ws._ws = mock_ws
+        ws._connected = True
+        callback = Mock()
+
+        ws.subscribe_markets_multi(["token1", "token2"], callback)
+        ws.subscribe_markets_multi(["token2", "token3"], callback)
+
+        sent = [json.loads(call.args[0]) for call in mock_ws.send.call_args_list]
+        assert sent == [
+            {
+                "operation": "subscribe",
+                "assets_ids": ["token1", "token2"],
+                "custom_feature_enabled": False,
+            },
+            {
+                "operation": "subscribe",
+                "assets_ids": ["token3"],
+                "custom_feature_enabled": False,
+            },
+        ]
 
     def test_subscribe_markets_multi_no_connection(self):
         """Test subscribe_markets_multi without active connection."""
@@ -310,12 +418,54 @@ class TestMultiTokenSubscription:
         # Callbacks should still be registered
         from polymarket.api.websocket import ChannelType
 
-        channel = f"{ChannelType.MARKET}:token1"
+        channel = f"{ChannelType.MARKET.value}:token1"
         assert channel in ws._subscriptions
 
 
 class TestGracefulShutdownCallbacks:
     """Test graceful shutdown callbacks (L4)."""
+
+    def test_reconnect_waits_once_per_attempt_and_clears_terminal_running_state(
+        self, monkeypatch
+    ):
+        import websocket
+
+        from polymarket.api.websocket import ChannelType
+
+        instances = []
+
+        class ClosingWebSocketApp:
+            def __init__(self, *args, **kwargs):
+                instances.append(self)
+
+            def run_forever(self, **kwargs):
+                return None
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(websocket, "WebSocketApp", ClosingWebSocketApp)
+        ws = WebSocketClient(
+            enable_metrics=False,
+            enable_queue=False,
+            reconnect_delay=7.5,
+            max_reconnects=2,
+        )
+        ws._running = True
+        ws._channel_type = ChannelType.MARKET
+        ws._stop_event.wait = Mock(return_value=False)
+
+        ws._run()
+
+        snapshot = ws.telemetry_snapshot_v1()
+        assert len(instances) == 3  # Initial connection plus two reconnect attempts.
+        assert ws._stop_event.wait.call_count == 2
+        assert all(call.args == (7.5,) for call in ws._stop_event.wait.call_args_list)
+        assert snapshot.reconnect_attempts == 2
+        assert snapshot.reconnect_completions == 0
+        assert snapshot.reconnect_exhaustions == 1
+        assert snapshot.running is False
+        assert snapshot.connected is False
 
     def test_failure_callback_invoked_on_max_reconnects(self):
         """Test callback invoked when max reconnects exceeded."""
@@ -338,6 +488,10 @@ class TestGracefulShutdownCallbacks:
         # Callback should be invoked
         assert len(callback_invoked) == 1
         assert "Max reconnects exceeded" in callback_invoked[0]
+        snapshot = ws.telemetry_snapshot_v1()
+        assert snapshot.failure_callbacks_invoked == 1
+        assert snapshot.failure_callback_failures == 0
+        assert snapshot.callbacks_invoked == 0
 
     def test_failure_callback_not_invoked_if_not_set(self):
         """Test no error when callback not set."""
@@ -457,7 +611,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for remote closes is also WARNING."""
-        WebSocketClient(
+        ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
@@ -509,7 +663,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_ping_timeout_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for ping/pong timeouts is also WARNING."""
-        WebSocketClient(
+        ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
@@ -529,7 +683,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_connection_timeout_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for connection timeouts is also WARNING."""
-        WebSocketClient(
+        ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 
@@ -549,7 +703,7 @@ class TestTransientConnectionLogging:
 
     def test_websocket_library_close_frame_goodbye_is_not_error(self, caplog):
         """The websocket-client goodbye log for close frame 1001 is WARNING."""
-        WebSocketClient(
+        ws = WebSocketClient(
             ws_url="wss://ws-subscriptions-clob.polymarket.com/ws", api_key="test_key"
         )
 

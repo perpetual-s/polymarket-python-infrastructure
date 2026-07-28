@@ -44,7 +44,7 @@ class Authenticator:
         address: str,
         private_key: str,
         timestamp: Optional[int] = None,
-        nonce: int = 0,
+        nonce: int = 0
     ) -> dict[str, str]:
         """
         Create L1 authentication headers.
@@ -70,7 +70,9 @@ class Authenticator:
 
             # Create domain (official implementation)
             domain = make_domain(
-                name="ClobAuthDomain", version="1", chainId=self.chain_id
+                name="ClobAuthDomain",
+                version="1",
+                chainId=self.chain_id
             )
 
             # Create ClobAuth message struct (official implementation)
@@ -78,7 +80,7 @@ class Authenticator:
                 address=address,
                 timestamp=str(timestamp),
                 nonce=nonce,
-                message="This message attests that I control the given wallet",
+                message="This message attests that I control the given wallet"
             )
 
             # Hash the struct with domain (official implementation)
@@ -119,7 +121,7 @@ class Authenticator:
         method: str,
         path: str,
         body: str = "",
-        timestamp: Optional[int] = None,
+        timestamp: Optional[int] = None
     ) -> dict[str, str]:
         """
         Create L2 authentication headers.
@@ -155,7 +157,11 @@ class Authenticator:
                 message += str(body).replace("'", '"')
 
             # HMAC signature with base64 encoding (official implementation)
-            h = hmac.new(base64_secret, message.encode("utf-8"), hashlib.sha256)
+            h = hmac.new(
+                base64_secret,
+                message.encode("utf-8"),
+                hashlib.sha256
+            )
             signature = base64.urlsafe_b64encode(h.digest()).decode("utf-8")
 
             headers = {
@@ -184,7 +190,7 @@ class Authenticator:
         timestamp: int,
         method: str,
         path: str,
-        body: str = "",
+        body: str = ""
     ) -> bool:
         """
         Verify L2 HMAC signature.
@@ -211,7 +217,11 @@ class Authenticator:
             message += str(body).replace("'", '"')
 
         # HMAC signature with base64 encoding (official implementation)
-        h = hmac.new(base64_secret, message.encode("utf-8"), hashlib.sha256)
+        h = hmac.new(
+            base64_secret,
+            message.encode("utf-8"),
+            hashlib.sha256
+        )
         expected_signature = base64.urlsafe_b64encode(h.digest()).decode("utf-8")
 
         return hmac.compare_digest(signature, expected_signature)

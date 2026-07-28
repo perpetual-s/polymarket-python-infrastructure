@@ -15,7 +15,7 @@ from .utils.structured_logging import (
 )
 
 # Root logger namespace for this package, derived from wherever the package is
-# installed (``polymarket`` in the source repo, ``shared.polymarket`` in downstream project).
+# installed under the public ``polymarket`` package.
 _PACKAGE = __name__.rpartition(".")[0]
 
 

@@ -229,7 +229,7 @@ async def example_health_and_metadata():
 
     print(f"   Tick size: ${float(tick_size):.2f}")
     print(f"   Neg-risk: {neg_risk}")
-    print(f"   Fee rate: {fee_rate} bps (Polymarket has 0 fees)")
+    print(f"   Current token fee rate: {fee_rate} bps")
 
 
 async def example_price_monitoring():

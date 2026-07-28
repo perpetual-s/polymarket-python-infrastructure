@@ -8,6 +8,8 @@ Adapted from py-clob-client (MIT License).
 import json
 import logging
 import time
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -28,7 +30,7 @@ from ..exceptions import (
     TickSizeError,
     TradingError,
 )
-from ..models import Balance, Order
+from ..models import Balance, ClobTrade, FeeSchedule, Order
 from ..models import OrderBook as OrderBookType
 from ..models import OrderResponse, OrderStatus
 from ..utils.numeric import to_decimal
@@ -38,6 +40,84 @@ from .base import BaseAPIClient
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_TICK_SIZES = frozenset(
+    {
+        Decimal("0.1"),
+        Decimal("0.01"),
+        Decimal("0.005"),
+        Decimal("0.0025"),
+        Decimal("0.001"),
+        Decimal("0.0001"),
+    }
+)
+
+
+def _parse_book_tick_size(payload: Dict[str, Any]) -> Decimal:
+    """Parse the required tick field carried by ``/book`` and ``/books``."""
+    if "tick_size" not in payload:
+        raise TradingError("Order-book response is missing tick_size")
+    tick_size = Decimal(str(payload["tick_size"]))
+    if tick_size not in ALLOWED_TICK_SIZES:
+        raise TradingError(f"Unsupported order-book tick_size: {tick_size}")
+    return tick_size
+
+
+def _parse_book_levels(
+    payload: Dict[str, Any],
+    side: str,
+    *,
+    token_id: str,
+) -> List[tuple[Decimal, Decimal]]:
+    """Parse every order-book level or reject the whole snapshot as incomplete."""
+    raw_levels = payload.get(side)
+    if not isinstance(raw_levels, list):
+        raise TradingError(f"Order book for {token_id} is missing {side}")
+
+    levels: List[tuple[Decimal, Decimal]] = []
+    for index, raw_level in enumerate(raw_levels):
+        if not isinstance(raw_level, dict):
+            raise TradingError(
+                f"Order book for {token_id} has malformed {side}[{index}]"
+            )
+        if "price" not in raw_level or "size" not in raw_level:
+            raise TradingError(
+                f"Order book for {token_id} has incomplete {side}[{index}]"
+            )
+        try:
+            price = Decimal(str(raw_level["price"]))
+            size = Decimal(str(raw_level["size"]))
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            raise TradingError(
+                f"Order book for {token_id} has invalid {side}[{index}]"
+            ) from exc
+
+        if (
+            not price.is_finite()
+            or not size.is_finite()
+            or price <= 0
+            or price >= 1
+            or size <= 0
+        ):
+            raise TradingError(
+                f"Order book for {token_id} has invalid {side}[{index}]"
+            )
+        levels.append((price, size))
+
+    return levels
+
+
+def _parse_health_response(response: Any) -> bool:
+    """Parse only the health shapes published by the CLOB API."""
+    if isinstance(response, str):
+        if response.strip().upper() == "OK":
+            return True
+        raise ValueError(f"unexpected health response string: {response!r}")
+    if isinstance(response, dict):
+        status = response.get("ok")
+        if isinstance(status, bool):
+            return status
+    raise ValueError(f"unexpected health response: {response!r}")
+
 
 class CLOBAPI(BaseAPIClient):
     """
@@ -45,6 +125,43 @@ class CLOBAPI(BaseAPIClient):
 
     Requires L2 authentication for all operations.
     """
+
+    @staticmethod
+    def _parse_order_timestamp(value: Any, *, required: bool) -> Optional[datetime]:
+        if value in (None, ""):
+            if required:
+                raise ValueError("order timestamp is required")
+            return None
+        if isinstance(value, str) and value.isdigit():
+            value = int(value)
+        if isinstance(value, (int, float)):
+            seconds = value / 1000 if value >= 10_000_000_000 else value
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        raise ValueError(f"unsupported order timestamp {value!r}")
+
+    @classmethod
+    def _parse_order(cls, data: Dict[str, Any]) -> Order:
+        """Parse the documented authenticated-order wire shape without loss."""
+        return Order(
+            id=data["id"],
+            market=data["market"],
+            asset_id=data["asset_id"],
+            price=data["price"],
+            original_size=data["original_size"],
+            size_matched=data.get("size_matched", "0"),
+            side=data["side"],
+            status=data["status"],
+            created_at=cls._parse_order_timestamp(data.get("created_at"), required=True),
+            expiration=cls._parse_order_timestamp(data.get("expiration"), required=False),
+            owner=data.get("owner"),
+            maker_address=data.get("maker_address"),
+            outcome=data.get("outcome"),
+            order_type=data.get("order_type"),
+            associate_trades=data.get("associate_trades") or [],
+        )
 
     def __init__(
         self,
@@ -114,10 +231,7 @@ class CLOBAPI(BaseAPIClient):
             response = await self.get(
                 "/", rate_limit_key="GET:/", retry=False  # Don't retry health checks
             )
-            # API returns "OK" as JSON string, not {"ok": true}
-            if isinstance(response, str):
-                return response.upper() == "OK"
-            return response.get("ok", False) or True
+            return _parse_health_response(response)
         except Exception as e:
             logger.error(f"CLOB health check failed: {e}")
             raise TradingError(f"CLOB server unavailable: {e}")
@@ -400,30 +514,37 @@ class CLOBAPI(BaseAPIClient):
                 "/book", params={"token_id": token_id}, rate_limit_key="GET:/book", retry=True
             )
 
-            # Parse bids and asks (convert to Decimal for precision)
-            # CRITICAL: Polymarket API returns bids LOW→HIGH and asks HIGH→LOW
-            # We need: bids HIGH→LOW (best bid first), asks LOW→HIGH (best ask first)
-            bids = []
-            for bid in response.get("bids", []):
-                price_str = bid.get("price", "0")
-                size_str = bid.get("size", "0")
-                price = Decimal(str(price_str))
-                size = Decimal(str(size_str))
-                bids.append((price, size))
+            if not isinstance(response, dict):
+                raise TradingError("Order-book response is not an object")
+            response_token_id = response.get("asset_id")
+            if (
+                not isinstance(response_token_id, str)
+                or response_token_id != token_id
+            ):
+                raise TradingError(
+                    "Order-book asset_id does not match requested token "
+                    f"{token_id}: {response_token_id!r}"
+                )
 
-            asks = []
-            for ask in response.get("asks", []):
-                price_str = ask.get("price", "0")
-                size_str = ask.get("size", "0")
-                price = Decimal(str(price_str))
-                size = Decimal(str(size_str))
-                asks.append((price, size))
+            # Polymarket returns bids LOW→HIGH and asks HIGH→LOW. Reject a
+            # partially parsed snapshot; dropping one bad level changes price
+            # and depth semantics.
+            bids = _parse_book_levels(response, "bids", token_id=token_id)
+            asks = _parse_book_levels(response, "asks", token_id=token_id)
 
             # Sort: bids descending (best=highest first), asks ascending (best=lowest first)
             bids.sort(key=lambda x: x[0], reverse=True)
             asks.sort(key=lambda x: x[0])
 
-            orderbook = OrderBookType(token_id=token_id, bids=bids, asks=asks)
+            orderbook = OrderBookType(
+                token_id=token_id,
+                bids=bids,
+                asks=asks,
+                market=response.get("market"),
+                tick_size=_parse_book_tick_size(response),
+                neg_risk=response.get("neg_risk"),
+                timestamp=response.get("timestamp", int(time.time())),
+            )
 
             logger.debug(
                 f"Order book for {token_id}: "
@@ -468,13 +589,17 @@ class CLOBAPI(BaseAPIClient):
             path = "/order"
 
             # CRITICAL: owner field must be API key, not wallet address (per py-clob-client)
-            # CRITICAL FIX (Bug #49): Use official Python client format (3 fields only)
-            # Official py-clob-client uses {"order", "owner", "orderType"} - NO deferExec field
-            # TypeScript client includes deferExec, but Python client omits it (verified in utilities.py:37-38)
+            # V2 wire shape mirrors py-clob-client-v2's order_to_json_v2:
+            # {"order", "owner", "orderType", "deferExec", "postOnly"}.
+            # Private underscore keys (e.g. _orderHash, the pre-computable
+            # exchange orderID) never reach the wire.
+            wire_order = {k: v for k, v in signed_order.items() if not k.startswith("_")}
             body = {
-                "order": signed_order,
+                "order": wire_order,
                 "owner": api_key,
                 "orderType": order_type,
+                "deferExec": False,
+                "postOnly": False,
             }
 
             # CRITICAL FIX (Bug #49): Use stdlib json.dumps() for order payloads
@@ -520,11 +645,40 @@ class CLOBAPI(BaseAPIClient):
                     f"Invalid order response format: expected dict, got {type(response).__name__}: {response}"
                 )
 
-            # Parse response
-            success = response.get("success", False)
+            # Parse response. Missing/coerced success truth must never become a
+            # definitive rejection: the caller may already have a durable
+            # pre-submit identity and reservation for an accepted order.
+            success = response.get("success")
+            if not isinstance(success, bool):
+                raise TradingError(
+                    "Invalid order response format: success must be boolean"
+                )
             error_msg = response.get("errorMsg")
+            if error_msg is not None and not isinstance(error_msg, str):
+                raise TradingError(
+                    "Invalid order response format: errorMsg must be a string or null"
+                )
             order_id = response.get("orderID")  # NOTE: Polymarket API uses 'orderID' not 'orderId'
+            if order_id is not None and (
+                not isinstance(order_id, str) or not order_id
+            ):
+                raise TradingError(
+                    "Invalid order response format: orderID must be a non-empty string or null"
+                )
             status = response.get("status")
+            if success:
+                if not order_id:
+                    raise TradingError(
+                        "Invalid order response format: successful result is missing orderID"
+                    )
+                if error_msg and error_msg.strip():
+                    raise TradingError(
+                        "Invalid order response format: successful result includes errorMsg"
+                    )
+            elif not error_msg or not error_msg.strip():
+                raise TradingError(
+                    "Invalid order response format: unsuccessful result is missing errorMsg"
+                )
 
             # Check for Polymarket-specific error codes
             if error_msg:
@@ -583,18 +737,30 @@ class CLOBAPI(BaseAPIClient):
                         reason="DUPLICATE",
                     )
 
-                # Generic rejection for other errors
+                # Unknown response text is not proof that the deterministic
+                # identity failed to land. Preserve it as an ambiguous transport
+                # result so the facade retains cap until exact reconciliation.
                 if not success:
-                    raise OrderRejectedError(
-                        f"Order rejected: {error_msg}", order_id=order_id, reason=error_msg
+                    raise TradingError(
+                        f"Unclassified order response: {error_msg}"
                     )
 
+            # Successful FAK/FOK matches return tradeIDs (effective 2026-07-24);
+            # transactionHashes is the legacy field (docs example also shows a
+            # "transactionsHashes" spelling — accept all three).
+            trade_ids = response.get("tradeIDs")
+            legacy_hashes = (
+                response.get("orderHashes")
+                or response.get("transactionHashes")
+                or response.get("transactionsHashes")
+            )
             order_response = OrderResponse(
                 success=success,
                 order_id=order_id,
-                status=OrderStatus(status) if status else None,
+                status=OrderStatus.normalize(status) if status else None,
                 error_msg=error_msg,
-                order_hashes=response.get("orderHashes"),
+                order_hashes=legacy_hashes,
+                trade_ids=trade_ids,
             )
 
             if success:
@@ -606,12 +772,16 @@ class CLOBAPI(BaseAPIClient):
 
         except (
             OrderRejectedError,
+            AuthenticationError,
             InsufficientBalanceError,
             TickSizeError,
             InsufficientAllowanceError,
+            InvalidOrderError,
+            MarketNotReadyError,
             OrderDelayedError,
             OrderExpiredError,
             FOKNotFilledError,
+            TradingError,
         ):
             # Re-raise specific errors
             raise
@@ -711,11 +881,12 @@ class CLOBAPI(BaseAPIClient):
         api_key: str,
         api_secret: str,
         api_passphrase: str,
+        order_types: Optional[List[str]] = None,
     ) -> List[OrderResponse]:
         """
         Post multiple signed orders in a single request.
 
-        CRITICAL for Strategy-3: 10x faster than sequential orders.
+        Submit multiple orders through the batch endpoint.
 
         Args:
             signed_orders: List of signed order dicts
@@ -723,13 +894,13 @@ class CLOBAPI(BaseAPIClient):
             api_key: API key
             api_secret: API secret
             api_passphrase: API passphrase
+            order_types: Order type for each signed order (defaults to GTC)
 
         Returns:
             List of order responses (one per order)
 
         Raises:
-            OrderRejectedError: If any order is rejected
-            TradingError: If request fails
+            TradingError: If the request or response contract is invalid
 
         Example:
             >>> orders = [builder.build_order(order1), builder.build_order(order2)]
@@ -737,15 +908,52 @@ class CLOBAPI(BaseAPIClient):
             >>> successful = [r for r in responses if r.success]
         """
         try:
-            path = "/orders"
-            # owner must be the API key, matching post_order above (the batch
-            # path previously sent the wallet address, which the single-order
-            # path explicitly documents as wrong per py-clob-client).
-            body = {"orders": signed_orders, "owner": api_key}
+            if not signed_orders:
+                return []
+            if len(signed_orders) > 15:
+                raise TradingError(
+                    "Batch order placement supports at most 15 orders"
+                )
 
-            # CRITICAL: Use the SAME JSON serializer for HMAC and request body
-            # The session uses orjson with large int conversion, so we must too
-            body_str = self.session._json_serialize(body)
+            if order_types is None:
+                order_types = ["GTC"] * len(signed_orders)
+            if len(order_types) != len(signed_orders):
+                raise TradingError(
+                    "Batch order_types length must match signed_orders"
+                )
+            invalid_order_types = [
+                order_type
+                for order_type in order_types
+                if order_type not in {"GTC", "GTD", "FOK", "FAK"}
+            ]
+            if invalid_order_types:
+                raise TradingError(
+                    f"Invalid batch order type: {invalid_order_types[0]}"
+                )
+
+            path = "/orders"
+            # The documented endpoint and official SDK send an array of complete
+            # per-order wrappers. owner is the API key, not the wallet address.
+            body = []
+            for signed_order, order_type in zip(signed_orders, order_types):
+                wire_order = {
+                    key: value
+                    for key, value in signed_order.items()
+                    if not key.startswith("_")
+                }
+                body.append(
+                    {
+                        "order": wire_order,
+                        "owner": api_key,
+                        "orderType": order_type,
+                        "deferExec": False,
+                        "postOnly": False,
+                    }
+                )
+
+            # Match the single-order path and the official SDK: sign and send
+            # the exact same stdlib-JSON bytes while preserving integer fields.
+            body_str = json.dumps(body)
 
             headers = self._create_l2_headers(
                 address=address,
@@ -756,6 +964,7 @@ class CLOBAPI(BaseAPIClient):
                 path=path,
                 body=body_str,
             )
+            headers["Content-Type"] = "application/json"
 
             # FIX (Issue #9): Use data=body_str to ensure HMAC matches request body
             # json_data=body would re-serialize and potentially produce different JSON
@@ -763,28 +972,59 @@ class CLOBAPI(BaseAPIClient):
                 path, data=body_str, headers=headers, rate_limit_key="POST:/orders", retry=False
             )
 
-            # CRITICAL FIX: Validate response type before accessing
-            if not isinstance(response, dict):
+            if not isinstance(response, list):
                 raise TradingError(
-                    f"Invalid batch order response format: expected dict, got {type(response).__name__}: {response}"
+                    "Invalid batch order response format: expected list, "
+                    f"got {type(response).__name__}: {response}"
+                )
+            if len(response) != len(signed_orders):
+                raise TradingError(
+                    "Invalid batch order response count: "
+                    f"expected {len(signed_orders)}, got {len(response)}"
                 )
 
-            # Parse responses. The single-order endpoint returns 'orderID';
-            # accept both spellings so a successful batch placement can never
-            # come back with order_id=None and break DB linkage.
             results = []
-            for idx, order_response in enumerate(response.get("orders", [])):
-                success = order_response.get("success", False)
+            for idx, order_response in enumerate(response):
+                if not isinstance(order_response, dict):
+                    raise TradingError(
+                        f"Invalid batch order response item {idx}: expected object"
+                    )
+
+                success = order_response.get("success")
+                if not isinstance(success, bool):
+                    raise TradingError(
+                        f"Invalid batch order response item {idx}: "
+                        "success must be boolean"
+                    )
                 error_msg = order_response.get("errorMsg")
                 order_id = order_response.get("orderID") or order_response.get("orderId")
                 status = order_response.get("status")
+                if success and (not isinstance(order_id, str) or not order_id):
+                    raise TradingError(
+                        f"Invalid batch order response item {idx}: "
+                        "successful result is missing orderID"
+                    )
 
                 results.append(
                     OrderResponse(
                         success=success,
                         order_id=order_id,
-                        status=OrderStatus(status) if status else None,
+                        status=OrderStatus.normalize(status) if status else None,
                         error_msg=error_msg,
+                        definitive_rejection=(
+                            self._is_definitive_batch_rejection(
+                                error_msg=error_msg,
+                                status=status,
+                            )
+                            if not success
+                            else None
+                        ),
+                        order_hashes=(
+                            order_response.get("orderHashes")
+                            or order_response.get("transactionHashes")
+                            or order_response.get("transactionsHashes")
+                        ),
+                        trade_ids=order_response.get("tradeIDs"),
                     )
                 )
 
@@ -793,16 +1033,57 @@ class CLOBAPI(BaseAPIClient):
             )
             return results
 
+        except TradingError:
+            raise
         except Exception as e:
             logger.error(f"Failed to post batch orders: {e}")
-            raise TradingError(f"Batch order placement failed: {e}")
+            raise TradingError(f"Batch order placement failed: {e}") from e
+
+    @staticmethod
+    def _is_definitive_batch_rejection(
+        *,
+        error_msg: Any,
+        status: Any,
+    ) -> bool:
+        """Classify only batch item failures that prove no order was accepted."""
+        error_upper = str(error_msg or "").strip().upper()
+        status_upper = str(status or "").strip().upper()
+        if (
+            "ORDER_ALREADY_EXISTS" in error_upper
+            or "DUPLICATE_ORDER" in error_upper
+            or "ORDER_DELAYED" in error_upper
+            or "DELAYED" in error_upper
+            or status_upper == "DELAYED"
+        ):
+            return False
+
+        definitive_patterns = (
+            "MIN_TICK_SIZE",
+            "TICK_SIZE",
+            "NOT_ENOUGH_BALANCE",
+            "INSUFFICIENT",
+            "EXPIRATION",
+            "EXPIRED",
+            "FOK_NOT_FILLED",
+            "SIZE_TOO_SMALL",
+            "MINIMUM_SIZE",
+            "PRICE_OUT_OF_RANGE",
+            "INVALID_PRICE",
+            "MARKET_CLOSED",
+            "MARKET_NOT_ACTIVE",
+            "INVALID_SIGNATURE",
+            "SIGNATURE_FAILED",
+            "NONCE_TOO_LOW",
+            "INVALID_NONCE",
+        )
+        return any(pattern in error_upper for pattern in definitive_patterns)
 
     async def get_orderbooks_batch(self, token_ids: List[str]) -> Dict[str, OrderBookType]:
         """
         Get orderbooks for multiple tokens using native batch endpoint.
 
         Uses POST /books for 10x performance vs concurrent individual fetches.
-        CRITICAL for Strategy-1 (spread farming) and Strategy-3 (copy trading).
+        Retrieve current order state for authenticated workflows.
 
         Args:
             token_ids: List of token IDs
@@ -837,29 +1118,31 @@ class CLOBAPI(BaseAPIClient):
                 "/books", json_data=body, rate_limit_key="POST:/books", retry=True
             )
 
+            if not isinstance(response, list):
+                raise TradingError("Batch order-book response is not a list")
+
+            expected_token_ids = set(token_ids)
             results = {}
             for book_data in response:
+                if not isinstance(book_data, dict):
+                    raise TradingError("Batch order-book entry is not an object")
                 token_id = book_data.get("asset_id")
-                if not token_id:
-                    logger.warning(f"Missing asset_id in book response: {book_data}")
-                    continue
+                if not isinstance(token_id, str) or not token_id:
+                    raise TradingError("Batch order-book entry is missing asset_id")
+                if token_id not in expected_token_ids:
+                    raise TradingError(
+                        f"Batch order-book returned unrequested token {token_id}"
+                    )
+                if token_id in results:
+                    raise TradingError(
+                        f"Batch order-book returned duplicate token {token_id}"
+                    )
 
                 # Parse orderbook using same logic as get_orderbook()
                 # CRITICAL: Polymarket API returns bids LOW→HIGH and asks HIGH→LOW
                 # We need: bids HIGH→LOW (best bid first), asks LOW→HIGH (best ask first)
-                bids = []
-                for bid in book_data.get("bids", []):
-                    price = to_decimal(bid.get("price", 0))
-                    size = to_decimal(bid.get("size", 0))
-                    if price and price > 0 and size and size > 0:
-                        bids.append((price, size))
-
-                asks = []
-                for ask in book_data.get("asks", []):
-                    price = to_decimal(ask.get("price", 0))
-                    size = to_decimal(ask.get("size", 0))
-                    if price and price > 0 and size and size > 0:
-                        asks.append((price, size))
+                bids = _parse_book_levels(book_data, "bids", token_id=token_id)
+                asks = _parse_book_levels(book_data, "asks", token_id=token_id)
 
                 # Sort: bids descending (best=highest first), asks ascending (best=lowest first)
                 bids.sort(key=lambda x: x[0], reverse=True)
@@ -867,7 +1150,7 @@ class CLOBAPI(BaseAPIClient):
 
                 # Extract metadata
                 market_slug = book_data.get("market", "")
-                tick_size = to_decimal(book_data.get("tick_size", "0.01"))
+                tick_size = _parse_book_tick_size(book_data)
                 neg_risk = book_data.get("neg_risk", False)
 
                 # Create OrderBook instance
@@ -882,6 +1165,13 @@ class CLOBAPI(BaseAPIClient):
                 )
 
                 results[token_id] = orderbook
+
+            missing_token_ids = expected_token_ids.difference(results)
+            if missing_token_ids:
+                missing = ", ".join(sorted(missing_token_ids))
+                raise TradingError(
+                    f"Batch order-book response is missing requested tokens: {missing}"
+                )
 
             logger.info(f"Fetched {len(results)}/{len(token_ids)} orderbooks via batch endpoint")
             return results
@@ -916,14 +1206,19 @@ class CLOBAPI(BaseAPIClient):
                 rate_limit_key="GET:/tick-size",
                 retry=True,
             )
-
-            tick_size = to_decimal(response.get("tick_size", "0.01"), default=Decimal("0.01"))
+            if not isinstance(response, dict) or "minimum_tick_size" not in response:
+                raise TradingError(
+                    "Tick-size response is missing minimum_tick_size"
+                )
+            tick_size = Decimal(str(response["minimum_tick_size"]))
+            if tick_size not in ALLOWED_TICK_SIZES:
+                raise TradingError(f"Unsupported minimum_tick_size: {tick_size}")
             logger.debug(f"Tick size for {token_id}: {tick_size}")
             return tick_size
-
+        except TradingError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to get tick size for {token_id}: {e}, using default 0.01")
-            return Decimal("0.01")  # Fallback to default
+            raise TradingError(f"Failed to get tick size for {token_id}: {e}") from e
 
     async def get_neg_risk(self, token_id: str) -> bool:
         """
@@ -952,20 +1247,22 @@ class CLOBAPI(BaseAPIClient):
                 retry=True,
             )
 
-            neg_risk = response.get("neg_risk", False)
+            if not isinstance(response, dict) or not isinstance(
+                response.get("neg_risk"), bool
+            ):
+                raise TradingError("Neg-risk response is missing boolean neg_risk")
+            neg_risk = response["neg_risk"]
             logger.debug(f"Neg risk for {token_id}: {neg_risk}")
             return neg_risk
 
+        except TradingError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to get neg_risk for {token_id}: {e}, using default False")
-            return False  # Fallback to default
+            raise TradingError(f"Failed to get neg_risk for {token_id}: {e}") from e
 
     async def get_fee_rate_bps(self, token_id: str) -> int:
         """
-        Get fee rate in basis points for token.
-
-        Polymarket currently has 0% taker fees on all markets.
-        This method exists for future compatibility if fees are introduced.
+        Get the CLOB protocol base-fee value for a token.
 
         Args:
             token_id: Token ID
@@ -977,30 +1274,111 @@ class CLOBAPI(BaseAPIClient):
             >>> fee_bps = clob.get_fee_rate_bps("123456")
             >>> print(f"Fee: {fee_bps / 100}%")
         """
-        # Polymarket currently has 0 bps (0%) taker fees
-        # If they introduce fees in the future, this could query an API endpoint
-        return 0
+        try:
+            response = await self.get(
+                "/fee-rate",
+                params={"token_id": token_id},
+                rate_limit_key="GET:/fee-rate",
+                retry=True,
+            )
+            if not isinstance(response, dict) or "base_fee" not in response:
+                raise TradingError("Fee-rate response is missing base_fee")
+            base_fee = Decimal(str(response["base_fee"]))
+            if (
+                not base_fee.is_finite()
+                or base_fee < 0
+                or base_fee != base_fee.to_integral_value()
+            ):
+                raise TradingError(f"Invalid base_fee: {base_fee}")
+            return int(base_fee)
+        except TradingError:
+            raise
+        except Exception as e:
+            raise TradingError(f"Failed to get fee rate for {token_id}: {e}") from e
+
+    async def get_fee_schedule(self, token_id: str) -> Optional[FeeSchedule]:
+        """Return the CLOB V2 ``fd`` fee curve for a token.
+
+        The official V2 SDK resolves token -> condition and then reads the
+        compact ``fd`` object from ``/clob-markets/{condition_id}``.
+        Absence of ``fd`` is the CLOB's explicit fee-free representation.
+        """
+        try:
+            token_market = await self.get(
+                f"/markets-by-token/{token_id}",
+                rate_limit_key="GET:/markets-by-token/:token_id",
+                retry=True,
+            )
+            if not isinstance(token_market, dict):
+                raise TradingError("markets-by-token response must be an object")
+            condition_id = token_market.get("condition_id")
+            if not isinstance(condition_id, str) or not condition_id:
+                raise TradingError(
+                    "markets-by-token response is missing condition_id"
+                )
+
+            market = await self.get(
+                f"/clob-markets/{condition_id}",
+                rate_limit_key="GET:/clob-markets/:condition_id",
+                retry=True,
+            )
+            if not isinstance(market, dict):
+                raise TradingError("clob-markets response must be an object")
+            raw_fee = market.get("fd")
+            if raw_fee is None:
+                return None
+            if not isinstance(raw_fee, dict):
+                raise TradingError("clob-markets fd must be an object")
+            missing_fields = {"r", "e", "to"} - raw_fee.keys()
+            if missing_fields:
+                raise TradingError(
+                    "clob-markets fd is missing fields: "
+                    + ", ".join(sorted(missing_fields))
+                )
+
+            rate = Decimal(str(raw_fee["r"]))
+            exponent = Decimal(str(raw_fee["e"]))
+            taker_only = raw_fee["to"]
+            if not rate.is_finite() or rate < 0 or rate >= 1:
+                raise TradingError(f"Invalid clob-markets fd.r: {rate}")
+            if not exponent.is_finite() or exponent < 0:
+                raise TradingError(f"Invalid clob-markets fd.e: {exponent}")
+            if not isinstance(taker_only, bool):
+                raise TradingError("clob-markets fd.to must be a bool")
+            if rate > 0 and exponent <= 0:
+                raise TradingError(
+                    "Fee-bearing clob-markets fd requires a positive exponent"
+                )
+            if rate == 0:
+                return None
+            return FeeSchedule(
+                rate=rate,
+                exponent=exponent,
+                taker_only=taker_only,
+                rebate_rate=Decimal("0"),
+            )
+        except TradingError:
+            raise
+        except Exception as e:
+            raise TradingError(
+                f"Failed to get fee schedule for {token_id}: {e}"
+            ) from e
 
     async def is_order_scoring(self, order_id: str) -> bool:
         """
-        Check if order earns maker rebates (2% on Polymarket).
-
-        CRITICAL for Strategy-4 (Liquidity Mining): Know which orders earn rewards.
+        Check the exchange's current rewards-program scoring status.
 
         Args:
             order_id: Order ID to check
 
         Returns:
-            True if order is scoring (earning maker rebates)
+            True if the exchange currently reports the order as scoring
 
         Raises:
             TradingError: If request fails
 
         Example:
-            >>> # Check if your order earns 2% maker rebate
-            >>> is_scoring = clob.is_order_scoring("0x123...")
-            >>> if is_scoring:
-            ...     print("✅ Order earning 2% rebate!")
+            >>> is_scoring = await clob.is_order_scoring("0x123...")
         """
         try:
             response = await self.get(
@@ -1020,9 +1398,7 @@ class CLOBAPI(BaseAPIClient):
 
     async def are_orders_scoring(self, order_ids: List[str]) -> Dict[str, bool]:
         """
-        Check if multiple orders earn maker rebates (batch endpoint).
-
-        CRITICAL for Strategy-4: Batch check which orders earn 2% rewards.
+        Check current rewards-program scoring in one batch request.
 
         Args:
             order_ids: List of order IDs to check
@@ -1217,8 +1593,6 @@ class CLOBAPI(BaseAPIClient):
         Raises:
             TradingError: If request fails
         """
-        from datetime import datetime
-
         try:
             path = "/data/orders"
 
@@ -1270,42 +1644,7 @@ class CLOBAPI(BaseAPIClient):
             orders = []
             for data in all_orders_data:
                 try:
-                    # Parse created_at - can be timestamp (int/float), ISO string, or None
-                    created_at_raw = data.get("created_at")
-                    if created_at_raw is None:
-                        created_at = datetime.now()
-                    elif isinstance(created_at_raw, (int, float)):
-                        # Unix timestamp (seconds or milliseconds)
-                        # - Seconds: ~1.7B (10 digits, year ~2024)
-                        # - Milliseconds: ~1.7T (13 digits)
-                        # Threshold: 10_000_000_000 (10B) - anything above is milliseconds
-                        ts = (
-                            created_at_raw
-                            if created_at_raw < 10_000_000_000
-                            else created_at_raw / 1000
-                        )
-                        created_at = datetime.fromtimestamp(ts)
-                    elif isinstance(created_at_raw, str):
-                        created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
-                    else:
-                        created_at = datetime.now()
-
-                    # Normalize status to lowercase (API returns "LIVE", enum expects "live")
-                    status_raw = data.get("status", "live")
-                    status = status_raw.lower() if isinstance(status_raw, str) else "live"
-
-                    order = Order(
-                        id=data.get("id", ""),
-                        market=data.get("market", ""),
-                        asset_id=data.get("asset_id", ""),
-                        token_id=data.get("token_id", ""),
-                        price=data.get("price", 0),
-                        size=data.get("size", 0),
-                        side=data.get("side", "BUY"),
-                        status=status,
-                        created_at=created_at,
-                    )
-                    orders.append(order)
+                    orders.append(self._parse_order(data))
                 except Exception as e:
                     logger.warning(f"Failed to parse order {data.get('id')}: {e}")
                     continue
@@ -1324,45 +1663,107 @@ class CLOBAPI(BaseAPIClient):
         api_key: str,
         api_secret: str,
         api_passphrase: str,
-    ) -> Dict[str, Any]:
-        """Fetch one order by its provider order ID.
-
-        This mirrors ``py_clob_client.ClobClient.get_order`` from the locally
-        installed provider client (v0.28.0), including its authenticated
-        ``GET /data/order/{order_id}`` endpoint.  The provider returns a raw
-        order dictionary; callers must fail closed if terminal status or
-        ``size_matched`` evidence is absent.
-        """
-        if not order_id:
-            raise TradingError("order_id is required for authoritative lookup")
-
+    ) -> Optional[Order]:
+        """Get one order by exchange order hash, including terminal state."""
         path = f"/data/order/{order_id}"
+        headers = self._create_l2_headers(
+            address=address,
+            api_key=api_key,
+            api_secret=api_secret,
+            api_passphrase=api_passphrase,
+            method="GET",
+            path=path,
+        )
         try:
-            headers = self._create_l2_headers(
-                address=address,
-                api_key=api_key,
-                api_secret=api_secret,
-                api_passphrase=api_passphrase,
-                method="GET",
-                path=path,
-            )
             response = await self.get(
                 path,
                 headers=headers,
-                rate_limit_key="GET:/data/order",
+                rate_limit_key="GET:/data/order/{id}",
                 retry=True,
             )
             if not isinstance(response, dict):
-                raise TradingError(
-                    "Invalid single-order response: expected dict, got "
-                    f"{type(response).__name__}"
-                )
-            return response
-        except TradingError:
+                raise TradingError(f"Unexpected single-order response: {type(response).__name__}")
+            return self._parse_order(response)
+        except APIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise TradingError(f"Failed to get order {order_id}: {exc}") from exc
+        except (TradingError, AuthenticationError):
             raise
-        except Exception as error:
-            logger.error(f"Failed to get order {order_id}: {error}")
-            raise TradingError(f"Failed to get order {order_id}: {error}") from error
+        except Exception as exc:
+            raise TradingError(f"Failed to get order {order_id}: {exc}") from exc
+
+    async def get_trades(
+        self,
+        address: str,
+        api_key: str,
+        api_secret: str,
+        api_passphrase: str,
+        *,
+        trade_id: Optional[str] = None,
+        maker_address: Optional[str] = None,
+        market: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        before: Optional[int] = None,
+        after: Optional[int] = None,
+    ) -> List[ClobTrade]:
+        """Get authenticated CLOB executions, including maker contributions."""
+        path = "/data/trades"
+        headers = self._create_l2_headers(
+            address=address,
+            api_key=api_key,
+            api_secret=api_secret,
+            api_passphrase=api_passphrase,
+            method="GET",
+            path=path,
+        )
+        filters = {
+            "id": trade_id,
+            "maker_address": maker_address,
+            "market": market,
+            "asset_id": asset_id,
+            "before": before,
+            "after": after,
+        }
+        filters = {key: value for key, value in filters.items() if value is not None}
+        cursor = "MA=="
+        seen_cursors: set[str] = set()
+        rows: list[dict[str, Any]] = []
+        try:
+            while cursor != "LTE=":
+                if cursor in seen_cursors:
+                    raise TradingError(
+                        f"Authenticated trades pagination repeated cursor {cursor!r}"
+                    )
+                seen_cursors.add(cursor)
+                response = await self.get(
+                    path,
+                    params={**filters, "next_cursor": cursor},
+                    headers=headers,
+                    rate_limit_key="GET:/data/trades",
+                    retry=True,
+                )
+                if not isinstance(response, dict):
+                    raise TradingError(
+                        f"Unexpected trades response: {type(response).__name__}"
+                    )
+                page_rows = response.get("data")
+                next_cursor = response.get("next_cursor")
+                if not isinstance(page_rows, list):
+                    raise TradingError(
+                        "Authenticated trades response is missing list data"
+                    )
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    raise TradingError(
+                        "Authenticated trades response is missing next_cursor"
+                    )
+                rows.extend(page_rows)
+                cursor = next_cursor
+            return [ClobTrade.model_validate(row) for row in rows]
+        except (TradingError, AuthenticationError):
+            raise
+        except Exception as exc:
+            raise TradingError(f"Failed to get authenticated trades: {exc}") from exc
 
     async def get_balances(
         self,
@@ -1383,9 +1784,10 @@ class CLOBAPI(BaseAPIClient):
             api_key: API key
             api_secret: API secret
             api_passphrase: API passphrase
-            signature_type: Wallet signature type (0=EOA, 1=MAGIC, 2=PROXY)
-            funder: Funder address for proxy wallets (where USDC is actually held)
-            asset_type: Asset type ("COLLATERAL" for USDC, "CONDITIONAL" for CTF tokens)
+            signature_type: Wallet signature type (0=EOA, 1=POLY_PROXY,
+                2=GNOSIS_SAFE, 3=POLY_1271)
+            funder: Funder address for smart-contract wallets (where pUSD is held)
+            asset_type: Asset type ("COLLATERAL" for pUSD, "CONDITIONAL" for CTF tokens)
             token_id: Token ID (required when asset_type="CONDITIONAL")
 
         Returns:
@@ -1409,8 +1811,8 @@ class CLOBAPI(BaseAPIClient):
             # Build params dict
             params = {
                 "address": address,
-                "asset_type": asset_type,  # COLLATERAL = USDC, CONDITIONAL = CTF tokens
-                "signature_type": signature_type,  # 0=EOA, 1=MAGIC, 2=PROXY
+                "asset_type": asset_type,  # COLLATERAL = pUSD, CONDITIONAL = CTF tokens
+                "signature_type": signature_type,
             }
 
             # Add token_id for CONDITIONAL queries
@@ -1429,21 +1831,42 @@ class CLOBAPI(BaseAPIClient):
                 retry=True,
             )
 
-            # Parse balance from API response
-            # API returns balance in 6-decimal format (e.g., "13060149" = $13.06)
-            balance_str = response.get("balance", "0")
-            collateral = Decimal(balance_str) / Decimal("1000000")  # Convert to USD
+            if not isinstance(response, Mapping):
+                raise TradingError(
+                    "Balance-allowance response is not an object"
+                )
+            if "balance" not in response:
+                raise TradingError(
+                    "Balance-allowance response is missing balance"
+                )
+
+            # The API returns balance in 6-decimal base units (for example,
+            # "13060149" = 13.060149 collateral or conditional-token shares).
+            # Missing or malformed observation truth must not become zero.
+            try:
+                raw_balance = Decimal(str(response["balance"]))
+            except (ArithmeticError, TypeError, ValueError) as exc:
+                raise TradingError(
+                    "Balance-allowance response has an invalid balance"
+                ) from exc
+            if not raw_balance.is_finite() or raw_balance < 0:
+                raise TradingError(
+                    "Balance-allowance response has an invalid balance"
+                )
+            collateral = raw_balance / Decimal("1000000")
 
             # Tokens field (conditional tokens)
             tokens = response.get("tokens", {})
 
             balance = Balance(collateral=collateral, tokens=tokens)
-            logger.debug(f"Balances: {collateral} USDC, {len(tokens)} tokens")
+            logger.debug(f"Balances: {collateral} pUSD, {len(tokens)} tokens")
             return balance
 
+        except TradingError:
+            raise
         except Exception as e:
             logger.error(f"Failed to get balances: {e}")
-            raise TradingError(f"Failed to get balances: {e}")
+            raise TradingError(f"Failed to get balances: {e}") from e
 
     async def update_balance_allowance(
         self,
@@ -1458,16 +1881,17 @@ class CLOBAPI(BaseAPIClient):
         """
         Update balance & allowance from on-chain state.
 
-        This syncs Polymarket's API balance with the actual on-chain USDC balance.
-        Call this after depositing USDC to make funds visible to the API.
+        This syncs Polymarket's API balance with the actual on-chain pUSD balance.
+        Call this after funding pUSD to make funds visible to the CLOB.
 
         Args:
             address: Wallet address (EOA for signing)
             api_key: API key
             api_secret: API secret
             api_passphrase: API passphrase
-            signature_type: Wallet signature type (0=EOA, 1=MAGIC, 2=PROXY)
-            asset_type: "COLLATERAL" for USDC, "CONDITIONAL" for CTF tokens
+            signature_type: Wallet signature type (0=EOA, 1=POLY_PROXY,
+                2=GNOSIS_SAFE, 3=POLY_1271)
+            asset_type: "COLLATERAL" for pUSD, "CONDITIONAL" for CTF tokens
             token_id: Required if asset_type="CONDITIONAL"
 
         Returns:

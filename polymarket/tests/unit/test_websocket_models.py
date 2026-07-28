@@ -13,6 +13,7 @@ from polymarket.api.websocket_models import (
     LastTradePriceMessage,
     TradeMessage,
     OrderMessage,
+    CLOBEventType,
     TradeStatus,
     OrderEventType,
 )
@@ -89,6 +90,7 @@ class TestTradeMessage:
             "outcome": "YES",
             "owner": "apikey1",
             "trade_owner": "apikey1",
+            "trader_side": "TAKER",
             "taker_order_id": "order123",
             "maker_orders": [
                 {
@@ -111,6 +113,7 @@ class TestTradeMessage:
         assert message.event_type == "trade"
         assert message.status == TradeStatus.MATCHED
         assert message.side == "BUY"
+        assert message.trader_side == "TAKER"
         assert message.price == "0.57"
         assert len(message.maker_orders) == 1
         assert message.maker_orders[0].order_id == "order456"
@@ -283,7 +286,8 @@ class TestLastTradePriceMessage:
             "side": "BUY",
             "size": "100",
             "fee_rate_bps": "200",
-            "timestamp": "1234567890000"
+            "timestamp": "1234567890000",
+            "transaction_hash": "0xtransaction"
         }
 
         message = parse_websocket_message(data)
@@ -292,7 +296,28 @@ class TestLastTradePriceMessage:
         assert message.event_type == "last_trade_price"
         assert message.price == "0.55"
         assert message.side == "BUY"
+        assert message.size == "100"
         assert message.fee_rate_bps == "200"
+        assert message.timestamp == "1234567890000"
+        assert message.transaction_hash == "0xtransaction"
+
+    def test_parse_last_trade_price_with_optional_fields_omitted(self):
+        """Test the minimal official last-trade payload."""
+        data = {
+            "event_type": "last_trade_price",
+            "asset_id": "123456",
+            "market": "0xabc...",
+            "price": "0.55",
+            "side": "BUY"
+        }
+
+        message = parse_websocket_message(data)
+
+        assert isinstance(message, LastTradePriceMessage)
+        assert message.size is None
+        assert message.fee_rate_bps is None
+        assert message.timestamp is None
+        assert message.transaction_hash is None
 
 
 class TestMessageParsingErrors:
@@ -335,6 +360,7 @@ class TestMessageParsingErrors:
             "outcome": "YES",
             "owner": "apikey1",
             "trade_owner": "apikey1",
+            "trader_side": "TAKER",
             "taker_order_id": "order123",
             "maker_orders": [],
             "timestamp": "1234567890000",

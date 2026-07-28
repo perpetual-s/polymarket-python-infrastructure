@@ -1,7 +1,7 @@
 """Tests for cache module."""
 
 import time
-
+import pytest
 from ..utils.cache import TTLCache, MarketMetadataCache
 
 

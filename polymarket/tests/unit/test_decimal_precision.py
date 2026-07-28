@@ -1,5 +1,5 @@
 """
-Unit tests for Decimal precision in shared/polymarket.
+Unit tests for Decimal precision in polymarket.
 
 Validates the financial-grade precision guarantees of Decimal migration.
 
@@ -14,6 +14,7 @@ Tests:
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from polymarket.models import Balance, OrderRequest, OrderType, Position, Side
 from polymarket.utils.fees import (
@@ -41,6 +42,7 @@ class TestFloatVsDecimalPrecision:
         # Financial example: $0.60 * 100 tokens
         price_float = 0.60
         quantity = 100
+        expected = 60.0
 
         # Float can have precision errors
         result_float = price_float * quantity
@@ -420,7 +422,7 @@ class TestEdgeCases:
     def test_division_by_zero_protection(self):
         """Ensure division by zero is caught."""
         # Zero entry price in profit calculation
-        with pytest.raises(ZeroDivisionError):
+        with pytest.raises(ValueError, match="strictly between 0 and 1"):
             calculate_profit_after_fees(
                 Side.BUY,
                 Decimal("0.0"),  # Zero entry price
@@ -431,7 +433,7 @@ class TestEdgeCases:
             )
 
         # Zero entry price in profitability check
-        with pytest.raises(ZeroDivisionError):
+        with pytest.raises(ValueError, match="strictly between 0 and 1"):
             check_order_profitability(
                 Decimal("0.0"), Decimal("0.70"), Decimal("100.0"), 0, Decimal("1.0")  # Zero entry
             )
@@ -488,13 +490,15 @@ class TestEdgeCases:
 
     def test_roi_with_zero_entry_cost(self):
         """ROI calculation handles zero entry cost safely."""
-        # SELL with zero exit price → zero entry cost
-        result = calculate_profit_after_fees(
-            Side.SELL, Decimal("0.50"), Decimal("0.0"), Decimal("100.0"), 0, 0  # Exit at 0
-        )
-        # Should return ROI = 0 when entry cost is 0 (not divide by zero)
-        assert result["entry_cost"] == Decimal("0.0")
-        assert result["roi_pct"] == Decimal("0.0")
+        with pytest.raises(ValueError, match="strictly between 0 and 1"):
+            calculate_profit_after_fees(
+                Side.SELL,
+                Decimal("0.50"),
+                Decimal("0.0"),
+                Decimal("100.0"),
+                0,
+                0,
+            )
 
 
 if __name__ == "__main__":

@@ -2,7 +2,10 @@
 
 ## 1. Purpose and scope
 
-`shared/polymarket/` is downstream project's Polymarket boundary: typed market data, authenticated CLOB trading, Data API reads, wallet auth, CLOB credentials, WebSockets, rate limiting, and errors. This file is the reference surface for Claude and GPT agents; operational rules, orientation, and gotchas live in [README.md](README.md) and `CLAUDE.md`.
+`polymarket/` is a standalone boundary for typed market data, authenticated
+CLOB trading, Data API reads, wallet auth, CLOB credentials, WebSockets, rate
+limiting, and errors. Orientation and usage examples live in
+[README.md](README.md).
 
 ## 2. Table of contents
 
@@ -46,11 +49,16 @@ Semantics:
 - `**settings_overrides` may contain only real `PolymarketSettings` fields.
 - Unknown override names raise `TypeError`.
 - HTTP sessions are created during API client construction; use `await client.close()` or `async with`.
+- Construction never installs or replaces process SIGINT/SIGTERM handlers. The
+  application owns signal policy and must await `close()` from its shutdown path.
+- `close()` releases client transports/resources but does not cancel open orders.
+  The application owns order-cancellation policy; `atexit` cleanup is best-effort,
+  not a controlled shutdown path.
 
 Canonical construction:
 
 ```python
-from shared.polymarket import PolymarketClient
+from polymarket import PolymarketClient
 
 async with PolymarketClient(pool_connections=100, batch_max_workers=20) as client:
     ok = await client.get_ok()
@@ -75,7 +83,7 @@ Fields:
 | `clob_url` | `str` | `https://clob.polymarket.com` | CLOB API base URL |
 | `gamma_url` | `str` | `https://gamma-api.polymarket.com` | Gamma API base URL |
 | `chain_id` | `int` | `137` | Polygon |
-| `rpc_url` | `Optional[str]` | `None` | Polygon RPC URL |
+| `rpc_url` | `str` | `https://polygon.drpc.org` | Polygon RPC URL (current documented public mainnet endpoint) |
 | `request_timeout` | `float` | `30.0` | Socket read timeout, seconds |
 | `connect_timeout` | `float` | `10.0` | Connect timeout, seconds |
 | `max_retries` | `int` | `3` | `0..10` |
@@ -147,7 +155,20 @@ Circuit breakers are split per upstream surface — four named breakers, each gu
 
 The three data-plane breakers are independent (a Data API outage cannot open the Gamma breaker). `get_data_circuit_breaker_states()` returns each by name; `get_data_circuit_breaker_state()` returns the worst state across them (`OPEN` > `HALF_OPEN` > `CLOSED`) for back-compat. `reset_circuit_breaker()` resets all four. All are `None` (and the states map is `{}`) when `enable_circuit_breaker=False`.
 
+Every successful request closes its breaker and resets the consecutive-failure
+count. Identical public GETs without per-request headers may be coalesced.
+Authenticated or otherwise custom-header GETs execute independently so one
+wallet's response cannot satisfy another wallet's request; auth material is
+never retained in a coalescing key.
+
 ## 4. Authentication and wallet management
+
+> Note (2026): Polymarket now onboards new API users via deposit wallets with
+> signature type 3 (`POLY_1271`). The facade supports the current numeric
+> families 0–3. For type 3, both signed `maker` and `signer` are the deposit
+> wallet while its owner/session EOA produces the ERC-7739-wrapped EIP-712
+> signature checked through ERC-1271. Types 1–3 require the funds-holding
+> address in `funder` (or the compatibility `address` field).
 
 ### Wallet management methods
 
@@ -185,13 +206,17 @@ class WalletConfig(BaseModel):
 | Name | Value | Meaning |
 |---|---:|---|
 | `SignatureType.EOA` | `0` | EOA signer and balance holder |
-| `SignatureType.MAGIC` | `1` | Magic/email wallet |
-| `SignatureType.PROXY` | `2` | Polymarket proxy wallet; EOA signs, proxy/funder holds funds |
+| `SignatureType.POLY_PROXY` (`MAGIC`) | `1` | Polymarket proxy family; EOA signs, funder holds funds |
+| `SignatureType.GNOSIS_SAFE` (`PROXY`) | `2` | Historical Polymarket website wallet |
+| `SignatureType.POLY_1271` | `3` | Current deposit-wallet contract |
+
+Type 3 is pinned to the official `py-clob-client-v2` 1.1 known-answer vector
+in `tests/test_clob_v2_signing.py`; it is not the raw type-0/1 ECDSA wire shape.
 
 PROXY construction:
 
 ```python
-from shared.polymarket import PolymarketClient, WalletConfig, SignatureType
+from polymarket import PolymarketClient, WalletConfig, SignatureType
 
 async with PolymarketClient() as client:
     wallet_id = await client.add_wallet(
@@ -214,9 +239,64 @@ PROXY mapping:
 - `credentials.funder` stores proxy address for PROXY/MAGIC.
 - Balance and Data API reads use `funder` when present.
 
+### Wallet identity resolution
+
+`polymarket.wallet_identity` is the single place a signing identity is
+resolved. It performs no I/O; `add_wallet` and environment/registry consumers
+can go through it so they cannot disagree about who a wallet is.
+
+```python
+from polymarket import (
+    ResolvedWalletIdentity,
+    ResolvedWalletRouting,
+    abbreviate_address,
+    resolve_wallet_config,
+    resolve_wallet_identity_from_env,
+    resolve_wallet_routing_from_env,
+)
+
+def resolve_wallet_config(
+    wallet_config: WalletConfig,
+    *,
+    expected_signer_address: Optional[str] = None,
+    private_key_name: str = "private_key",
+    address_name: str = "address",
+) -> ResolvedWalletIdentity: ...
+
+def resolve_wallet_identity_from_env(
+    wallet_id: str,
+    private_key: SecretStr | str,
+    environ: Mapping[str, str],
+) -> ResolvedWalletIdentity: ...
+
+def resolve_wallet_routing_from_env(
+    wallet_id: str,
+    environ: Mapping[str, str],
+) -> ResolvedWalletRouting: ...
+
+def abbreviate_address(address: Optional[str]) -> str: ...
+```
+
+Rules:
+
+- The signer is always derived from the private key. A configured address is a
+  claim to check, never a source of truth: a mismatch raises `ValidationError`.
+- `ResolvedWalletIdentity` carries `signer_address`, `funder_address`,
+  `signature_type`, `wallet_type` (`eoa`/`smart_contract`), `funds_address`,
+  and a normalized `wallet_config` to hand to `add_wallet`.
+- Types 1–3 require a funder; an EOA's collateral lives at its signer, so a
+  stray funder on an explicit type 0 is ignored rather than routed to.
+- Environment convention per logical wallet `X`: `X_PRIVATE_KEY`, optional
+  `X_ADDRESS` (checked against the derived signer), `X_FUNDER_ADDRESS` or the
+  legacy `X_PROXY_ADDRESS`, and `X_SIGNATURE_TYPE` (falling back to
+  `COPY_WALLET_SIGNATURE_TYPE`). A legacy proxy with no explicit type resolves
+  to `GNOSIS_SAFE` (2).
+- `abbreviate_address` is what belongs in logs. Never log a private key, and
+  prefer logical wallet IDs plus abbreviated public addresses.
+
 ### EOA token approvals
 
-EOA wallets need six on-chain token approvals (USDC spender plus CTF operators) before the first trade. Helper: `shared.polymarket.utils.allowances`. Budget roughly `$3-5` gas on Polygon. PROXY wallets do not need this step — Polymarket's proxy contract holds the approvals.
+EOA wallets need six on-chain token approvals (USDC spender plus CTF operators) before the first trade. Helper: `polymarket.utils.allowances`. Budget roughly `$3-5` gas on Polygon. PROXY wallets do not need this step — Polymarket's proxy contract holds the approvals.
 
 ### CLOB credential bootstrap
 
@@ -330,30 +410,33 @@ Available as `client.gamma.<method>`.
 
 ### Top-level CLOB and Public CLOB market data
 
-Top-level market-data methods use either `client.clob` or `client.public_clob`.
+Top-level robust single reads and order-book batches use `client.market_clob`,
+a keyless `CLOBAPI` instance on the public-data breaker. Authenticated order,
+cancel, balance, and ledger methods alone use `client.clob`. The older
+fail-soft batch/convenience reads use `client.public_clob`.
 
 | Method | Delegate | Return | Raises |
 |---|---|---|---|
-| `async get_orderbook(token_id: str) -> OrderBook` | `client.clob.get_orderbook` | order book | `TradingError` |
-| `async get_orderbooks_batch(token_ids: List[str]) -> Dict[str, OrderBook]` | `client.clob.get_orderbooks_batch` | token id to order book | `TradingError` |
-| `async get_midpoint(token_id: str) -> Optional[float]` | `client.clob.get_midpoint` | annotated float, actual Decimal/None | `PriceUnavailableError` |
+| `async get_orderbook(token_id: str) -> OrderBook` | `client.market_clob.get_orderbook` | complete parsed order book whose required `asset_id` equals the requested token | `TradingError` |
+| `async get_orderbooks_batch(token_ids: List[str]) -> Dict[str, OrderBook]` | `client.market_clob.get_orderbooks_batch` | every requested token id to a complete parsed order book | `TradingError` on malformed, duplicate, missing, partial, or unrequested rows |
+| `async get_midpoint(token_id: str) -> Optional[float]` | `client.market_clob.get_midpoint` | annotated float, actual Decimal/None | `PriceUnavailableError` |
 | `async get_midpoints(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | `client.public_clob.get_midpoints` | token id to midpoint | returns None values on batch error |
-| `async get_price(token_id: str, side: Side) -> Optional[float]` | `client.clob.get_price` | annotated float, actual Decimal/None | `PriceUnavailableError` |
+| `async get_price(token_id: str, side: Side) -> Optional[float]` | `client.market_clob.get_price` | annotated float, actual Decimal/None | `PriceUnavailableError` |
 | `async get_prices(params: List[Dict[str, str]]) -> Dict[str, Optional[Decimal]]` | `client.public_clob.get_prices` | composite key to price | returns `{}` on error |
 | `async get_spread(token_id: str) -> Optional[float]` | `client.public_clob.get_spread` | annotated float, actual Decimal/None | returns `None` on error |
 | `async get_spreads(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | `client.public_clob.get_spreads` | token id to spread | returns None values on error |
 | `async get_best_bid_ask(token_id: str) -> Optional[tuple[Decimal, Decimal]]` | `client.public_clob.get_best_bid_ask` | `(best_bid, best_ask)` | returns `None` on error |
 | `async get_liquidity_depth(token_id: str, price_range: Decimal | float = Decimal("0.05")) -> Dict[str, Any]` | `client.public_clob.get_liquidity_depth` | depth dict | zero-depth dict on error |
-| `async get_last_trade_price(token_id: str) -> Optional[float]` | `client.clob.get_last_trade_price` | annotated float, actual Decimal/None | `PriceUnavailableError` |
-| `async get_last_trades_prices(token_ids: List[str]) -> Dict[str, Optional[float]]` | `client.clob.get_last_trades_prices` | annotated float values, actual Decimal/None | `TradingError` |
-| `async get_server_time() -> int` | `client.clob.get_server_time` | Unix ms | `TradingError` |
-| `async get_ok() -> bool` | `client.clob.get_ok` | CLOB health | `TradingError` |
-| `async get_simplified_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | `client.clob.get_simplified_markets` | CLOB page | `TradingError` |
+| `async get_last_trade_price(token_id: str) -> Optional[float]` | `client.market_clob.get_last_trade_price` | annotated float, actual Decimal/None; `GET /last-trade-price` | `PriceUnavailableError` |
+| `async get_last_trades_prices(token_ids: List[str]) -> Dict[str, Optional[float]]` | `client.market_clob.get_last_trades_prices` | annotated float values, actual Decimal/None; `POST /last-trades-prices` | `TradingError` |
+| `async get_server_time() -> int` | `client.market_clob.get_server_time` | Unix ms | `TradingError` |
+| `async get_ok() -> bool` | `client.market_clob.get_ok` | CLOB health | `TradingError` for transport or malformed health data |
+| `async get_simplified_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | `client.market_clob.get_simplified_markets` | CLOB page | `TradingError` |
 | `async get_markets_full(next_cursor: str = "MA==") -> Dict[str, Any]` | `client.public_clob.get_markets` | full CLOB page | returns empty page on error |
 | `async get_market_by_condition(condition_id: str) -> Dict[str, Any]` | `client.public_clob.get_market` | market dict | `MarketNotFoundError` |
-| `async get_market_trades_events(condition_id: str) -> List[Dict[str, Any]]` | `client.public_clob.get_market_trades_events` | trade events | returns `[]` on error |
-| `async get_prices_history(token_id: str, interval: Optional[str] = None, start_ts: Optional[int] = None, end_ts: Optional[int] = None, fidelity: Optional[int] = None) -> List[PricePoint]` | `client.public_clob.get_prices_history` | historical price points (keyless, `GET:/prices-history` 1,000 req/10s) | 404 → `[]`; `ValueError` if `interval` combined with `start_ts`/`end_ts` |
-| `async get_market_trades(market: str, *, limit: int = 100, offset: int = 0, taker_only: bool = True, filter_type: Optional[str] = None, filter_amount: Optional[float] = None, side: Optional[Side] = None) -> List[Trade]` | `client.data.get_trades` | market-wide recent trades (keyless, `user=None`, no key_manager; `GET:/trades` 200 req/10s) | `APIError`, `TimeoutError`, parse errors |
+| `async get_market_trades_events(condition_id: str) -> List[Dict[str, Any]]` (compatibility only)<br>`async get_market_trades_events_result_v1(condition_id: str) -> MarketTradeEventsResultV1` | `client.public_clob` | `GET /live-activity/events/{condition_id}`; legacy list or strict typed v1 events with exact request evidence and fixed 1,000-row/1 MiB decoded acceptance ceilings (`CLOB:default`) | legacy returns `[]` on error; v1 projects official nested `market`/`user` fields, emits closed `auth`/`request`/`non_list`/`serialization`/`bounds` error categories, distinguishes success/not-found/error/empty/parse loss, and never claims undocumented retention completeness or maker/taker role |
+| `async get_prices_history(...) -> List[PricePoint]` (compatibility only)<br>`async get_prices_history_result_v1(token_id: str, interval: Optional[str] = None, start_ts: Optional[int] = None, end_ts: Optional[int] = None, fidelity: Optional[int] = None) -> PriceHistoryResultV1` | `client.public_clob` | legacy points or v1 query/request/counts plus strict timestamp-grid coverage (`GET:/prices-history` 1,000 req/10s) | `ValueError` if `interval` is combined with `start_ts`/`end_ts`; v1 separates 404/error/empty and proves range completeness only for a clean explicit fidelity grid |
+| `async get_market_trades(...) -> List[Trade]` (compatibility only)<br>`async get_market_trades_result_v1(market: Optional[str] = None, *, user: Optional[str] = None, event_id: Optional[str] = None, start: Optional[int] = None, end: Optional[int] = None, limit: int = 100, offset: int = 0, taker_only: bool = True, filter_type: Optional[str] = None, filter_amount: Optional[float] = None, side: Optional[Side] = None) -> DataTradesResultV1` | `client.data` | legacy rows or documented-shape v1 rows with effective query, exact request evidence, counts, and bounded-page coverage (`GET:/trades` 200 req/10s) | v1 validates query, separates not-found/error/empty, and marks complete only for a clean in-bounds short first page with explicit `start`/`end` |
 | `async get_address_activity(address: str, **kwargs) -> List[Activity]` | `client.data.get_activity` | activity history for a raw wallet address (keyless, no key_manager; `GET:/activity` 1,000 req/10s) | `ValueError` if `address` not `0x…`; `APIError`, `TimeoutError`, parse errors |
 | `async get_market_trades_window(market: str, start_ts: int, *, taker_only: bool = True, filter_type: Optional[str] = None, filter_amount: Optional[float] = None, max_pages: int = 4) -> Dict[str, Any]` | pages `client.data.get_trades` | `{"trades": List[Trade], "complete": bool}`; pages newest-first back to `start_ts` (keyless; `GET:/trades` 200 req/10s); offset paging over an actively-trading market can double-count or skip trades across page boundaries — `complete` attests window coverage, not per-trade exactness | `complete=False` when the `max_pages` budget is exhausted before reaching `start_ts` (window truncated); `APIError`, `TimeoutError`, parse errors |
 | `async is_order_scoring(order_id: str) -> bool` | `client.clob.is_order_scoring` | scoring flag | `TradingError` |
@@ -405,7 +488,7 @@ Available as `client.public_clob.<method>`.
 
 | Method | Return | Failure behavior |
 |---|---|---|
-| `async get_ok() -> bool` | `True`/`False` | returns `False` |
+| `async get_ok() -> bool` | `True`/`False` for an explicit healthy/unhealthy response | `TradingError` on transport or malformed health data |
 | `async get_server_time() -> int` | Unix ms | propagates API errors |
 | `async get_midpoint(token_id: str) -> Optional[Decimal]` | midpoint | `PriceUnavailableError` |
 | `async get_midpoints(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | token id to midpoint | None values |
@@ -413,21 +496,21 @@ Available as `client.public_clob.<method>`.
 | `async get_prices(params: List[Dict[str, str]]) -> Dict[str, Optional[Decimal]]` | composite key to price | `{}` |
 | `async get_spread(token_id: str) -> Optional[Decimal]` | spread | `None` |
 | `async get_spreads(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | token id to spread | None values |
-| `async get_orderbook(token_id: str) -> OrderBook` | order book | `OrderBookError` |
-| `async get_orderbooks_batch(token_ids: List[str]) -> List[OrderBook]` | order books | `[]` |
+| `async get_orderbook(token_id: str) -> OrderBook` | complete book with matching required `asset_id` | `OrderBookError` |
+| `async get_orderbooks_batch(token_ids: List[str]) -> Dict[str, OrderBook]` | every requested token id to a complete parsed book | `TradingError` on malformed, duplicate, missing, partial, or unrequested rows |
 | `async get_order_book_hash(orderbook: OrderBook) -> str` | SHA-256 hex | none |
-| `async get_tick_size(token_id: str) -> Decimal` | tick size | default `Decimal("0.01")` |
-| `async get_neg_risk(token_id: str) -> bool` | neg-risk flag | `False` |
-| `async get_fee_rate_bps(token_id: str) -> int` | fee bps | `0` |
+| `async get_tick_size(token_id: str) -> Decimal` | authoritative `minimum_tick_size` | propagates failure; no default |
+| `async get_neg_risk(token_id: str) -> bool` | authoritative boolean flag | propagates failure; no default |
+| `async get_fee_rate_bps(token_id: str) -> int` | protocol `base_fee` metadata | propagates failure; no zero default |
 | `async get_simplified_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | page | empty page |
 | `async get_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | page | empty page |
 | `async get_sampling_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | page | empty page |
 | `async get_sampling_simplified_markets(next_cursor: str = "MA==") -> Dict[str, Any]` | page | empty page |
 | `async get_market(condition_id: str) -> Dict[str, Any]` | market dict | `MarketNotFoundError` |
-| `async get_market_trades_events(condition_id: str) -> List[Dict[str, Any]]` | trade events | `[]` |
-| `async get_prices_history(token_id: str, interval: Optional[str] = None, start_ts: Optional[int] = None, end_ts: Optional[int] = None, fidelity: Optional[int] = None) -> List[PricePoint]` | historical price points | `[]` on 404; malformed points skipped |
-| `async get_last_trade_price(token_id: str) -> Optional[Decimal]` | last price | `None` |
-| `async get_last_trades_prices(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | token id to last price | None values |
+| `async get_market_trades_events(...) -> List[Dict[str, Any]]` (compatibility only)<br>`async get_market_trades_events_result_v1(condition_id: str) -> MarketTradeEventsResultV1` | `GET /live-activity/events/{condition_id}`; legacy rows or typed/bounded v1 result | both use `CLOB:default`; v1 projects `market.condition_id`, `market.asset_id`, and observed actor `user.address`, classifies failures without retaining response bodies, rejects oversized/malformed data, and leaves maker/taker role plus clean source completeness unknown |
+| `async get_prices_history(...) -> List[PricePoint]` (compatibility only)<br>`async get_prices_history_result_v1(...) -> PriceHistoryResultV1` | legacy points or coverage-bearing v1 result | legacy `[]` on 404/skips malformed; v1 preserves exact request evidence and strict fidelity-grid diagnostics |
+| `async get_last_trade_price(token_id: str) -> Optional[Decimal]` | last price via `GET /last-trade-price` | `PriceUnavailableError`; `None` only when the response explicitly has no price |
+| `async get_last_trades_prices(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | token id to last price via `POST /last-trades-prices` | `TradingError` |
 | `async get_best_bid_ask(token_id: str) -> Optional[Tuple[Decimal, Decimal]]` | bid/ask | `None` |
 | `async get_liquidity_depth(token_id: str, price_range: Decimal = Decimal("0.05")) -> Dict[str, Any]` | depth dict | zero-depth dict |
 
@@ -444,36 +527,64 @@ Available as `client.clob.<method>`.
 | `async get_price(token_id: str, side: str) -> Optional[Decimal]` | price | `PriceUnavailableError` |
 | `async get_last_trade_price(token_id: str) -> Optional[Decimal]` | last price | `PriceUnavailableError` |
 | `async get_last_trades_prices(token_ids: List[str]) -> Dict[str, Optional[Decimal]]` | token id to price | `TradingError` |
-| `async get_orderbook(token_id: str) -> OrderBook` | order book | `TradingError` |
+| `async get_orderbook(token_id: str) -> OrderBook` | complete book with matching required `asset_id` | `TradingError` |
 | `async get_orderbooks_batch(token_ids: List[str]) -> Dict[str, OrderBook]` | token id to order book | `TradingError` |
-| `async get_tick_size(token_id: str) -> Decimal` | tick size | defaults to `0.01` |
-| `async get_neg_risk(token_id: str) -> bool` | neg-risk flag | defaults to `False` |
-| `async get_fee_rate_bps(token_id: str) -> int` | fee bps | always `0` in current code |
+| `async get_tick_size(token_id: str) -> Decimal` | authoritative `minimum_tick_size` | `TradingError`; no default |
+| `async get_neg_risk(token_id: str) -> bool` | authoritative neg-risk flag | `TradingError`; no default |
+| `async get_fee_rate_bps(token_id: str) -> int` | protocol `base_fee` metadata, not economic rate | `TradingError`; no default |
+| `async get_fee_schedule(token_id: str) -> Optional[FeeSchedule]` | token → condition → compact CLOB `fd` economic taker curve; `None` only for an explicitly fee-free shape | `TradingError` |
 | `async is_order_scoring(order_id: str) -> bool` | scoring flag | `TradingError` |
 | `async are_orders_scoring(order_ids: List[str]) -> Dict[str, bool]` | scoring flags | `TradingError` |
 
 ## 6. Trading
 
+> **CLOB V2 order path — LANDED 2026-07-18 (core-loop Task B2); live proof
+> pending Task C2.** The facade signs V2 orders in-repo
+> (`trading/order_builder.py`; known-answer vectors against the official
+> py-clob-client-v2 in `tests/test_clob_v2_signing.py`). The signed struct
+> is `salt, maker, signer, tokenId, makerAmount, takerAmount, side,
+> signatureType, timestamp(ms), metadata, builder` — `taker`, `expiration`,
+> `nonce`, `feeRateBps` are gone from the SIGNATURE (`expiration` still
+> rides the wire body for GTD); Exchange domain version `"2"` (ClobAuth
+> stays `"1"`); collateral is **pUSD**
+> `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`; exchanges: CTF V2
+> `0xE111180000d2663C0091e4f400237545B87B996B`, Neg Risk V2
+> `0xe2222d279d744050d28e00520010520000310F59`, adapter
+> `0xadA2005600Dec949baf300f4C6120000bDB6eAab`. Successful FAK/FOK
+> responses return `tradeIDs` (parsed into `OrderResponse.trade_ids`;
+> legacy `transactionHashes` still accepted). The V2 EIP-712 order hash IS
+> the exchange `orderID` and is computable pre-submit — `place_order`'s
+> `pre_submit` hook receives the hash and exact BUY reservation so the caller
+> can persist both for crash-safe identity and cap accounting (there is no
+> COID field in the official V2 client; order-hash identity replaces the
+> changelog's "COID" mention). Taker fees are real on several categories.
+> `/fee-rate` supplies protocol `base_fee`; token → condition →
+> `/clob-markets/{condition_id}` supplies the economic compact `fd` schedule.
+> `get_fee_info()` combines those distinct values for sizing and P&L.
+
 ### Top-level trading methods
 
 | Method | Return | Raises |
 |---|---|---|
-| `async place_order(order: OrderRequest, wallet_id: Optional[str] = None, skip_balance_check: bool = False, idempotency_key: Optional[str] = None) -> OrderResponse` | order response | `AuthenticationError`, `ValidationError`, `InsufficientBalanceError`, `OrderRejectedError`, `TradingError` |
-| `async place_market_order(market_order: MarketOrderRequest, wallet_id: Optional[str] = None, skip_balance_check: bool = False, idempotency_key: Optional[str] = None) -> OrderResponse` | order response | `ValidationError`, `InsufficientBalanceError`, `TradingError` |
-| `async place_orders_batch(orders: List[OrderRequest], wallet_id: Optional[str] = None, skip_balance_check: bool = False) -> List[OrderResponse]` | responses | `AuthenticationError`, `ValidationError`, `TradingError`, `InsufficientBalanceError` |
-| `async cancel_order(order_id: str, wallet_id: Optional[str] = None) -> bool` | cancel success | `TradingError`, auth/key-manager errors |
-| `async cancel_all_orders(wallet_id: Optional[str] = None, market_id: Optional[str] = None) -> int` | count | `TradingError`, auth/key-manager errors |
-| `async cancel_market_orders(market_id: str, wallet_id: Optional[str] = None) -> int` | count | `TradingError`, auth/key-manager errors |
+| `async place_order(order: OrderRequest, wallet_id: Optional[str] = None, skip_balance_check: bool = False, idempotency_key: Optional[str] = None, pre_submit: Optional[Callable[[str, Decimal], Awaitable[None]]] = None, timestamp_ms: Optional[int] = None, tick_size: Optional[Decimal] = None) -> OrderResponse` | order response; the hook receives `(order_hash, buy_reservation)`; optional caller-resolved tick is reused for normalization and signing | `AuthenticationError`, `ValidationError`, `InsufficientBalanceError`, `OrderRejectedError`, `TradingError` |
+| `async place_market_order(market_order: MarketOrderRequest, wallet_id: Optional[str] = None, skip_balance_check: bool = False, idempotency_key: Optional[str] = None) -> OrderResponse` | order response; recomputes from the current book and has no durable `pre_submit` hook | `ValidationError`, `InsufficientBalanceError`, `TradingError` |
+| `async place_orders_batch(orders: List[OrderRequest], wallet_id: Optional[str] = None, skip_balance_check: bool = False, pre_submit: Optional[Callable[[List[tuple[str, Decimal]]], Awaitable[None]]] = None) -> List[OrderResponse]` | one response per input; at most 15 orders; the atomic hook receives all `(order_hash, buy_reservation)` intents | `AuthenticationError`, `ValidationError`, `TradingError`, `InsufficientBalanceError` |
+| `async cancel_order(order_id: str, wallet_id: Optional[str] = None) -> bool` | transport acknowledgement, including `NOT_FOUND`/empty 200; never terminal-order proof | `TradingError`, auth/key-manager errors |
+| `async cancel_all_orders(wallet_id: Optional[str] = None, market_id: Optional[str] = None) -> int` | compatibility request helper; not terminal proof | `TradingError`, auth/key-manager errors |
+| `async cancel_market_orders(market_id: str, wallet_id: Optional[str] = None) -> int` | compatibility request helper; not terminal proof | `TradingError`, auth/key-manager errors |
 | `async get_orders(wallet_id: Optional[str] = None, market: Optional[str] = None) -> List[Order]` | open orders | `TradingError`, auth/key-manager errors |
-| `async get_order(order_id: str, wallet_id: Optional[str] = None) -> Dict[str, Any]` | raw authoritative order evidence | `TradingError`, auth/key-manager errors |
+| `async get_order(order_id: str, wallet_id: Optional[str] = None) -> Optional[Order]` | exact order including terminal state; `None` on 404 | `TradingError`, auth/key-manager errors |
+| `async get_clob_trades(wallet_id: Optional[str] = None, **filters) -> List[ClobTrade]` | authenticated execution rows and maker contributions | `TradingError`, auth/key-manager errors |
+| `async get_tick_size(token_id: str) -> Decimal` | authoritative current tick | `TradingError`; no fallback |
+| `async get_fee_rate_bps(token_id: str) -> int` | protocol `base_fee`, not the economic rate | `TradingError`; no fallback |
+| `async get_fee_info(token_id: str) -> FeeInfo` | complete economic rate/exponent/taker-only metadata plus protocol base fee | `TradingError`; a positive base fee without `fd` is incomplete |
 | `async get_balances(wallet_id: Optional[str] = None) -> Balance` | balance | `TradingError`, auth/key-manager errors |
 | `async get_token_balance(token_id: str, wallet_id: Optional[str] = None) -> Decimal` | CTF token balance | `TradingError`, auth/key-manager errors |
-| `async get_position_balance(token_id: str, wallet_id: Optional[str] = None) -> Decimal` | Data API position size | returns `Decimal("0")` on lookup failure |
+| `async get_position_balance(token_id: str, wallet_id: Optional[str] = None) -> Decimal` | size from one complete Data API observation | incomplete/failed reads propagate; returns `Decimal("0")` only after complete absence |
 | `async update_balance_allowance(wallet_id: Optional[str] = None, asset_type: str = "COLLATERAL", token_id: Optional[str] = None) -> Dict[str, Any]` | update response | `TradingError`, auth/key-manager errors |
 | `async release_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None, order_id: Optional[str] = None) -> None` | `None` | `BalanceTrackingError` |
-| `async restore_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None) -> None` | `None` | `BalanceTrackingError` |
-| `async reapply_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None, order_id: Optional[str] = None) -> None` | `None` | `BalanceTrackingError` |
 | `async get_reserved_balance(wallet_id: Optional[str] = None) -> Decimal` | reserved USD | none |
+| `async restore_reserved_balance(amount: Decimal, wallet_id: Optional[str] = None) -> None` | replaces process-local reserved USD with the durable restart-reservation ledger total (active/unresolved plus terminal release debt) | `BalanceTrackingError` for negative/non-finite input |
 
 ### Order placement
 
@@ -494,25 +605,35 @@ response = await client.place_order(order, wallet_id="WALLET_0")
 
 1. Resolves wallet credentials.
 2. Requires initialized CLOB API credentials.
-3. Validates token id, price, size, side, and minimum size.
-4. `_check_and_reserve_buy_balance`: preflights balance AND atomically
-   reserves `size * price` under `_balance_lock` (closes check-then-reserve
-   TOCTOU).
-5. Builds and signs EIP-712 order.
-6. Fetches tick size, fee rate, and neg-risk metadata for signing.
-7. Posts to CLOB `POST /order`.
-8. On successful live response: reservation persists; caller releases later.
-9. On failed response or exception: releases the pre-reservation before
-   returning/re-raising so collateral does not leak.
-10. Tracks metrics.
+3. Validates token id, open-unit price, size, side, and minimum size.
+4. Resolves the current tick (or accepts one already resolved by the caller)
+   and normalizes once: BUY floors and SELL ceilings so rounding never crosses
+   the caller's adverse-price bound. The same exact price/tick is used for
+   intent persistence, balance math, and signing.
+5. Resolves complete `FeeInfo`. Metadata failure suppresses both BUY and SELL;
+   `base_fee` alone is not substituted for the economic rate.
+6. `_check_and_reserve_buy_balance`: preflights balance and atomically
+   reserves normalized notional plus the current taker-curve fee under
+   `_balance_lock`.
+7. Builds and signs the EIP-712 order, resolving current neg-risk metadata.
+8. Runs `pre_submit(order_hash, buy_reservation)` when provided, then posts to
+   CLOB
+   `POST /order`.
+9. Requires a successful response's `orderID` to equal the locally computed
+   V2 hash, even when no hook was provided.
+10. On success the fee-inclusive reservation persists until exact terminal
+    reconciliation. A proven pre-transport failure or definitive exchange
+    rejection releases it; cancellation, timeout, malformed responses,
+    duplicate/delayed responses, ID mismatch, and other ambiguous outcomes
+    retain it.
+11. Tracks metrics.
 
 `place_order` flow when `skip_balance_check=True`:
 
-- Skips steps 4 and the pre-reservation.
-- After step 7, on successful BUY response, reserves `size * price` under
-  `_balance_lock` (post-reserve path kept for callers that manage their own
-  preflight).
-- Same release-on-failure behavior as above.
+- Skips the exchange-balance preflight, but still reserves the same normalized,
+  fee-inclusive amount under `_balance_lock` before signing and transport.
+- It still resolves current tick and complete fee metadata and follows the
+  same exact-response and ambiguity rules.
 
 `place_order` flow for SELL:
 
@@ -521,12 +642,35 @@ response = await client.place_order(order, wallet_id="WALLET_0")
 
 `idempotency_key`:
 
-- Passed to signed-order construction.
-- Used for deterministic order hash/salt behavior where supported by `OrderBuilder`.
-- It is **not** a provider-backed idempotency token or client order ID. The
-  installed official client exposes no such pre-placement contract, so this
-  value cannot authorize replay after an ambiguous live submission.
+- Passed to signed-order construction as deterministic salt input.
+- V2 full retry identity additionally requires the same explicit
+  `timestamp_ms` and identical normalized order payload. An idempotency key
+  alone does not freeze the creation timestamp or a recomputed market order.
 - Batch placement does not accept idempotency keys.
+
+`pre_submit` is optional at the reusable facade boundary, but omitting it
+means the caller has no durable restart record for an order that reached
+transport. A restart-safe runtime should supply the hook. Batch callers must
+likewise persist the entire batch atomically before transport.
+
+### Batch orders
+
+- Accepts 1–15 orders and sends the official `POST /orders` array of complete
+  per-order wrappers (`order`, API-key `owner`, `orderType`, `deferExec`,
+  `postOnly`).
+- Resolves tick, fee metadata, SELL token balance, and fee-inclusive BUY
+  reservation for every item before signing or submitting.
+- The optional hook is one atomic call containing every deterministic hash and
+  reservation. A normal hook exception aborts before transport; cancellation
+  during the durability boundary retains reservations because persistence may
+  already have completed.
+- Response cardinality and item types are exact. Every successful `orderID`
+  must equal its local V2 hash.
+- Only per-item failures classified as definitive rejections release their BUY
+  reservation. Duplicate, delayed, unknown, malformed, incomplete, and
+  transport-level outcomes remain ambiguous and retain cap until exact
+  reconciliation.
+- Production batch callers need the durability hook before transport.
 
 ### Market orders
 
@@ -557,6 +701,9 @@ Execution:
 - Uses the same `place_order` path after conversion.
 - `OrderType.FOK` raises `TradingError` when available liquidity cannot fill the requested amount.
 - `OrderType.FAK` proceeds with available liquidity where the code path allows it.
+- This generic helper has no `pre_submit` parameter and therefore no
+  crash-durable restart identity. Restart-safe runtimes should build the exact
+  executable `OrderRequest` and call `place_order` with a durability hook.
 
 Examples:
 
@@ -582,29 +729,43 @@ sell_response = await client.place_market_order(sell, wallet_id="WALLET_0")
 
 Reservation behavior is part of the live trading contract; see [README.md](README.md#reservation-accounting) for the operating rule. API reference:
 
-- BUY collateral reserve is `order.size * order.price`.
+- BUY collateral reserve is normalized notional plus the current taker-curve
+  fee from `FeeInfo.rate_bps` and `FeeInfo.exponent`.
 - Reservation unit is USD collateral as `Decimal`.
 - BUY default flow: `_check_and_reserve_buy_balance` preflights AND atomically reserves under `_balance_lock` BEFORE build/sign/submit (closes check-then-reserve TOCTOU).
-- BUY with `skip_balance_check=True`: preflight and pre-reservation both skipped; a successful `post_order` response reserves `size * price` after the fact (legacy post-reserve path retained for callers with their own preflight).
-- In either path, a failed `post_order` response or an exception after reservation releases the tentative reservation before the caller returns or re-raises.
-- Successful live BUY orders keep reservation.
-- Caller releases after fill, cancel, expiry, or no-longer-live state:
+- BUY with `skip_balance_check=True`: exchange-balance preflight is skipped,
+  but the same fee-inclusive amount is still reserved before transport.
+- A local failure before durability/transport or a definitive rejection
+  releases the tentative reservation. Any outcome that may have landed
+  retains it for exact reconciliation.
+- Successful live BUY orders keep the fee-inclusive reservation.
+- `restore_reserved_balance()` replaces a wallet's process-local total with
+  the durable restart-reservation ledger sum (active/unresolved plus terminal
+  release debt) during startup; it does not add to the current total.
+- Caller releases the exact stored amount after exact fill, cancel, expiry, or
+  no-longer-live adjudication:
 
 ```python
 await client.release_reserved_balance(
-    order.size * order.price,
+    reserved_amount,
     wallet_id="WALLET_0",
     order_id=response.order_id,
 )
 ```
 
+- The production `pre_submit` hook durably associates hash and reservation;
+  startup restores unresolved reservations and exact terminal adjudication
+  releases them transactionally.
 - Over-release raises `BalanceTrackingError`.
 - Balance lookup errors during preflight become `TradingError`; order is not submitted.
-- SELL validation uses `get_position_balance()` from Data API positions.
-- `get_token_balance()` reads conditional token balance from CLOB balance allowance.
-- `place_orders_batch` preflights total batch balance.
-- Batch successful BUY reservations happen after submit.
-- Batch reservation failure for one response logs warning and continues.
+- SELL validation uses `get_token_balance()`, the authenticated CONDITIONAL
+  balance from CLOB balance allowance. Failed or malformed reads propagate;
+  they are never treated as zero.
+- `place_orders_batch` resolves complete fee metadata for every token before
+  submission, preflights total fee-inclusive BUY collateral, and validates
+  SELL balances.
+- Batch BUY reservations are established before signing/submission and retained
+  or released under the same definitive-versus-ambiguous rules above.
 
 ### CLOBAPI trading direct methods
 
@@ -613,12 +774,13 @@ Available as `client.clob.<method>`; top-level wrappers fill auth fields from wa
 | Method | Return | Raises |
 |---|---|---|
 | `async post_order(signed_order: Dict[str, Any], address: str, api_key: str, api_secret: str, api_passphrase: str, order_type: str = "GTC") -> OrderResponse` | response | `OrderRejectedError`, `InsufficientBalanceError`, `TickSizeError`, `InsufficientAllowanceError`, `OrderDelayedError`, `OrderExpiredError`, `FOKNotFilledError`, `InvalidOrderError`, `MarketNotReadyError`, `AuthenticationError`, `TradingError` |
-| `async post_orders_batch(signed_orders: List[Dict[str, Any]], address: str, api_key: str, api_secret: str, api_passphrase: str) -> List[OrderResponse]` | responses | `TradingError` |
+| `async post_orders_batch(signed_orders: List[Dict[str, Any]], address: str, api_key: str, api_secret: str, api_passphrase: str, order_types: Optional[List[str]] = None) -> List[OrderResponse]` | responses; order types default to GTC and must match input cardinality | `TradingError` |
 | `async cancel_order(order_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> bool` | `True` if canceled or already gone | `TradingError` |
-| `async cancel_market_orders(market_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> int` | cancel count | `TradingError` |
-| `async cancel_all_orders(address: str, api_key: str, api_secret: str, api_passphrase: str, market_id: Optional[str] = None) -> int` | cancel count | `TradingError` |
+| `async cancel_market_orders(market_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> int` | compatibility request helper; not terminal proof | `TradingError` |
+| `async cancel_all_orders(address: str, api_key: str, api_secret: str, api_passphrase: str, market_id: Optional[str] = None) -> int` | compatibility request helper; not terminal proof | `TradingError` |
 | `async get_orders(address: str, api_key: str, api_secret: str, api_passphrase: str, market: Optional[str] = None) -> List[Order]` | orders | `TradingError` |
-| `async get_order(order_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> Dict[str, Any]` | raw single-order evidence | `TradingError` |
+| `async get_order(order_id: str, address: str, api_key: str, api_secret: str, api_passphrase: str) -> Optional[Order]` | exact order, including terminal state | `TradingError` |
+| `async get_trades(address: str, api_key: str, api_secret: str, api_passphrase: str, *, trade_id: Optional[str] = None, maker_address: Optional[str] = None, market: Optional[str] = None, asset_id: Optional[str] = None, before: Optional[int] = None, after: Optional[int] = None) -> List[ClobTrade]` | paginated authenticated executions | `TradingError` |
 | `async get_balances(address: str, api_key: str, api_secret: str, api_passphrase: str, signature_type: int = 0, funder: Optional[str] = None, asset_type: str = "COLLATERAL", token_id: Optional[str] = None) -> Balance` | balance | `TradingError` |
 | `async update_balance_allowance(address: str, api_key: str, api_secret: str, api_passphrase: str, signature_type: int = 0, asset_type: str = "COLLATERAL", token_id: Optional[str] = None) -> Dict[str, Any]` | update response | `TradingError` |
 
@@ -665,6 +827,12 @@ OrderResponse(
 )
 ```
 
+`success` must be a real boolean. `errorMsg` must be a string or null, success
+requires a non-empty `orderID` and no nonblank error, and failure requires a
+nonblank error. Malformed shapes raise `TradingError` and remain ambiguous to
+the facade. Unknown unsuccessful error text is also ambiguous rather than
+being coerced into a definitive rejection.
+
 Error mapping from `errorMsg`:
 
 | Error text contains | Exception |
@@ -681,7 +849,7 @@ Error mapping from `errorMsg`:
 | `INVALID_SIGNATURE`, `SIGNATURE_FAILED` | `AuthenticationError` |
 | `NONCE_TOO_LOW`, `INVALID_NONCE` | `OrderRejectedError(reason="NONCE_CONFLICT")` |
 | `ORDER_ALREADY_EXISTS`, `DUPLICATE_ORDER` | `OrderRejectedError(reason="DUPLICATE")` |
-| other unsuccessful error | `OrderRejectedError` |
+| other unsuccessful error | `TradingError` (ambiguous; reconcile exact hash) |
 
 ### Cancel order contract
 
@@ -722,6 +890,10 @@ Return behavior:
 - Returns `True` for legacy `{"success": true}`.
 - Returns `True` for empty 200 response with no canceled/not_canceled data.
 - Raises `TradingError` for other not-canceled reasons.
+
+Every `True` value is a request acknowledgement only. It does not prove the
+order was cancelled or unfilled; exact `get_order` plus complete authenticated
+trade history decides terminal state.
 - Raises `TradingError` for unexpected response shape.
 
 ### Orders and balances
@@ -736,22 +908,22 @@ Return behavior:
 - Normalizes uppercase API statuses to lowercase model values.
 - Parses `created_at` as seconds, milliseconds, or ISO string.
 
-`get_order`:
+`get_order` and `get_trades`:
 
-- Uses the authenticated official-provider endpoint `GET /data/order/{order_id}`.
-- Returns the raw mapping so money-state callers can require exact `status` and
-  `size_matched` evidence; non-mapping responses raise `TradingError`.
-- It can reconcile an already-known provider order ID. It does **not** provide a
-  provider-backed identity known before `POST /order`, so an ambiguous placement
-  timeout still cannot be inferred safe from a deterministic signing salt.
-- Capability flags expose that boundary explicitly:
-  `supports_authoritative_order_lookup = True` and
-  `supports_preplacement_durable_order_identity = False`.
+- `GET /data/order/{id}` is the reconciliation source for both open and terminal orders; a missing order remains unresolved rather than being guessed filled/cancelled.
+- `GET /data/trades` is L2-authenticated and cursor-paginated. Fill accounting
+  rejects duplicate requested IDs and requires every lookup to return exactly
+  one row with that requested trade ID and exactly one local contribution.
+  The contributions must total the exchange matched size; incomplete,
+  mismatched, or partial associated-trade sets remain retriable. Taker
+  platform fees use current `FeeInfo` curve metadata, makers incur zero
+  platform fee, and wire/event `fee_rate_bps` remains metadata rather than
+  the authoritative economic rate.
 
 `get_balances`:
 
 - Uses `GET /balance-allowance`.
-- `asset_type="COLLATERAL"` for USDC.
+- `asset_type="COLLATERAL"` for pUSD (CLOB V2 collateral; not native USDC or USDC.e).
 - `asset_type="CONDITIONAL"` plus `token_id` for CTF tokens.
 - Sends `signature_type`.
 - Sends `funder` for PROXY wallets.
@@ -783,7 +955,8 @@ Batch facade methods take wallet addresses directly, not wallet ids.
 | `async get_activity(wallet_id: Optional[str] = None, **kwargs) -> List[Activity]` | activity | `ValidationError`, `APIError`, `TimeoutError`, parse errors |
 | `async get_portfolio_value(wallet_id: Optional[str] = None, market: Optional[str] = None) -> PortfolioValue` | value model | `ValidationError`, `APIError`, `TimeoutError`, parse errors |
 | `async get_market_holders(market: str, limit: int = 100, min_balance: int = 1) -> List[Holder]` | holders | `ValidationError`, `APIError`, `TimeoutError`, parse errors |
-| `async get_leaderboard(limit: int = 100, min_pnl: Optional[float] = None) -> List[LeaderboardTrader]` | leaderboard | `APIError`, `TimeoutError`, parse errors |
+| `async get_leaderboard(category: str = "OVERALL", time_period: str = "MONTH", order_by: str = "PNL", limit: int = 50, offset: int = 0) -> List[LeaderboardTrader]` | leaderboard (category/timePeriod/orderBy passthrough; server caps: limit ≤50, offset ≤1000) | `APIError`, `TimeoutError`, parse errors |
+| `async get_closed_positions(user: str, limit: int = 100, offset: int = 0) -> List[ClosedPosition]` | closed positions with realized PnL (`realized_pnl`, `total_bought`, `avg_price` — live-verified 2026-07-17) | `APIError`, `TimeoutError`, parse errors |
 | `async get_positions_batch(wallet_addresses: List[str], **kwargs) -> Dict[str, List[Position]]` | address to positions | fail-soft per address |
 | `async get_trades_batch(wallet_addresses: List[str], **kwargs) -> Dict[str, List[Trade]]` | address to trades | fail-soft per address |
 | `async get_activity_batch(wallet_addresses: List[str], **kwargs) -> Dict[str, List[Activity]]` | address to activity | fail-soft per address |
@@ -797,11 +970,23 @@ Available as `client.data.<method>`.
 | Method | Endpoint | Return |
 |---|---|---|
 | `async get_positions(user: str, market: Optional[str] = None, event_id: Optional[str] = None, size_threshold: float = 1.0, redeemable: Optional[bool] = None, mergeable: Optional[bool] = None, limit: int = 100, offset: int = 0, sort_by: str = "TOKENS", sort_direction: str = "DESC", title: Optional[str] = None) -> List[Position]` | `GET /positions` | positions |
-| `async get_trades(user: Optional[str] = None, limit: int = 100, offset: int = 0, taker_only: bool = True, filter_type: Optional[str] = None, filter_amount: Optional[float] = None, market: Optional[str] = None, side: Optional[Side] = None) -> List[Trade]` | `GET /trades` | trades |
+| `async get_positions_complete(user: str, market: Optional[str] = None, event_id: Optional[str] = None, size_threshold: float = 1.0, redeemable: Optional[bool] = None, mergeable: Optional[bool] = None, sort_by: str = "TOKENS", sort_direction: str = "DESC", title: Optional[str] = None) -> List[Position]` | repeated `GET /positions` | authoritative current observation only |
+| `async get_trades(...) -> List[Trade]` (compatibility only)<br>`async get_trades_result_v1(user: Optional[str] = None, limit: int = 100, offset: int = 0, taker_only: bool = True, filter_type: Optional[str] = None, filter_amount: Optional[float] = None, market: Optional[str] = None, event_id: Optional[str] = None, start: Optional[int] = None, end: Optional[int] = None, side: Optional[Side] = None) -> DataTradesResultV1` | `GET /trades` | legacy rows or documented-shape v1 rows with effective query and truthful result metadata |
 | `async get_activity(user: str, market: Optional[str] = None, activity_type: Optional[ActivityType] = None, limit: int = 100, offset: int = 0, start: Optional[int] = None, end: Optional[int] = None, side: Optional[Side] = None, sort_by: str = "TIMESTAMP") -> List[Activity]` | `GET /activity` | activity |
 | `async get_portfolio_value(user: str, market: Optional[str] = None) -> PortfolioValue` | `GET /value` | value model |
 | `async get_holders(market: str, limit: int = 100, min_balance: int = 1) -> List[Holder]` | `GET /holders` | flattened holders |
-| `async get_leaderboard(limit: int = 100, min_pnl: Optional[float] = None) -> List[LeaderboardTrader]` | `GET /v1/leaderboard` | traders |
+| `async get_leaderboard(category: str = "OVERALL", time_period: str = "MONTH", order_by: str = "PNL", limit: int = 50, offset: int = 0) -> List[LeaderboardTrader]` | `GET /v1/leaderboard` | traders |
+| `async get_closed_positions(user: str, limit: int = 100, offset: int = 0, sort_by: Optional[str] = None, sort_direction: str = "DESC") -> List[ClosedPosition]` | `GET /closed-positions` | closed positions (realized economics; no open-position fields) |
+
+`/closed-positions` ordering (live-verified 2026-07-27): the endpoint's own
+default is `sortBy=REALIZEDPNL`, `sortDirection=DESC` — largest realized win
+first. Any caller that reads fewer rows than the wallet has therefore gets a
+winner-biased sample, not a history: win rates computed from it come back at
+1.00 and realized P&L contains no losses. Pass `sort_by="TIMESTAMP"` for a
+chronological read. Accepted `sortBy` values are `REALIZEDPNL`, `AVGPRICE`,
+`PRICE`, `TITLE`, `TIMESTAMP`; the facade rejects anything else before
+transport, and the endpoint itself answers `400` with the same list, so an
+unsupported value can never silently fall back to the default ordering.
 
 Validation:
 
@@ -809,9 +994,16 @@ Validation:
 - `get_activity(user=...)` requires an address beginning with `0x`.
 - `get_portfolio_value(user=...)` requires an address beginning with `0x`.
 - `get_holders(market=...)` requires a non-empty condition id.
-- `limit` is capped to `500` for positions, trades, activity, and holders.
+- Legacy limits are capped to `500` for positions, trades, activity, and holders; `get_trades_result_v1` uses the documented `10,000` cap.
 - Position offset is capped to `10000`.
 - Position title filter is truncated to 100 chars.
+
+`get_positions_complete()` uses fixed 500-row pages, probes past every exact
+page boundary, and requires two complete passes to agree on canonical
+`(condition_id, asset, outcome, size)` custody state. Strict parsing, wallet
+identity, duplicate identity, pass mutation, transport errors, and a full page
+at the offset ceiling all raise. It never returns a partial collection as an
+empty or authoritative portfolio.
 
 `get_portfolio_value` normalization:
 
@@ -910,14 +1102,31 @@ Consensus signal shape:
 
 ### Top-level CLOB WebSocket facade
 
-These methods are synchronous subscription wrappers.
+These methods are synchronous subscription and telemetry wrappers.
 
-| Method | Callback receives | Raises |
+| Method | Return or callback | Raises |
 |---|---|---|
-| `subscribe_orderbook(token_id: str, callback: Callable[[OrderBook], None], wallet_id: Optional[str] = None) -> None` | `OrderBook` | callback errors are logged |
-| `subscribe_user_orders(callback: Callable[[Any], None], wallet_id: Optional[str] = None) -> None` | typed CLOB WS message | `ValueError` if user channel lacks API key |
-| `unsubscribe_all() -> None` | none | logs disconnect errors |
-| `is_websocket_connected() -> bool` | none | none |
+| `subscribe_orderbook(token_id: str, callback: Callable[[OrderBook], None], wallet_id: Optional[str] = None) -> None`<br>`subscribe_clob_market_last_trade_price(token_id: str, callback: Callable[[LastTradePriceMessage], None]) -> None` | official CLOB Market Channel `OrderBook` or typed last-trade message; same-token callbacks share one subscription | `RuntimeError` if the facade transport is already USER; callback errors are logged; request shutdown/unsubscribe from the owner thread, not from a synchronous callback |
+| `subscribe_user_orders(callback: Callable[[Any], None], wallet_id: Optional[str] = None, on_failure_callback: Optional[Callable[[str], None]] = None) -> None` | typed CLOB WS message; optional permanent-transport-failure callback | `ValueError` if user credentials are incomplete; `RuntimeError` if the facade transport is already MARKET; `AuthenticationError` if it is bound to another USER wallet |
+| `unsubscribe_all() -> None` | none | disconnect errors propagate after local handle/callback cleanup |
+| `is_websocket_connected() -> bool` | actual transport-open state, not worker-thread state | none |
+| `get_clob_websocket_telemetry_v1() -> WebSocketTelemetrySnapshotV1` | frozen identifier-free counters for transport, receipts/parsing, queue pressure/drops, callbacks, reconnects/silences, and local send failures; zero snapshot before first transport and retained final snapshot after disconnect | none; reconnect silence is locally observed downtime, not source-sequence completeness |
+
+Official `last_trade_price` messages bypass content-hash dedupe because the documented payload has no stable event ID; API-B must establish replay and identity semantics before loss-bearing dedupe.
+
+Public Market wire contract: initial `{"type":"market","assets_ids":[...],"custom_feature_enabled":false}`; dynamic subscribe/unsubscribe uses `operation` plus `assets_ids` (subscribe also carries `custom_feature_enabled=false`).
+Incoming frames may be one object or an array: `messages_received` counts wire frames, while parsed/unknown/failure and delivery counters count decoded elements.
+Official last-trade parsing requires `asset_id`, `market`, `price`, and `side`;
+optional `size`, `fee_rate_bps`, `timestamp`, and `transaction_hash` fields
+are preserved when present and represented as `None` when omitted.
+`fee_rate_bps` is wire metadata only and is not authoritative economic fee
+data for sizing, fill attribution, or P&L.
+
+The endpoint and channel are fixed for one WebSocket transport: MARKET and
+USER subscriptions cannot share it. A USER transport is also bound to one
+concrete wallet identity. Use separate `PolymarketClient` instances (and
+therefore separate transports) for MARKET versus USER, or for different USER
+wallets.
 
 Orderbook callback conversion:
 
@@ -927,18 +1136,20 @@ Orderbook callback conversion:
 
 ### WebSocketClient direct methods
 
-Available from `shared.polymarket.api.websocket.WebSocketClient`.
+Available from `polymarket.api.websocket.WebSocketClient`.
 
 | Method | Return | Notes |
 |---|---|---|
-| `__init__(ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws", api_key: Optional[str] = None, reconnect_delay: float = 5.0, max_reconnects: int = 10, enable_metrics: bool = True, enable_queue: bool = True, queue_maxsize: int = 10000, ping_interval: int = 20, ping_timeout: int = 10, queue_drop_threshold: int = 1000, enable_compression: bool = True, on_failure_callback: Optional[Callable[[str], None]] = None, enable_deduplication: bool = True, dedup_window_seconds: int = 300) -> None` | client | constructor |
+| `__init__(..., api_key: Optional[str] = None, api_secret: Optional[str] = None, api_passphrase: Optional[str] = None, reconnect_silence_threshold_seconds: float = 0.0, reconnect_silence_history_size: int = 100) -> None` | client | USER auth requires all three credentials; one transport may carry MARKET or USER, never both |
 | `connect(event_loop: Optional[asyncio.AbstractEventLoop] = None) -> None` | `None` | starts background thread |
+| `wait_until_connected(timeout: float) -> bool` | transport-open result | waits on the actual socket-open event |
 | `disconnect() -> None` | `None` | closes socket and consumer |
-| `subscribe_market(token_id: str, callback: Callable[[WebSocketMessage], None]) -> None` | `None` | market channel |
-| `subscribe_user(callback: Callable[[WebSocketMessage], None]) -> None` | `None` | requires `api_key` |
-| `subscribe_markets_multi(token_ids: list[str], callback: Callable[[WebSocketMessage], None]) -> None` | `None` | one subscription message |
+| `subscribe_market(token_id: str, callback: Callable[[WebSocketMessage], None]) -> None` | `None` | public market channel; one initial aggregate frame per open, then dynamic updates only for new assets |
+| `subscribe_user(callback: Callable[[WebSocketMessage], None]) -> None` | `None` | sends `{"auth":{"apiKey","secret","passphrase"},"markets":[],"type":"user"}` and replays it after reconnect |
+| `subscribe_markets_multi(token_ids: list[str], callback: Callable[[WebSocketMessage], None]) -> None` | `None` | one dynamic subscription update containing only newly registered assets |
 | `subscribe_markets_batch(token_ids: list[str], callback: Callable[[WebSocketMessage], None]) -> Dict[str, Any]` | result dict | rollback on partial failure |
 | `unsubscribe(channel: str) -> None` | `None` | channel key |
+| `telemetry_snapshot_v1() -> WebSocketTelemetrySnapshotV1` | frozen aggregate snapshot | no identifiers; bounded silence history plus truncation count |
 | `stats() -> Dict[str, Any]` | stats | queue and dedup fields included when enabled |
 | `health_check() -> Dict[str, str]` | health | healthy/degraded/disconnected |
 | `__enter__()` | self | connects |
@@ -988,7 +1199,7 @@ Market channel dataclasses:
 | `PriceChange` | `asset_id`, `price`, `size`, `side`, `hash`, `best_bid`, `best_ask` |
 | `PriceChangeMessage` | `event_type`, `market`, `timestamp`, `price_changes`, `schema_version="v2"` |
 | `TickSizeChangeMessage` | `event_type`, `asset_id`, `market`, `old_tick_size`, `new_tick_size`, `side`, `timestamp` |
-| `LastTradePriceMessage` | `event_type`, `asset_id`, `market`, `price`, `side`, `size`, `fee_rate_bps`, `timestamp` |
+| `LastTradePriceMessage` | required `event_type`, `asset_id`, `market`, `price`, `side`; optional `size`, `fee_rate_bps`, `timestamp`, `transaction_hash` |
 
 User channel dataclasses:
 
@@ -1025,7 +1236,7 @@ These methods are synchronous subscription wrappers.
 | `subscribe_rfq_quotes(callback: Callable[[Message], None], request_id: Optional[str] = None) -> None` | `rfq` / `quote_*` | request id | `RuntimeError` |
 | `subscribe_crypto_prices(callback: Callable[[Message], None], symbol: str = "btcusdt") -> None` | `crypto_prices` / `update` | symbol | `ValueError`, `RuntimeError` |
 | `subscribe_crypto_prices_chainlink(callback: Callable[[Message], None], symbol: str = "btcusdt") -> None` | `crypto_prices_chainlink` / `update` | symbol | `ValueError`, `RuntimeError` |
-| `subscribe_market_last_trade_price(callback: Callable[[Message], None], token_ids: List[str]) -> None` | `clob_market` / `last_trade_price` | token ids JSON list | `ValueError`, `RuntimeError` |
+| `subscribe_market_last_trade_price(callback: Callable[[Message], None], token_ids: List[str]) -> None` | legacy undocumented RTDS `clob_market` / `last_trade_price` (not the official CLOB Market Channel facade above) | token ids JSON list | `ValueError`, `RuntimeError` |
 | `subscribe_market_tick_size_change(callback: Callable[[Message], None], token_ids: List[str]) -> None` | `clob_market` / `tick_size_change` | token ids JSON list | `ValueError`, `RuntimeError` |
 | `unsubscribe_rtds_all() -> None` | disconnect | none | logs errors |
 
@@ -1039,7 +1250,7 @@ RTDS facade validation:
 
 ### RealTimeDataClient direct methods
 
-Available from `shared.polymarket.api.real_time_data.RealTimeDataClient`.
+Available from `polymarket.api.real_time_data.RealTimeDataClient`.
 
 | Method | Return | Notes |
 |---|---|---|
@@ -1076,7 +1287,7 @@ RTDS status enum:
 | `Side` | `BUY`, `SELL` |
 | `OrderType` | `GTC`, `GTD`, `FOK`, `FAK` |
 | `OrderStatus` | `live`, `pending`, `filled`, `matched`, `cancelled`, `expired`, `rejected`, `delayed`, `unmatched` |
-| `SignatureType` | `EOA=0`, `MAGIC=1`, `PROXY=2` |
+| `SignatureType` | `EOA=0`, `POLY_PROXY=1` (`MAGIC` alias), `GNOSIS_SAFE=2` (`PROXY` alias), `POLY_1271=3` |
 | `ActivityType` | `TRADE`, `SPLIT`, `MERGE`, `REDEEM`, `REWARD`, `CONVERSION`, `MAKER_REBATE`, `YIELD` |
 
 ### Decimal behavior
@@ -1084,9 +1295,10 @@ RTDS status enum:
 - Financial fields generally use `Decimal`.
 - Validators accept `Decimal`, `str`, `int`, and `float`.
 - Floats are converted through `str(value)`.
-- `OrderRequest.price` is quantized to `Decimal("0.01")`.
+- `OrderRequest.price` preserves the exact finite `Decimal` and requires
+  `0 < price < 1`; current per-token tick handling occurs in the facade.
 - `OrderRequest.size` is quantized to `Decimal("0.01")`.
-- `OrderBook.midpoint` is quantized to `Decimal("0.01")`.
+- `OrderBook.midpoint` is exact `(best_bid + best_ask) / 2` arithmetic.
 - `OrderBook.spread` is quantized to `Decimal("0.0001")`.
 - `Position` invalid/empty numeric strings become `Decimal("0.0")`.
 - `Market.volume` and `Market.liquidity` bad/missing values become `Decimal("0.0")`.
@@ -1107,11 +1319,15 @@ class OrderRequest(BaseModel):
 
 Constraints:
 
-- `price >= Decimal("0.01")`
-- `price <= Decimal("0.99")`
+- `Decimal("0") < price < Decimal("1")`
 - `size > 0`
 - `expiration` is Unix timestamp for GTD orders.
 - Enums remain enum objects; no `use_enum_values`.
+
+Before signing, the facade resolves the token's current tick and requires the
+normalized price to satisfy `tick <= price <= 1 - tick`. BUY prices floor and
+SELL prices ceiling to the tick so normalization does not cross the caller's
+adverse-price bound. Direct `OrderBuilder` calls reject off-grid prices.
 
 ### MarketOrderRequest
 
@@ -1138,14 +1354,20 @@ class OrderResponse(BaseModel):
     order_id: Optional[str] = None
     status: Optional[OrderStatus] = None
     error_msg: Optional[str] = None
+    definitive_rejection: Optional[bool] = None
     order_hashes: Optional[list[str]] = None
+    trade_ids: Optional[list[str]] = None
 ```
 
 Notes:
 
 - `model_config = ConfigDict(use_enum_values=True)`.
 - `order_id` maps from CLOB `orderID` in single-order responses.
+- `definitive_rejection` is populated for unsuccessful batch items: `True`
+  proves the item did not land, while `False` retains it for exact
+  reconciliation.
 - `order_hashes` maps from CLOB `orderHashes`.
+- `trade_ids` maps current successful FAK/FOK `tradeIDs` responses.
 
 ### Order
 
@@ -1153,20 +1375,25 @@ Notes:
 class Order(BaseModel):
     id: str
     market: str
-    asset_id: str
     token_id: str
     price: Decimal
-    size: Decimal
+    original_size: Decimal
+    size_matched: Decimal = Decimal("0")
     side: Side
     status: OrderStatus
     created_at: datetime
-    updated_at: Optional[datetime] = None
     expiration: Optional[datetime] = None
+    owner: Optional[str] = None
+    maker_address: Optional[str] = None
+    outcome: Optional[str] = None
+    order_type: Optional[str] = None
+    associate_trades: list[str] = Field(default_factory=list)
 ```
 
 Validators:
 
-- `price` and `size` convert to `Decimal`.
+- `asset_id`/`token_id` and `original_size`/`size` are accepted as wire/legacy aliases.
+- `price`, `original_size`, and `size_matched` convert to `Decimal`; documented status prefixes and US/UK cancellation spellings normalize.
 - `model_config = ConfigDict(use_enum_values=True)`.
 
 ### Position
@@ -1203,7 +1430,7 @@ Validators:
 - `populate_by_name=True`.
 - Numeric invalid strings, empty strings, `null`, `None`, and `NaN`-like values become `Decimal("0.0")`.
 
-### Trade
+### Trade and public-flow v1 results
 
 ```python
 class Trade(BaseModel):
@@ -1228,6 +1455,8 @@ Validators:
 - `size` and `price` convert to `Decimal`.
 - `populate_by_name=True`.
 - `use_enum_values=True`.
+
+`DataTradeV1` preserves documented Data `/trades` attribution and exact decimals. All three v1 results include `PublicRequestEvidenceV1` (wall time, attempt/retry and observed rate-limit-error counts, key, retry ceiling, and local-limiter state). Data completeness is true only for a clean, in-bounds, short offset-zero page with explicit time bounds. `MarketTradeEventV1` requires documented user/condition/asset/side/size/price/time/transaction semantics; event retention remains unknown and its 1,000-row/1 MiB ceilings are post-decode acceptance bounds, not streaming wire limits. Event error category `serialization` means local canonical decoded-response sizing; upstream JSON decode failures remain `request`. Price history reports explicit boundary/order/duplicate/out-of-range/gap diagnostics and is complete only on a clean fidelity grid. `PriceHistoryPointV1` retains finite `[0, 1]` and non-negative-time validation; a null `history` envelope is an error.
 
 ### Activity
 
@@ -1388,6 +1617,9 @@ Key optional fields and aliases:
 | `order_min_size` | `orderMinSize` | min order size |
 | `order_price_min_tick_size` | `orderPriceMinTickSize` | price tick |
 | `accepting_orders` | `acceptingOrders` | accepts orders |
+| `fees_enabled` | `feesEnabled` | whether Gamma marks fees enabled |
+| `taker_base_fee` | `takerBaseFee` | protocol base-fee metadata |
+| `fee_schedule` | `feeSchedule` | Gamma economic curve representation |
 | `question_id` | `questionID` | UMA question id |
 | `uma_bond` | `umaBond` | UMA bond |
 | `uma_reward` | `umaReward` | UMA reward |
@@ -1417,6 +1649,28 @@ Grouped market note:
 
 - Use `group_item_title` for grouped market resolution/date labels.
 - Do not use `end_date` as that label.
+
+### FeeSchedule and FeeInfo
+
+```python
+class FeeSchedule(BaseModel):
+    rate: Decimal
+    exponent: Decimal
+    taker_only: bool = True
+    rebate_rate: Decimal = Decimal("0")
+
+
+class FeeInfo(BaseModel):
+    base_fee_bps: int
+    rate_bps: int
+    exponent: Decimal = Decimal("1")
+    taker_only: bool = True
+    rebate_rate: Decimal = Decimal("0")
+```
+
+`FeeSchedule` represents the economic curve. `FeeInfo` combines that curve
+with the separate `/fee-rate` protocol value. Cost code consumes
+`rate_bps`/`exponent`, never `base_fee_bps`.
 
 ### Event
 
@@ -1467,7 +1721,7 @@ Properties:
 |---|---|
 | `best_bid` | first bid price or `None` |
 | `best_ask` | first ask price or `None` |
-| `midpoint` | average best bid/ask quantized to `0.01`, or `None` |
+| `midpoint` | exact average of best bid/ask, or `None` |
 | `spread` | best ask minus best bid quantized to `0.0001`, or `None` |
 
 Validator:
@@ -1477,14 +1731,14 @@ Validator:
 
 ## 10. Utility functions (validation, fees, CTF)
 
-Public-exported helpers from `shared.polymarket.utils.*` and `shared.polymarket.ctf.*`. Every name listed here is exported via `shared.polymarket.__init__` and is part of the stable surface.
+Public-exported helpers from `polymarket.utils.*` and `polymarket.ctf.*`. Every name listed here is exported via `polymarket.__init__` and is part of the stable surface.
 
 ### Validation helpers
 
-Source: `shared/polymarket/utils/validation.py`.
+Source: `polymarket/utils/validation.py`.
 
 ```python
-from shared.polymarket import (
+from polymarket import (
     validate_order,
     validate_price_bounds,
     validate_size,
@@ -1500,23 +1754,23 @@ from shared.polymarket import (
 | Function | Returns | Semantics |
 |---|---|---|
 | `validate_order(order: OrderRequest) -> tuple[bool, Optional[str]]` | `(True, None)` or `(False, error)` | Composite: price bounds, size, fee rate, GTD expiration, token id. |
-| `validate_price_bounds(price: Decimal) -> bool` | `True` or raises `ValidationError` | Price must be in `[0.01, 0.99]`. |
+| `validate_price_bounds(price: Decimal) -> bool` | `True` or raises `ValidationError` | Price must be strictly inside `(0, 1)`; market tick bounds are applied later. |
 | `validate_size(size: Decimal, min_size: Decimal = MIN_SIZE) -> bool` | `True` or raises | Size must be > `min_size`. |
-| `validate_fee_rate(fee_rate_bps: int) -> bool` | `True` or raises | Polymarket has zero fees; pass `0`. |
+| `validate_fee_rate(fee_rate_bps: int) -> bool` | `True` or raises | Validates the market-provided fee rate against supported bounds. |
 | `validate_token_complementarity(token_id_1: str, token_id_2: str, market: Optional[Market] = None) -> bool` | `True` or raises | Sanity check for YES/NO pairs. Full on-chain check still needs CTF. |
 | `validate_neg_risk_market(market: Market) -> bool` | `True` or raises | Ensures neg-risk markets meet structural constraints. |
 | `validate_balance(side: Side, price: Decimal, size: Decimal, available_usdc: Decimal, available_tokens: Decimal = Decimal("0"), fee_rate_bps: int = 0) -> tuple[bool, Optional[str]]` | Pair | Off-chain balance check for BUY (USDC) or SELL (tokens); reuses `validate_price_bounds` and `validate_size` internally. |
 | `validate_order_amounts(maker_amount: Decimal, taker_amount: Decimal, min_amount: Decimal = Decimal("0.01")) -> bool` | `True` or raises | Signed-order sanity check. |
 | `check_order_profitability(entry_price: Decimal, exit_price: Decimal, size: Decimal, fee_rate_bps: int, min_profit_usdc: Decimal = Decimal("0.10")) -> tuple[bool, Decimal]` | `(profitable, net_profit)` | Round-trip profitability for strategy pre-checks. |
 
-All raise-on-invalid helpers raise `shared.polymarket.exceptions.ValidationError`.
+All raise-on-invalid helpers raise `polymarket.exceptions.ValidationError`.
 
 ### Fee helpers
 
-Source: `shared/polymarket/utils/fees.py`.
+Source: `polymarket/utils/fees.py`.
 
 ```python
-from shared.polymarket import (
+from polymarket import (
     calculate_order_fee,
     calculate_net_cost,
     compare_fees_buy_vs_sell,
@@ -1526,25 +1780,31 @@ from shared.polymarket import (
 )
 ```
 
-Polymarket has zero trading fees; these helpers exist for protocol compatibility and are always exercised with `fee_rate_bps=0`. Use them only when an external model expects a fee-aware calculation.
+Fee-free markets coexist with fee-enabled categories. `calculate_order_fee`
+implements the current taker curve; its `size` argument is USD notional. Pass
+`FeeInfo.rate_bps` and `FeeInfo.exponent`, never raw
+`FeeInfo.base_fee_bps`/`get_fee_rate_bps()`. Makers incur zero platform fee.
+Authenticated associated-trade economics take precedence over estimates, but
+incomplete associated-trade sets remain retriable rather than being recorded
+as partial truth.
 
 | Function | Returns |
 |---|---|
-| `calculate_order_fee(side: Side, price: Decimal, size: Decimal, fee_rate_bps: int = 0) -> Decimal` | `Decimal("0.0")` on Polymarket. |
-| `calculate_net_cost(side: Side, price: Decimal, size: Decimal, fee_rate_bps: int = 0) -> tuple[Decimal, Decimal]` | `(gross_cost, fee)` pair. |
+| `calculate_order_fee(side: Side, price: Decimal, size: Decimal, fee_rate_bps: int = 0, fee_exponent: Decimal = Decimal("1")) -> Decimal` | Current taker-curve fee for USD notional, rounded to five decimals; values below `0.00001` become zero. |
+| `calculate_net_cost(side: Side, price: Decimal, size: Decimal, fee_rate_bps: int = 0, fee_exponent: Decimal = Decimal("1")) -> tuple[Decimal, Decimal]` | `(BUY total cost or SELL net proceeds, fee)` pair for USD notional. |
 | `compare_fees_buy_vs_sell(...) -> dict` | Summary of fee impact on both sides. |
-| `estimate_breakeven_exit(...) -> Decimal` | Exit price needed to cover entry + fees. |
-| `calculate_profit_after_fees(...) -> Decimal` | Net profit for given entry/exit/size/fee. |
-| `get_effective_spread(...) -> Decimal` | Spread minus fees on both sides. |
+| `estimate_breakeven_exit(...) -> tuple[Decimal, Decimal]` | Exit price needed to cover entry + fees, plus total fees at that price. |
+| `calculate_profit_after_fees(...) -> Dict[str, Any]` | Metrics dict containing gross/net profit, fees, ROI, costs/proceeds, and token count. |
+| `get_effective_spread(...) -> Dict[str, Any]` | Raw/effective spread metrics including both fee legs. |
 
 See the docstrings for the full argument lists; names and defaults are stable.
 
 ### CTF and Neg-Risk
 
-Source: `shared/polymarket/ctf/`.
+Source: `polymarket/ctf/`.
 
 ```python
-from shared.polymarket import (
+from polymarket import (
     NegRiskAdapter,
     ConversionCalculator,
     is_safe_to_trade,
@@ -1556,7 +1816,7 @@ from shared.polymarket import (
 
 Constants point at mainnet Polygon contracts and are for read-only reference.
 
-`NegRiskAdapter(web3_provider: str = "https://polygon-rpc.com")` — on-chain operations for neg-risk positions. Every method that sends a transaction needs a private key; the constructor only holds a Web3 provider.
+`NegRiskAdapter(web3_provider: str = "https://polygon.drpc.org")` — on-chain operations for neg-risk positions. Every method that sends a transaction needs a private key; the constructor only holds a Web3 provider.
 
 | Method | Signature | Behavior |
 |---|---|---|
@@ -1666,18 +1926,18 @@ HTTP error mapping:
 
 ## 12. Rate limits
 
-Configured values below are pre-margin. Runtime limiter applies `settings.rate_limit_margin` (default `0.8`) when a method passes a `rate_limit_key`. Source: <https://docs.polymarket.com/quickstart/introduction/rate-limits>. Last audited 2026-04-23 — every `rate_limit_key` passed by `shared/polymarket/api/*.py` now has an explicit config entry.
+Configured values below are pre-margin. Runtime limiter applies `settings.rate_limit_margin` (default `0.8`) when a method passes a `rate_limit_key`. Source: <https://docs.polymarket.com/api-reference/rate-limits>. Last audited 2026-07-17 — trading ceilings rose through 2026 (changelog 2026-04-08 and 2026-06-01); market-data/Gamma/Data values unchanged. Every `rate_limit_key` passed by `polymarket/api/*.py` has an explicit config entry. Enforcement is Cloudflare throttling (queued, not rejected) on sliding windows.
 
 ### CLOB API — Trading (burst / sustained)
 
 | Endpoint key | Pre-margin cap |
 |---|---:|
-| `POST:/order` | `3,500 req / 10s`, sustained `36,000 req / 10min` |
-| `DELETE:/order` | `3,000 req / 10s`, sustained `30,000 req / 10min` |
-| `POST:/orders` | `1,000 req / 10s`, sustained `15,000 req / 10min` |
-| `DELETE:/orders` | `1,000 req / 10s`, sustained `15,000 req / 10min` |
+| `POST:/order` | `5,000 req / 10s`, sustained `120,000 req / 10min` |
+| `DELETE:/order` | `5,000 req / 10s`, sustained `120,000 req / 10min` |
+| `POST:/orders` | `2,000 req / 10s`, sustained `21,000 req / 10min` |
+| `DELETE:/orders` | `2,000 req / 10s`, sustained `15,000 req / 10min` |
 | `DELETE:/cancel-all` | `250 req / 10s`, sustained `6,000 req / 10min` |
-| `DELETE:/cancel-market-orders` | `1,000 req / 10s`, sustained `1,500 req / 10min` |
+| `DELETE:/cancel-market-orders` | `1,500 req / 10s`, sustained `21,000 req / 10min` |
 
 ### CLOB API — Market data
 
@@ -1727,52 +1987,28 @@ Configured values below are pre-margin. Runtime limiter applies `settings.rate_l
 
 ### Calls without a rate-limit key
 
-`PublicCLOBAPI` methods generally call `BaseAPIClient.get/post` without `rate_limit_key`, so the local limiter is not applied to those direct public methods. Top-level methods that delegate to `client.public_clob` inherit that behavior. `get_prices_history` is the exception — it passes `rate_limit_key="GET:/prices-history"`, so the local limiter is applied to it (and to the top-level facade that delegates to it).
+`PublicCLOBAPI` methods generally omit `rate_limit_key`, so their direct and top-level delegates bypass the local limiter. Price-history methods use `GET:/prices-history`; market-trade-event compatibility and v1 methods use conservative `CLOB:default`.
 
 ## 13. Verification
 
-Run external static checks from repo root for line count, stale filesystem paths, removed changelog/status labels, and required contract strings. This file should remain between 1200 and 1800 lines (upper bound raised 2026-07-11: grew with the M0 Data-API surface; remaining content audited non-redundant).
+Run external static checks from repo root for stale filesystem paths, removed
+changelog/status labels, and required contract strings. Keep this reference
+aligned with the exported facade; line count is not a contract.
 
-Public CLOB probe:
+Controlled order lifecycle probes should use a persisted path:
 
-```python
-from shared.polymarket import PolymarketClient, Side
-
-async with PolymarketClient() as client:
-    ok = await client.get_ok()
-    server_time_ms = await client.get_server_time()
-    midpoint = await client.get_midpoint(token_id)
-    price = await client.get_price(token_id, Side.BUY)
-    book = await client.get_orderbook(token_id)
-    depth = await client.get_liquidity_depth(token_id)
-```
-
-Controlled order lifecycle probe:
-
-```python
-async with PolymarketClient() as client:
-    wallet_id = await client.add_wallet(wallet_config, wallet_id="WALLET_0")
-    order = OrderRequest(
-        token_id=token_id,
-        price=Decimal("0.01"),
-        size=Decimal("5.00"),
-        side=Side.BUY,
-        order_type=OrderType.GTC,
-    )
-    response = await client.place_order(order, wallet_id=wallet_id)
-    if response.success and response.order_id:
-        cancelled = await client.cancel_order(response.order_id, wallet_id=wallet_id)
-        await client.release_reserved_balance(
-            order.size * order.price,
-            wallet_id=wallet_id,
-            order_id=response.order_id,
-        )
-```
+1. Persist `(order_hash, reservation)` atomically through `pre_submit` before
+   transport.
+2. Treat `cancel_order()` only as a request acknowledgement.
+3. Decide fill/cancel/reject/not-submitted from exact `get_order()` plus
+   complete authenticated trade history.
+4. Release the stored reservation only in the same durable terminal
+   reconciliation.
 
 CLOB WebSocket probe:
 
 ```python
-from shared.polymarket import OrderBook
+from polymarket import OrderBook
 
 seen = {}
 
@@ -1789,7 +2025,7 @@ client.unsubscribe_all()
 RTDS probe:
 
 ```python
-from shared.polymarket.api.real_time_data import Message
+from polymarket.api.real_time_data import Message
 
 def on_message(message: Message) -> None:
     latest["topic"] = message.topic
@@ -1803,9 +2039,9 @@ client.unsubscribe_rtds_all()
 Test suite probes:
 
 ```bash
-pytest shared/polymarket/tests/unit -q
-pytest shared/polymarket/tests/integration -q
-pytest shared/polymarket/tests/test_api_regressions.py -q
-pytest shared/polymarket/tests/test_reserved_balance.py -q
-pytest shared/polymarket/tests/test_decimal_precision.py -q
+pytest polymarket/tests/unit -q
+pytest polymarket/tests/integration -q
+pytest polymarket/tests/test_api_regressions.py -q
+pytest polymarket/tests/test_reserved_balance.py -q
+pytest polymarket/tests/test_decimal_precision.py -q
 ```
