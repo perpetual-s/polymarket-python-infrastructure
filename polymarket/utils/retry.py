@@ -1,20 +1,14 @@
-"""
-Retry logic with exponential backoff and circuit breaker.
-
-Handles transient failures with configurable retry strategies.
-"""
+"""Retry transient transport failures with exponential backoff."""
 
 import asyncio
 import logging
 import random
-import threading
 import time
 from functools import wraps
 from typing import Callable, Optional, TypeVar
 
 from ..exceptions import (
     APIError,
-    CircuitBreakerError,
     PolymarketError,
     RateLimitError,
     TimeoutError,
@@ -25,110 +19,6 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class CircuitBreaker:
-    """
-    Circuit breaker pattern to prevent cascading failures.
-
-    States: CLOSED (normal), OPEN (failing), HALF_OPEN (testing recovery)
-    """
-
-    def __init__(self, failure_threshold: int = 5, timeout: float = 60.0, name: str = "default"):
-        """
-        Initialize circuit breaker.
-
-        Args:
-            failure_threshold: Failures before opening circuit
-            timeout: Seconds before attempting recovery
-            name: Circuit breaker name for logging
-        """
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
-        self.name = name
-
-        self._failures = 0
-        self._last_failure_time: Optional[float] = None
-        self._state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
-        self._lock = threading.Lock()
-
-    def call(self, func: Callable[..., T], *args, **kwargs) -> T:
-        """
-        Call function with circuit breaker protection.
-
-        Args:
-            func: Function to call
-            *args: Positional arguments
-            **kwargs: Keyword arguments
-
-        Returns:
-            Function result
-
-        Raises:
-            CircuitBreakerError: If circuit is open
-        """
-        with self._lock:
-            if self._state == "OPEN":
-                # Check if timeout expired
-                if time.time() - self._last_failure_time >= self.timeout:
-                    logger.info(f"Circuit breaker {self.name}: OPEN -> HALF_OPEN")
-                    self._state = "HALF_OPEN"
-                else:
-                    raise CircuitBreakerError(f"Circuit breaker {self.name} is OPEN")
-
-        # Try calling function
-        try:
-            result = func(*args, **kwargs)
-
-            # A successful call ends the current failure streak. Without this
-            # reset, isolated failures separated by healthy responses
-            # accumulate until they incorrectly open the circuit.
-            with self._lock:
-                if self._state == "HALF_OPEN":
-                    logger.info(f"Circuit breaker {self.name}: HALF_OPEN -> CLOSED")
-                self._state = "CLOSED"
-                self._failures = 0
-                self._last_failure_time = None
-
-            return result
-
-        except Exception:
-            # Failure - increment counter
-            with self._lock:
-                self._failures += 1
-                self._last_failure_time = time.time()
-
-                if self._failures >= self.failure_threshold:
-                    if self._state != "OPEN":
-                        logger.warning(
-                            f"Circuit breaker {self.name}: {self._state} -> OPEN "
-                            f"({self._failures} failures)"
-                        )
-                        self._state = "OPEN"
-                elif self._state == "HALF_OPEN":
-                    # Failed during testing, back to open
-                    logger.warning(f"Circuit breaker {self.name}: HALF_OPEN -> OPEN")
-                    self._state = "OPEN"
-
-            raise
-
-    def reset(self) -> None:
-        """Reset circuit breaker to closed state."""
-        with self._lock:
-            self._failures = 0
-            self._last_failure_time = None
-            self._state = "CLOSED"
-            logger.info(f"Circuit breaker {self.name}: RESET -> CLOSED")
-
-    @property
-    def state(self) -> str:
-        """Get current state."""
-        return self._state
-
-    @property
-    def failures(self) -> int:
-        """Get failure count."""
-        return self._failures
-
-
 class RetryStrategy:
     """
     Configurable retry strategy with exponential backoff.
@@ -136,7 +26,6 @@ class RetryStrategy:
     Features:
     - Exponential backoff with jitter
     - Configurable retry conditions
-    - Circuit breaker integration
     """
 
     def __init__(
@@ -146,7 +35,6 @@ class RetryStrategy:
         max_delay: float = 60.0,
         exponential_base: float = 2.0,
         jitter: bool = True,
-        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize retry strategy.
@@ -157,14 +45,12 @@ class RetryStrategy:
             max_delay: Maximum delay in seconds
             exponential_base: Backoff multiplier
             jitter: Add random jitter to delays
-            circuit_breaker: Optional circuit breaker
         """
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
         self.exponential_base = exponential_base
         self.jitter = jitter
-        self.circuit_breaker = circuit_breaker
 
     def _calculate_delay(self, attempt: int) -> float:
         """Calculate delay for attempt with exponential backoff + jitter."""
@@ -183,10 +69,6 @@ class RetryStrategy:
         if attempt >= self.max_retries:
             return False
 
-        # Never retry validation errors or circuit breaker errors
-        if isinstance(exception, (CircuitBreakerError,)):
-            return False
-
         if isinstance(exception, APIError):
             status_code = getattr(exception, "status_code", None)
             if status_code is not None and 400 <= status_code < 500:
@@ -199,27 +81,6 @@ class RetryStrategy:
 
         # Retry on connection errors
         if isinstance(exception, (ConnectionError, OSError)):
-            return True
-
-        return False
-
-    def _should_count_circuit_failure(self, exception: Exception) -> bool:
-        """Return True when an exception represents upstream/API health failure.
-
-        RateLimitError (429) deliberately does NOT count: it is backpressure,
-        not an outage, and it is handled by the rate limiter plus retry
-        backoff. Counting 429s let a burst of activity polling open the
-        breaker and block unrelated trading calls (the 398d309b incident
-        shape).
-        """
-        if isinstance(exception, (CircuitBreakerError, RateLimitError)):
-            return False
-
-        if isinstance(exception, APIError):
-            status_code = getattr(exception, "status_code", None)
-            return status_code is None or status_code >= 500
-
-        if isinstance(exception, (TimeoutError, ConnectionError, OSError)):
             return True
 
         return False
@@ -243,58 +104,11 @@ class RetryStrategy:
 
         for attempt in range(self.max_retries + 1):
             try:
-                if self.circuit_breaker:
-                    with self.circuit_breaker._lock:
-                        if self.circuit_breaker._state == "OPEN":
-                            if (
-                                self.circuit_breaker._last_failure_time
-                                and time.time() - self.circuit_breaker._last_failure_time
-                                >= self.circuit_breaker.timeout
-                            ):
-                                logger.info(
-                                    f"Circuit breaker {self.circuit_breaker.name}: OPEN -> HALF_OPEN"
-                                )
-                                self.circuit_breaker._state = "HALF_OPEN"
-                            else:
-                                raise CircuitBreakerError(
-                                    f"Circuit breaker {self.circuit_breaker.name} is OPEN"
-                                )
-
                 result = func(*args, **kwargs)
-
-                if self.circuit_breaker:
-                    with self.circuit_breaker._lock:
-                        if self.circuit_breaker._state == "HALF_OPEN":
-                            logger.info(
-                                f"Circuit breaker {self.circuit_breaker.name}: HALF_OPEN -> CLOSED"
-                            )
-                        self.circuit_breaker._state = "CLOSED"
-                        self.circuit_breaker._failures = 0
-                        self.circuit_breaker._last_failure_time = None
-
                 return result
 
             except Exception as e:
                 last_exception = e
-
-                if self.circuit_breaker and self._should_count_circuit_failure(e):
-                    with self.circuit_breaker._lock:
-                        self.circuit_breaker._failures += 1
-                        self.circuit_breaker._last_failure_time = time.time()
-
-                        if self.circuit_breaker._failures >= self.circuit_breaker.failure_threshold:
-                            if self.circuit_breaker._state != "OPEN":
-                                logger.warning(
-                                    f"Circuit breaker {self.circuit_breaker.name}: "
-                                    f"{self.circuit_breaker._state} -> OPEN "
-                                    f"({self.circuit_breaker._failures} failures)"
-                                )
-                            self.circuit_breaker._state = "OPEN"
-                        elif self.circuit_breaker._state == "HALF_OPEN":
-                            logger.warning(
-                                f"Circuit breaker {self.circuit_breaker.name}: HALF_OPEN -> OPEN"
-                            )
-                            self.circuit_breaker._state = "OPEN"
 
                 if not self._should_retry(e, attempt):
                     logger.debug(
@@ -314,7 +128,9 @@ class RetryStrategy:
 
         # All retries exhausted
         if last_exception:
-            logger.error(f"All {self.max_retries} retries exhausted for {func.__name__}")
+            logger.error(
+                f"All {self.max_retries} retries exhausted for {func.__name__}"
+            )
             raise last_exception
 
         # Should never reach here
@@ -336,48 +152,12 @@ class RetryStrategy:
 
         for attempt in range(self.max_retries + 1):
             try:
-                # Circuit breaker check with proper locking
-                if self.circuit_breaker:
-                    with self.circuit_breaker._lock:
-                        if self.circuit_breaker._state == "OPEN":
-                            # Check if timeout expired
-                            if (
-                                self.circuit_breaker._last_failure_time
-                                and time.time() - self.circuit_breaker._last_failure_time
-                                >= self.circuit_breaker.timeout
-                            ):
-                                self.circuit_breaker._state = "HALF_OPEN"
-                            else:
-                                raise CircuitBreakerError(
-                                    f"Circuit breaker {self.circuit_breaker.name} is OPEN"
-                                )
-
                 # Execute async function
                 result = await func(*args, **kwargs)
-
-                # Success - update circuit breaker with proper locking
-                if self.circuit_breaker:
-                    with self.circuit_breaker._lock:
-                        self.circuit_breaker._state = "CLOSED"
-                        self.circuit_breaker._failures = 0
-                        self.circuit_breaker._last_failure_time = None
-
                 return result
 
             except Exception as e:
                 last_exception = e
-
-                # Update circuit breaker on failure with proper locking
-                if self.circuit_breaker and self._should_count_circuit_failure(e):
-                    with self.circuit_breaker._lock:
-                        self.circuit_breaker._failures += 1
-                        self.circuit_breaker._last_failure_time = time.time()
-
-                        if self.circuit_breaker._failures >= self.circuit_breaker.failure_threshold:
-                            self.circuit_breaker._state = "OPEN"
-                        elif self.circuit_breaker._state == "HALF_OPEN":
-                            # Failed during testing, back to open
-                            self.circuit_breaker._state = "OPEN"
 
                 if not self._should_retry(e, attempt):
                     raise
@@ -397,7 +177,9 @@ class RetryStrategy:
         raise PolymarketError("Retry logic error")
 
 
-def with_retry(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 60.0) -> Callable:
+def with_retry(
+    max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 60.0
+) -> Callable:
     """
     Decorator to add retry logic to function.
 

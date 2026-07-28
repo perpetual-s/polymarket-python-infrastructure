@@ -36,14 +36,17 @@ async def test_production_api():
     print("\n1. Initializing client...")
     client = PolymarketClient(
         enable_rate_limiting=True,
-        enable_circuit_breaker=True
     )
     print(f"✓ Client initialized (chain_id={client.settings.chain_id})")
 
     # Add wallet
     print("\n2. Adding wallet...")
-    wallet = WalletConfig(private_key=f"0x{private_key}" if not private_key.startswith("0x") else private_key)
-    await client.add_wallet(wallet, wallet_id="production", set_default=True)
+    wallet = WalletConfig(
+        private_key=f"0x{private_key}"
+        if not private_key.startswith("0x")
+        else private_key
+    )
+    client.add_wallet(wallet, wallet_id="production", set_default=True)
     print(f"✓ Wallet added: {wallet.address}")
 
     # Test 1: Get markets
@@ -88,11 +91,11 @@ async def test_production_api():
             total_value = sum(p.current_value for p in positions if p.current_value)
             total_pnl = sum(p.cash_pnl for p in positions if p.cash_pnl)
 
-            print(f"\n  Portfolio Summary:")
+            print("\n  Portfolio Summary:")
             print(f"    Total Value:  ${total_value:.2f}")
             print(f"    Total P&L:    ${total_pnl:.2f}")
 
-            print(f"\n  Top 3 Positions:")
+            print("\n  Top 3 Positions:")
             for i, pos in enumerate(positions[:3], 1):
                 print(f"\n  {i}. {pos.title}")
                 print(f"     Outcome: {pos.outcome}")
@@ -111,12 +114,16 @@ async def test_production_api():
         print(f"✓ Found {len(trades)} recent trades")
 
         if trades:
-            print(f"\n  Recent Trades:")
+            print("\n  Recent Trades:")
             for i, trade in enumerate(trades[:3], 1):
-                print(f"\n  {i}. {trade.market if hasattr(trade, 'market') else 'Unknown Market'}")
+                print(
+                    f"\n  {i}. {trade.market if hasattr(trade, 'market') else 'Unknown Market'}"
+                )
                 print(f"     Side: {trade.side if hasattr(trade, 'side') else 'N/A'}")
                 print(f"     Size: {trade.size:.2f} @ ${trade.price:.4f}")
-                print(f"     Time: {trade.timestamp if hasattr(trade, 'timestamp') else 'N/A'}")
+                print(
+                    f"     Time: {trade.timestamp if hasattr(trade, 'timestamp') else 'N/A'}"
+                )
     except Exception as e:
         print(f"❌ Error fetching trades: {e}")
 
@@ -131,9 +138,19 @@ async def test_production_api():
             orderbook = await client.get_orderbook(token_id)
 
             print(f"✓ Orderbook for: {markets[0].question}")
-            print(f"  Best Bid: ${orderbook.best_bid:.4f}" if orderbook.best_bid else "  No bids")
-            print(f"  Best Ask: ${orderbook.best_ask:.4f}" if orderbook.best_ask else "  No asks")
-            print(f"  Spread:   ${orderbook.spread:.4f}" if orderbook.spread else "  N/A")
+            print(
+                f"  Best Bid: ${orderbook.best_bid:.4f}"
+                if orderbook.best_bid
+                else "  No bids"
+            )
+            print(
+                f"  Best Ask: ${orderbook.best_ask:.4f}"
+                if orderbook.best_ask
+                else "  No asks"
+            )
+            print(
+                f"  Spread:   ${orderbook.spread:.4f}" if orderbook.spread else "  N/A"
+            )
             print(f"  Bids: {len(orderbook.bids)}, Asks: {len(orderbook.asks)}")
     except Exception as e:
         print(f"❌ Error fetching orderbook: {e}")
@@ -166,6 +183,7 @@ async def test_production_api():
 if __name__ == "__main__":
     # Load .env
     from dotenv import load_dotenv
+
     load_dotenv()
 
     asyncio.run(test_production_api())

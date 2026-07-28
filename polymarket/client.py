@@ -1,4 +1,9 @@
-"""Main async, thread-safe, multi-wallet Polymarket client."""
+"""
+Main Polymarket client.
+
+Unified interface for all Polymarket operations across strategies.
+Thread-safe, multi-wallet, production-ready.
+"""
 
 import asyncio
 import atexit
@@ -39,12 +44,10 @@ from .models import (
     Holder,
     Market,
     MarketTradeEventsResultV1,
-    MarketOrderRequest,
     Order,
     OrderBook,
     OrderRequest,
     OrderResponse,
-    OrderType,
     Position,
     PriceHistoryResultV1,
     PricePoint,
@@ -56,10 +59,10 @@ from .trading.order_builder import OrderBuilder
 from .utils.cache import AtomicNonceManager, MarketMetadataCache
 from .utils.numeric import quantize_price
 from .utils.rate_limiter import RateLimiter
-from .utils.retry import CircuitBreaker
 
 if TYPE_CHECKING:
     from .api.websocket_models import LastTradePriceMessage
+    from .models import ClosedPosition, LeaderboardTrader, PortfolioValue
 
 logger = logging.getLogger(__name__)
 
@@ -71,22 +74,21 @@ class PolymarketClient:
     Features:
     - Multi-wallet support (thread-safe)
     - Automatic rate limiting
-    - Retry logic with circuit breaker
+    - Bounded retry logic
     - Typed exceptions
-    - Explicit lifecycle and operational controls
+    - Production-ready
 
     Usage:
         client = PolymarketClient()
-        await client.add_wallet(wallet_config, wallet_id="primary")
+        await client.add_wallet(wallet_config, wallet_id="strategy1")
         markets = await client.get_markets(active=True)
-        response = await client.place_order(order, wallet_id="primary")
+        response = await client.place_order(order, wallet_id="strategy1")
     """
 
     def __init__(
         self,
         settings: Optional[PolymarketSettings] = None,
         enable_rate_limiting: Optional[bool] = None,
-        enable_circuit_breaker: Optional[bool] = None,
         db: Optional[Any] = None,
         **settings_overrides: Any,
     ):
@@ -96,14 +98,15 @@ class PolymarketClient:
         Args:
             settings: Optional settings (loads from env if not provided)
             enable_rate_limiting: Override rate limiting setting
-            enable_circuit_breaker: Override circuit breaker setting
             db: Optional database client for credential caching
             **settings_overrides: Optional PolymarketSettings field overrides
                 for backwards-compatible direct construction, e.g.
                 pool_connections=100, batch_max_workers=20
         """
         # Load settings
-        self.settings = settings.model_copy(deep=True) if settings is not None else get_settings()
+        self.settings = (
+            settings.model_copy(deep=True) if settings is not None else get_settings()
+        )
         self.db = db  # Store database client for credential caching
 
         settings_fields = type(self.settings).model_fields
@@ -127,79 +130,44 @@ class PolymarketClient:
         # Rate limiter
         self.rate_limiter = None
         if self.settings.enable_rate_limiting:
-            self.rate_limiter = RateLimiter(enabled=True, margin=self.settings.rate_limit_margin)
-
-        # Circuit breakers — split per upstream surface so one plane's
-        # flakiness cannot block another (and market-data reads can never open
-        # the trading breaker):
-        # - trading breaker: authenticated CLOB (orders, cancels, balances)
-        # - gamma breaker: Gamma API (market/event metadata)
-        # - data breaker: Data API (positions, trades, activity)
-        # - public CLOB breaker: public CLOB reads (books, prices, spreads)
-        # `self.circuit_breaker` stays as the trading breaker: it guards the
-        # calls that move money, and shared/bot health checks key off it alone.
-        self.circuit_breaker = None
-        self.gamma_circuit_breaker = None
-        self.data_circuit_breaker = None
-        self.public_clob_circuit_breaker = None
-        if enable_circuit_breaker is not False:
-
-            def _cb(name: str) -> CircuitBreaker:
-                return CircuitBreaker(
-                    failure_threshold=self.settings.circuit_breaker_threshold,
-                    timeout=self.settings.circuit_breaker_timeout,
-                    name=name,
-                )
-
-            self.circuit_breaker = _cb("polymarket-trading")
-            self.gamma_circuit_breaker = _cb("polymarket-gamma")
-            self.data_circuit_breaker = _cb("polymarket-data")
-            self.public_clob_circuit_breaker = _cb("polymarket-clob-public")
+            self.rate_limiter = RateLimiter(
+                enabled=True, margin=self.settings.rate_limit_margin
+            )
 
         # CRITICAL FIX: Track reserved balance to prevent over-ordering
         # Maps wallet_id -> reserved USD amount for pending orders
         self._reserved_balances: Dict[str, Decimal] = {}
         self._balance_lock = asyncio.Lock()  # Async-safe balance updates
 
-        if self.circuit_breaker:
-            logger.info("Circuit breaker enabled")
-
-        # Initialize API clients — each data-plane surface gets its own breaker
-        # so one upstream's failures cannot open another's (and none can open
-        # the trading breaker)
+        # Initialize independent API clients. Each request is rate limited and
+        # retried in place, so one surface cannot disable another.
         self.gamma = GammaAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.gamma_circuit_breaker,
         )
 
         self.clob = CLOBAPI(
             settings=self.settings,
             authenticator=self.authenticator,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.circuit_breaker,
         )
 
-        # Keyless CLOB market truth uses the public-data breaker even though it
-        # shares CLOB response models/parsers with authenticated trading calls.
-        # Metadata outages must not open the breaker that guards cancel/order.
+        # Keyless CLOB market truth shares response models/parsers with
+        # authenticated trading calls but has its own client session.
         self.market_clob = CLOBAPI(
             settings=self.settings,
             authenticator=self.authenticator,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.public_clob_circuit_breaker,
         )
 
         self.data = DataAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.data_circuit_breaker,
         )
 
         self.public_clob = PublicCLOBAPI(
             settings=self.settings,
             rate_limiter=self.rate_limiter,
-            circuit_breaker=self.public_clob_circuit_breaker,
         )
 
         # Initialize metrics
@@ -236,7 +204,9 @@ class PolymarketClient:
 
         # Real-Time Data Service client (lazy initialized)
         self._rtds: Optional[RealTimeDataClient] = None
-        self._rtds_lock = threading.Lock()  # Thread-safe RTDS initialization (used in property)
+        self._rtds_lock = (
+            threading.Lock()
+        )  # Thread-safe RTDS initialization (used in property)
 
         # RTDS handler registry: (topic, type) -> {id(callback): callback}
         # Written by subscribe_* on caller threads, read by the RTDS message thread,
@@ -370,14 +340,18 @@ class PolymarketClient:
                             api_passphrase=cached["api_passphrase"],
                         )
 
-                        logger.info(f"API credentials initialized for wallet {wallet_id}")
+                        logger.info(
+                            f"API credentials initialized for wallet {wallet_id}"
+                        )
                         return
                     else:
                         logger.info(
                             f"No cached credentials found in database for wallet {wallet_id}"
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to load credentials from database for {wallet_id}: {e}")
+                    logger.warning(
+                        f"Failed to load credentials from database for {wallet_id}: {e}"
+                    )
 
             # PRIORITY 4 & 5: Derive from API if not in environment or cache
             logger.info(f"Deriving API credentials from API for wallet {wallet_id}")
@@ -394,7 +368,10 @@ class PolymarketClient:
             try:
                 path = "/auth/derive-api-key"
                 response = await self.clob.get(
-                    path, headers=headers, rate_limit_key="GET:/auth/derive-api-key", retry=False
+                    path,
+                    headers=headers,
+                    rate_limit_key="GET:/auth/derive-api-key",
+                    retry=False,
                 )
 
                 api_key = response.get("apiKey")
@@ -440,9 +417,13 @@ class PolymarketClient:
                         api_secret=api_secret,
                         api_passphrase=api_passphrase,
                     )
-                    logger.info(f"✅ Cached API credentials in database for wallet {wallet_id}")
+                    logger.info(
+                        f"✅ Cached API credentials in database for wallet {wallet_id}"
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to cache credentials in database for {wallet_id}: {e}")
+                    logger.warning(
+                        f"Failed to cache credentials in database for {wallet_id}: {e}"
+                    )
 
             logger.info(f"API credentials initialized for wallet {wallet_id}")
 
@@ -635,7 +616,9 @@ class PolymarketClient:
         """
         return await self.market_clob.get_last_trade_price(token_id)
 
-    async def get_last_trades_prices(self, token_ids: List[str]) -> Dict[str, Optional[float]]:
+    async def get_last_trades_prices(
+        self, token_ids: List[str]
+    ) -> Dict[str, Optional[float]]:
         """
         Get last trade prices for multiple tokens (Phase 5 enhancement).
 
@@ -712,7 +695,9 @@ class PolymarketClient:
         """
         return await self.public_clob.get_midpoints(token_ids)
 
-    async def get_prices(self, params: List[Dict[str, str]]) -> Dict[str, Optional[Decimal]]:
+    async def get_prices(
+        self, params: List[Dict[str, str]]
+    ) -> Dict[str, Optional[Decimal]]:
         """
         Get prices for multiple tokens and sides (batch operation).
 
@@ -726,7 +711,9 @@ class PolymarketClient:
         """
         return await self.public_clob.get_prices(params)
 
-    async def get_best_bid_ask(self, token_id: str) -> Optional[tuple[Decimal, Decimal]]:
+    async def get_best_bid_ask(
+        self, token_id: str
+    ) -> Optional[tuple[Decimal, Decimal]]:
         """
         Get best bid and ask prices (top of book).
 
@@ -836,10 +823,14 @@ class PolymarketClient:
     ) -> List[PricePoint]:
         """Compatibility-only list facade for public CLOB price history.
 
-        API-B and Gate V must use :meth:`get_prices_history_result_v1`.
+        New callers should use :meth:`get_prices_history_result_v1`.
         """
         return await self.public_clob.get_prices_history(
-            token_id, interval=interval, start_ts=start_ts, end_ts=end_ts, fidelity=fidelity
+            token_id,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            fidelity=fidelity,
         )
 
     async def get_prices_history_result_v1(
@@ -923,7 +914,9 @@ class PolymarketClient:
                 "get_address_activity() does not accept 'user'; it is derived from "
                 "'address' — pass the wallet address as the 'address' argument"
             )
-        if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+        if not isinstance(address, str) or not re.fullmatch(
+            r"0x[0-9a-fA-F]{40}", address
+        ):
             raise ValueError(
                 f"Invalid wallet address: {address!r} (expected '0x' followed by 40 hex characters)"
             )
@@ -931,7 +924,9 @@ class PolymarketClient:
 
     async def get_address_positions(self, address: str, **kwargs) -> List[Position]:
         """Keyless open positions for an arbitrary wallet address."""
-        if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+        if not isinstance(address, str) or not re.fullmatch(
+            r"0x[0-9a-fA-F]{40}", address
+        ):
             raise ValueError(
                 f"Invalid wallet address: {address!r} (expected '0x' followed by 40 hex characters)"
             )
@@ -971,15 +966,15 @@ class PolymarketClient:
 
     async def is_order_scoring(self, order_id: str) -> bool:
         """
-        Check the exchange's current rewards-program scoring status.
+        Check if order earns maker rebates (Strategy-4 enhancement).
 
-        A true result does not prove a fixed rebate, fill, or future reward.
+        Returns True if order is earning 2% maker rebates on Polymarket.
         """
         return await self.clob.is_order_scoring(order_id)
 
     async def are_orders_scoring(self, order_ids: List[str]) -> Dict[str, bool]:
         """
-        Check current rewards-program scoring for multiple orders.
+        Check if multiple orders earn maker rebates (Strategy-4 enhancement).
 
         Batch version of is_order_scoring().
         Returns dict mapping order_id to scoring status.
@@ -1207,7 +1202,9 @@ class PolymarketClient:
                             fee_rate_bps=fee_info.rate_bps,
                             fee_exponent=fee_info.exponent,
                         )
-                        await self._reserve_balance(reserved_amount, wallet_id, response.order_id)
+                        await self._reserve_balance(
+                            reserved_amount, wallet_id, response.order_id
+                        )
                         reserved_for_cleanup = reserved_amount
 
                     # Successful live order keeps its reservation.
@@ -1255,10 +1252,7 @@ class PolymarketClient:
         except Exception as e:
             definitive_rejection = is_definitive_order_rejection(e)
             if reserved_for_cleanup > Decimal("0") and (
-                (
-                    not pre_submit_started
-                    and not submission_started
-                )
+                (not pre_submit_started and not submission_started)
                 or definitive_rejection
             ):
                 await self.release_reserved_balance(reserved_for_cleanup, wallet_id)
@@ -1279,142 +1273,6 @@ class PolymarketClient:
                 wallet=wallet_id or "default", side=order.side.value, status="error"
             )
             raise
-
-    async def place_market_order(
-        self,
-        market_order: MarketOrderRequest,
-        wallet_id: Optional[str] = None,
-        skip_balance_check: bool = False,
-        idempotency_key: Optional[str] = None,
-    ) -> OrderResponse:
-        """
-        Place market order (fills immediately at best available price).
-
-        Market orders traverse the orderbook to find the price that will fill
-        the order. Uses FOK (Fill-or-Kill) or FAK (Fill-and-Kill).
-
-        CRITICAL: `amount` semantics differ by side (per py-clob-client spec):
-        - BUY: amount = USD to spend
-        - SELL: amount = tokens (shares) to sell
-
-        Args:
-            market_order: Market order request
-            wallet_id: Wallet to use
-            skip_balance_check: Skip pre-flight balance check
-            idempotency_key: Optional deterministic salt input. This method
-                recomputes the executable order from the current book, so it
-                does not promise the same order hash across separate calls.
-
-        Returns:
-            Order response
-
-        Raises:
-            ValidationError: If order is invalid
-            InsufficientBalanceError: If insufficient balance
-            TradingError: If no liquidity available to fill order
-
-        Example:
-            # BUY: spend $10 USD
-            >>> buy_order = MarketOrderRequest(
-            ...     token_id="12345...",
-            ...     amount=Decimal("10.00"),  # $10 USD
-            ...     side=Side.BUY,
-            ...     order_type=OrderType.FOK
-            ... )
-            >>> response = await client.place_market_order(buy_order)
-
-            # SELL: sell 100 tokens
-            >>> sell_order = MarketOrderRequest(
-            ...     token_id="12345...",
-            ...     amount=Decimal("100.00"),  # 100 tokens
-            ...     side=Side.SELL,
-            ...     order_type=OrderType.FOK
-            ... )
-            >>> response = await client.place_market_order(sell_order)
-        """
-        # Get orderbook to calculate market price
-        orderbook = await self.get_orderbook(market_order.token_id)
-
-        if market_order.side == Side.BUY:
-            # BUY: traverse asks (sell orders) from lowest to highest
-            if not orderbook.asks:
-                raise TradingError(f"No asks available for token {market_order.token_id}")
-
-            # Calculate price needed to fill amount
-            cumulative = Decimal("0")
-            market_price = Decimal("0")
-            for level in orderbook.asks:  # Already sorted low to high
-                level_price, level_size = level
-                level_value = level_price * level_size
-                cumulative += level_value
-                market_price = level_price
-                if cumulative >= market_order.amount:
-                    break
-
-            if cumulative < market_order.amount:
-                if market_order.order_type == OrderType.FOK:
-                    raise TradingError(
-                        f"Insufficient liquidity: need ${market_order.amount}, "
-                        f"only ${cumulative:.2f} available at best ask"
-                    )
-                # FAK: proceed with what we can fill
-
-            # Calculate tokens to buy: amount / price
-            size = market_order.amount / market_price
-        else:
-            # SELL: traverse bids (buy orders) from highest to lowest
-            # CRITICAL: For SELL, amount is TOKENS (not USD) per py-clob-client spec
-            if not orderbook.bids:
-                raise TradingError(f"No bids available for token {market_order.token_id}")
-
-            # Accumulate bid SIZES (tokens) to check liquidity for selling
-            cumulative_tokens = Decimal("0")
-            market_price = Decimal("0")
-            for level in orderbook.bids:  # Already sorted high to low
-                level_price, level_size = level
-                cumulative_tokens += level_size
-                market_price = level_price
-                if cumulative_tokens >= market_order.amount:
-                    break
-
-            if cumulative_tokens < market_order.amount:
-                if market_order.order_type == OrderType.FOK:
-                    raise TradingError(
-                        f"Insufficient liquidity: need {market_order.amount} tokens, "
-                        f"only {cumulative_tokens:.2f} tokens available at best bid"
-                    )
-
-            # For SELL, amount IS already tokens (no conversion needed)
-            size = market_order.amount
-
-        # Convert to limit order at market price
-        limit_order = OrderRequest(
-            token_id=market_order.token_id,
-            price=market_price,
-            size=size,
-            side=market_order.side,
-            order_type=market_order.order_type,
-        )
-
-        # Log with correct units based on side
-        if market_order.side == Side.BUY:
-            logger.info(
-                f"Market order: BUY ${market_order.amount} "
-                f"→ Limit order: {size:.4f} tokens @ ${market_price:.4f}"
-            )
-        else:
-            logger.info(
-                f"Market order: SELL {market_order.amount} tokens "
-                f"→ Limit order: {size:.4f} tokens @ ${market_price:.4f}"
-            )
-
-        return await self.place_order(
-            order=limit_order,
-            wallet_id=wallet_id,
-            skip_balance_check=skip_balance_check,
-            idempotency_key=idempotency_key,
-            tick_size=orderbook.tick_size,
-        )
 
     async def release_reserved_balance(
         self,
@@ -1440,7 +1298,9 @@ class PolymarketClient:
 
             # Always convert to Decimal for consistency
             current = self._reserved_balances.get(wallet_key, 0)
-            current = Decimal(str(current)) if not isinstance(current, Decimal) else current
+            current = (
+                Decimal(str(current)) if not isinstance(current, Decimal) else current
+            )
 
             # Ensure amount is Decimal
             if not isinstance(amount, Decimal):
@@ -1475,7 +1335,9 @@ class PolymarketClient:
             # Always convert to Decimal for consistency
             wallet_key = self._wallet_key(wallet_id)
             current = self._reserved_balances.get(wallet_key, 0)
-            return Decimal(str(current)) if not isinstance(current, Decimal) else current
+            return (
+                Decimal(str(current)) if not isinstance(current, Decimal) else current
+            )
 
     async def restore_reserved_balance(
         self,
@@ -1485,9 +1347,7 @@ class PolymarketClient:
         """Replace the process-local reservation with the durable ledger total."""
         restored = Decimal(str(amount))
         if not restored.is_finite() or restored < Decimal("0"):
-            raise BalanceTrackingError(
-                f"Invalid durable reserved balance: {restored}"
-            )
+            raise BalanceTrackingError(f"Invalid durable reserved balance: {restored}")
         async with self._balance_lock:
             self._reserved_balances[self._wallet_key(wallet_id)] = restored
 
@@ -1557,7 +1417,10 @@ class PolymarketClient:
         return order.model_copy(update={"price": price})
 
     async def _reserve_balance(
-        self, amount: Decimal, wallet_id: Optional[str] = None, order_id: Optional[str] = None
+        self,
+        amount: Decimal,
+        wallet_id: Optional[str] = None,
+        order_id: Optional[str] = None,
     ) -> None:
         """Reserve USD collateral for pending BUY orders."""
         async with self._balance_lock:
@@ -1576,13 +1439,17 @@ class PolymarketClient:
                 f"(total reserved: ${self._reserved_balances[wallet_key]:.2f})"
             )
 
-    def _set_balance_metric(self, wallet_id: Optional[str], collateral: Decimal) -> None:
+    def _set_balance_metric(
+        self, wallet_id: Optional[str], collateral: Decimal
+    ) -> None:
         """Best-effort balance metric update that must not block trading."""
         try:
             credentials = self.key_manager.get_wallet(wallet_id)
             self.metrics.set_balance(credentials.address, collateral)
         except Exception as exc:
-            logger.debug(f"Failed to update balance metric for {wallet_id or 'default'}: {exc}")
+            logger.debug(
+                f"Failed to update balance metric for {wallet_id or 'default'}: {exc}"
+            )
 
     async def _check_and_reserve_buy_balance(
         self,
@@ -1632,7 +1499,9 @@ class PolymarketClient:
         self._set_balance_metric(wallet_id, Decimal(str(balance.collateral)))
         return required
 
-    async def _check_balance(self, order: OrderRequest, wallet_id: Optional[str]) -> None:
+    async def _check_balance(
+        self, order: OrderRequest, wallet_id: Optional[str]
+    ) -> None:
         """
         Pre-flight balance check with reserved balance tracking.
 
@@ -1740,14 +1609,10 @@ class PolymarketClient:
             if balance is not None:
                 async with self._balance_lock:
                     wallet_key = self._wallet_key(wallet_id)
-                    reserved = self._reserved_balances.get(
-                        wallet_key, Decimal("0")
-                    )
+                    reserved = self._reserved_balances.get(wallet_key, Decimal("0"))
                     if not isinstance(reserved, Decimal):
                         reserved = Decimal(str(reserved))
-                    available_collateral = (
-                        Decimal(str(balance.collateral)) - reserved
-                    )
+                    available_collateral = Decimal(str(balance.collateral)) - reserved
                     if available_collateral < buy_collateral:
                         raise InsufficientBalanceError(
                             "Insufficient available USDC for batch: "
@@ -1756,9 +1621,7 @@ class PolymarketClient:
                             f"(total: {balance.collateral:.2f}, "
                             f"reserved: {reserved:.2f})"
                         )
-                    self._reserved_balances[wallet_key] = (
-                        reserved + buy_collateral
-                    )
+                    self._reserved_balances[wallet_key] = reserved + buy_collateral
 
             if balance is not None and balance.collateral < self._min_balance_warning:
                 logger.warning(f"Low balance: {balance.collateral:.2f} USDC")
@@ -1866,13 +1729,18 @@ class PolymarketClient:
 
             try:
                 response = await self.clob.get(
-                    "/nonce", params={"address": address}, rate_limit_key="GET:/nonce", retry=True
+                    "/nonce",
+                    params={"address": address},
+                    rate_limit_key="GET:/nonce",
+                    retry=True,
                 )
                 api_nonce = int(response.get("nonce", 0))
 
                 # CRITICAL FIX (Bug #53): Convert API nonce to milliseconds if needed
                 # Polymarket's /nonce endpoint returns seconds (10 digits), but nonces must be milliseconds (13 digits)
-                if api_nonce > 0 and api_nonce < 10_000_000_000:  # Less than 10 billion = seconds
+                if (
+                    api_nonce > 0 and api_nonce < 10_000_000_000
+                ):  # Less than 10 billion = seconds
                     api_nonce = api_nonce * 1000
 
                 # CRITICAL FIX (Bug #53 Fix #5): Initialize with incremented nonce
@@ -1918,7 +1786,9 @@ class PolymarketClient:
             try:
                 base_nonce = await self.clob.get_server_time()
             except Exception as server_time_error:
-                logger.warning(f"Failed to get server time, using local time: {server_time_error}")
+                logger.warning(
+                    f"Failed to get server time, using local time: {server_time_error}"
+                )
                 base_nonce = int(time.time() * 1000)
 
             random_offset = secrets.randbelow(100000)  # 0-99,999 random offset
@@ -2002,277 +1872,11 @@ class PolymarketClient:
         logger.debug(f"Fetched neg risk {neg_risk} for {token_id}")
         return neg_risk
 
-    async def place_orders_batch(
-        self,
-        orders: List[OrderRequest],
-        wallet_id: Optional[str] = None,
-        skip_balance_check: bool = False,
-        pre_submit: Optional[
-            Callable[[List[tuple[str, Decimal]]], Awaitable[None]]
-        ] = None,
-    ) -> List[OrderResponse]:
-        """
-        Place multiple orders in a single batch request.
-
-        Submit multiple orders through the batch endpoint.
-
-        Args:
-            orders: List of order requests
-            wallet_id: Wallet to use (uses default if None)
-            skip_balance_check: Skip pre-flight balance validation
-            pre_submit: Optional atomic durability hook receiving every
-                ``(order_hash, BUY reservation)`` before transport. SELL
-                reservations are zero.
-
-        Returns:
-            List of order responses (one per order)
-
-        Raises:
-            AuthenticationError: If wallet has no API credentials
-            ValidationError: If any order is invalid
-            TradingError: If batch submission fails
-
-        Example:
-            >>> # Place 10 orders simultaneously
-            >>> orders = [
-            ...     OrderRequest(token_id="123", price=0.50, size=10.0, side=Side.BUY),
-            ...     OrderRequest(token_id="456", price=0.60, size=20.0, side=Side.BUY),
-            ... ]
-            >>> responses = await client.place_orders_batch(orders, wallet_id="strategy3")
-            >>> successful = [r for r in responses if r.success]
-            >>> print(f"Placed {len(successful)}/{len(orders)} orders")
-        """
-        if not orders:
-            return []
-        if len(orders) > 15:
-            raise ValidationError(
-                "Polymarket batch placement supports at most 15 orders"
-            )
-
-        wallet_id = self._resolve_wallet_id(wallet_id)
-        credentials = self.key_manager.get_wallet(wallet_id)
-        if not self.key_manager.has_api_credentials(wallet_id):
-            raise AuthenticationError(f"Wallet {wallet_id} has no API credentials")
-
-        # Validate all orders first
-        from .utils.validators import validate_order
-
-        for idx, order in enumerate(orders):
-            try:
-                validate_order(
-                    order.token_id,
-                    order.price,
-                    order.size,
-                    order.side.value,
-                    min_size=self.settings.min_order_size,
-                )
-            except Exception as e:
-                raise ValidationError(f"Order {idx} invalid: {e}")
-
-        all_tokens = list(dict.fromkeys(order.token_id for order in orders))
-        tick_sizes = await asyncio.gather(
-            *(self._resolve_tick_size(token_id) for token_id in all_tokens)
-        )
-        tick_size_by_token = {
-            token_id: Decimal(str(tick_size))
-            for token_id, tick_size in zip(all_tokens, tick_sizes)
-        }
-        orders = [
-            self._normalize_order_for_tick(
-                order,
-                tick_size_by_token[order.token_id],
-            )
-            for order in orders
-        ]
-
-        fee_infos = await asyncio.gather(
-            *(self.get_fee_info(token_id) for token_id in all_tokens)
-        )
-        fee_info_by_token = dict(zip(all_tokens, fee_infos))
-
-        buy_reservations: List[Decimal]
-        reserved_for_cleanup = Decimal("0")
-        pre_submit_started = False
-        submission_started = False
-        try:
-            if not skip_balance_check:
-                buy_reservations = await self._check_batch_balance(
-                    orders,
-                    wallet_id,
-                    fee_info_by_token=fee_info_by_token,
-                )
-            else:
-                buy_reservations = [
-                    (
-                        self._calculate_buy_collateral(
-                            order,
-                            fee_rate_bps=fee_info_by_token[
-                                order.token_id
-                            ].rate_bps,
-                            fee_exponent=fee_info_by_token[
-                                order.token_id
-                            ].exponent,
-                        )
-                        if order.side == Side.BUY
-                        else Decimal("0")
-                    )
-                    for order in orders
-                ]
-                skipped_check_reservation = sum(
-                    buy_reservations, Decimal("0")
-                )
-                if skipped_check_reservation > Decimal("0"):
-                    await self._reserve_balance(
-                        skipped_check_reservation,
-                        wallet_id=wallet_id,
-                    )
-            reserved_for_cleanup = sum(buy_reservations, Decimal("0"))
-
-            # Build and sign all orders. Until submission starts, every failure
-            # is known local and the tentative reservation is releasable.
-            signed_orders = []
-            for order in orders:
-                signed_order = await self._build_signed_order(
-                    order,
-                    credentials,
-                    idempotency_key=None,
-                    tick_size=tick_size_by_token[order.token_id],
-                )
-                signed_orders.append(signed_order)
-
-            if pre_submit is not None:
-                batch_intents: List[tuple[str, Decimal]] = []
-                for index, (signed_order, reservation) in enumerate(
-                    zip(signed_orders, buy_reservations)
-                ):
-                    order_hash = signed_order.get("_orderHash")
-                    if not isinstance(order_hash, str) or not order_hash:
-                        raise TradingError(
-                            f"Signed batch order {index} is missing its "
-                            "deterministic order hash"
-                        )
-                    batch_intents.append((order_hash, reservation))
-                pre_submit_started = True
-                try:
-                    await pre_submit(batch_intents)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # Match single-order placement: a normal failure from the
-                    # atomic hook proves that submission can abort locally,
-                    # while cancellation may have arrived after persistence.
-                    pre_submit_started = False
-                    raise
-
-            submission_started = True
-            responses = await self.clob.post_orders_batch(
-                signed_orders=signed_orders,
-                address=credentials.address,
-                api_key=credentials.api_key,
-                api_secret=credentials.api_secret,
-                api_passphrase=credentials.api_passphrase,
-                order_types=[order.order_type.value for order in orders],
-            )
-
-            if not isinstance(responses, list) or len(responses) != len(orders):
-                raise TradingError(
-                    "Batch submission returned an incomplete response set"
-                )
-            if any(not isinstance(response, OrderResponse) for response in responses):
-                raise TradingError(
-                    "Batch submission returned an invalid response item"
-                )
-
-            # Release only per-item failures the adapter classified as
-            # definitive. Duplicate, delayed, and unknown failures may identify
-            # orders already accepted by the exchange and retain their cap.
-            failed_buy_collateral = sum(
-                (
-                    reservation
-                    for reservation, response in zip(
-                        buy_reservations, responses
-                    )
-                    if (
-                        not response.success
-                        and response.definitive_rejection is True
-                    )
-                ),
-                Decimal("0"),
-            )
-            if failed_buy_collateral > Decimal("0"):
-                await self.release_reserved_balance(
-                    failed_buy_collateral,
-                    wallet_id=wallet_id,
-                )
-                reserved_for_cleanup -= failed_buy_collateral
-
-            for index, (signed_order, response) in enumerate(
-                zip(signed_orders, responses)
-            ):
-                if not response.success:
-                    continue
-                expected_order_id = signed_order.get("_orderHash")
-                if (
-                    not isinstance(expected_order_id, str)
-                    or not expected_order_id
-                ):
-                    raise TradingError(
-                        f"Signed batch order {index} is missing its local order hash"
-                    )
-                if (
-                    not response.order_id
-                    or response.order_id.lower() != expected_order_id.lower()
-                ):
-                    raise TradingError(
-                        f"Batch order {index} exchange ID does not match its "
-                        "precomputed order hash"
-                    )
-
-            successful = sum(1 for response in responses if response.success)
-            logger.info(
-                f"Batch order placement: {successful}/{len(orders)} successful"
-            )
-            return responses
-        except asyncio.CancelledError:
-            if (
-                reserved_for_cleanup > Decimal("0")
-                and not pre_submit_started
-                and not submission_started
-            ):
-                await self.release_reserved_balance(
-                    reserved_for_cleanup,
-                    wallet_id=wallet_id,
-                )
-            elif reserved_for_cleanup > Decimal("0"):
-                logger.warning(
-                    "Retaining $%.2f for batch orders after cancellation "
-                    "during durability or transport",
-                    reserved_for_cleanup,
-                )
-            raise
-        except Exception as exc:
-            definitive_rejection = is_definitive_order_rejection(exc)
-            if reserved_for_cleanup > Decimal("0") and (
-                not submission_started or definitive_rejection
-            ):
-                await self.release_reserved_balance(
-                    reserved_for_cleanup,
-                    wallet_id=wallet_id,
-                )
-            elif reserved_for_cleanup > Decimal("0"):
-                logger.warning(
-                    "Retaining $%.2f for batch orders after ambiguous "
-                    "submission error: %s",
-                    reserved_for_cleanup,
-                    exc,
-                )
-            raise
-
     async def get_orderbooks_batch(self, token_ids: List[str]) -> Dict[str, OrderBook]:
         """
         Get orderbooks for multiple tokens simultaneously.
 
-        Fetch multiple order books through the batch endpoint.
+        CRITICAL for Strategy-3: 10x faster than sequential fetches.
 
         Args:
             token_ids: List of token IDs
@@ -2292,7 +1896,9 @@ class PolymarketClient:
         """
         return await self.market_clob.get_orderbooks_batch(token_ids)
 
-    async def cancel_order(self, order_id: str, wallet_id: Optional[str] = None) -> bool:
+    async def cancel_order(
+        self, order_id: str, wallet_id: Optional[str] = None
+    ) -> bool:
         """
         Cancel single order.
 
@@ -2309,53 +1915,6 @@ class PolymarketClient:
 
         return await self.clob.cancel_order(
             order_id=order_id,
-            address=credentials.address,
-            api_key=credentials.api_key,
-            api_secret=credentials.api_secret,
-            api_passphrase=credentials.api_passphrase,
-        )
-
-    async def cancel_all_orders(
-        self, wallet_id: Optional[str] = None, market_id: Optional[str] = None
-    ) -> int:
-        """
-        Cancel all open orders.
-
-        Args:
-            wallet_id: Wallet to use
-            market_id: Optional market filter
-
-        Returns:
-            Number of orders cancelled
-        """
-        credentials = self.key_manager.get_wallet(wallet_id)
-
-        return await self.clob.cancel_all_orders(
-            address=credentials.address,
-            api_key=credentials.api_key,
-            api_secret=credentials.api_secret,
-            api_passphrase=credentials.api_passphrase,
-            market_id=market_id,
-        )
-
-    async def cancel_market_orders(self, market_id: str, wallet_id: Optional[str] = None) -> int:
-        """
-        Cancel all orders for a specific market (convenient for market exit).
-
-        Args:
-            market_id: Market condition ID to cancel orders for
-            wallet_id: Wallet to use (uses default if None)
-
-        Returns:
-            Number of orders cancelled
-
-        Raises:
-            TradingError: If cancellation fails
-        """
-        credentials = self.key_manager.get_wallet(wallet_id)
-
-        return await self.clob.cancel_market_orders(
-            market_id=market_id,
             address=credentials.address,
             api_key=credentials.api_key,
             api_secret=credentials.api_secret,
@@ -2439,7 +1998,9 @@ class PolymarketClient:
             funder=credentials.funder,  # Proxy address for balance query
         )
 
-    async def get_token_balance(self, token_id: str, wallet_id: Optional[str] = None) -> Decimal:
+    async def get_token_balance(
+        self, token_id: str, wallet_id: Optional[str] = None
+    ) -> Decimal:
         """
         Get actual CTF token balance for a specific token.
 
@@ -2480,7 +2041,9 @@ class PolymarketClient:
 
         # Parse balance from API response
         # For CONDITIONAL assets, balance is in the "balance" field (6-decimal format)
-        balance_str = str(balance_response.collateral) if balance_response.collateral else "0"
+        balance_str = (
+            str(balance_response.collateral) if balance_response.collateral else "0"
+        )
 
         # Convert from 6-decimal format to shares
         # API returns e.g., "4100000" for 4.1 shares
@@ -2489,7 +2052,9 @@ class PolymarketClient:
         logger.debug(f"Token balance for {token_id[:20]}...: {token_balance} shares")
         return token_balance
 
-    async def get_position_balance(self, token_id: str, wallet_id: Optional[str] = None) -> Decimal:
+    async def get_position_balance(
+        self, token_id: str, wallet_id: Optional[str] = None
+    ) -> Decimal:
         """
         Get position balance for a specific token from CLOB positions API.
 
@@ -2573,48 +2138,6 @@ class PolymarketClient:
             return self.rate_limiter.get_stats()
         return {}
 
-    def get_circuit_breaker_state(self) -> Optional[str]:
-        """Get the TRADING circuit breaker state.
-
-        This is what bot health/shutdown logic keys off: a data-plane breaker
-        opening (market metadata flakiness) must not shut the bot down while
-        order placement is still healthy.
-        """
-        if self.circuit_breaker:
-            return self.circuit_breaker.state
-        return None
-
-    def get_data_circuit_breaker_states(self) -> Dict[str, Optional[str]]:
-        """Per-surface data-plane breaker states, keyed by breaker name."""
-        return {
-            b.name: b.state
-            for b in (
-                self.gamma_circuit_breaker,
-                self.data_circuit_breaker,
-                self.public_clob_circuit_breaker,
-            )
-            if b is not None
-        }
-
-    def get_data_circuit_breaker_state(self) -> Optional[str]:
-        """Worst state across the data-plane breakers (back-compat aggregate)."""
-        states = self.get_data_circuit_breaker_states().values()
-        for level in ("OPEN", "HALF_OPEN", "CLOSED"):
-            if level in states:
-                return level
-        return None
-
-    def reset_circuit_breaker(self) -> None:
-        """Reset the trading breaker and all three data-plane breakers."""
-        for breaker in (
-            self.circuit_breaker,
-            self.gamma_circuit_breaker,
-            self.data_circuit_breaker,
-            self.public_clob_circuit_breaker,
-        ):
-            if breaker is not None:
-                breaker.reset()
-
     def _get_data_address(self, credentials: "WalletCredentials") -> str:
         """
         Get the correct address for data API queries.
@@ -2635,7 +2158,9 @@ class PolymarketClient:
 
     # ========== Dashboard Operations ==========
 
-    async def get_positions(self, wallet_id: Optional[str] = None, **kwargs) -> List[Position]:
+    async def get_positions(
+        self, wallet_id: Optional[str] = None, **kwargs
+    ) -> List[Position]:
         """
         Get current positions with P&L tracking.
 
@@ -2649,9 +2174,13 @@ class PolymarketClient:
             List of positions with comprehensive P&L metrics
         """
         credentials = self.key_manager.get_wallet(wallet_id)
-        return await self.data.get_positions(user=self._get_data_address(credentials), **kwargs)
+        return await self.data.get_positions(
+            user=self._get_data_address(credentials), **kwargs
+        )
 
-    async def get_trades(self, wallet_id: Optional[str] = None, **kwargs) -> List[Trade]:
+    async def get_trades(
+        self, wallet_id: Optional[str] = None, **kwargs
+    ) -> List[Trade]:
         """
         Get trade history for wallet.
 
@@ -2663,9 +2192,13 @@ class PolymarketClient:
             List of trades ordered by most recent first
         """
         credentials = self.key_manager.get_wallet(wallet_id)
-        return await self.data.get_trades(user=self._get_data_address(credentials), **kwargs)
+        return await self.data.get_trades(
+            user=self._get_data_address(credentials), **kwargs
+        )
 
-    async def get_activity(self, wallet_id: Optional[str] = None, **kwargs) -> List[Activity]:
+    async def get_activity(
+        self, wallet_id: Optional[str] = None, **kwargs
+    ) -> List[Activity]:
         """
         Get onchain activity for wallet.
 
@@ -2677,7 +2210,9 @@ class PolymarketClient:
             List of activity records (trades, splits, merges, redemptions)
         """
         credentials = self.key_manager.get_wallet(wallet_id)
-        return await self.data.get_activity(user=self._get_data_address(credentials), **kwargs)
+        return await self.data.get_activity(
+            user=self._get_data_address(credentials), **kwargs
+        )
 
     async def get_portfolio_value(
         self, wallet_id: Optional[str] = None, market: Optional[str] = None
@@ -2732,7 +2267,9 @@ class PolymarketClient:
             for whale in whales:
                 print(f"{whale.pseudonym}: {whale.amount} @ {whale.proxy_wallet}")
         """
-        return await self.data.get_holders(market=market, limit=limit, min_balance=min_balance)
+        return await self.data.get_holders(
+            market=market, limit=limit, min_balance=min_balance
+        )
 
     async def get_leaderboard(
         self,
@@ -2795,7 +2332,7 @@ class PolymarketClient:
             sort_direction=sort_direction,
         )
 
-    # ========== Multi-Wallet Batch Operations ==========
+    # ========== Multi-Wallet Batch Operations (Strategy-3 Optimized) ==========
 
     async def get_positions_batch(
         self, wallet_addresses: List[str], **kwargs
@@ -2803,7 +2340,7 @@ class PolymarketClient:
         """
         Get positions for multiple wallets efficiently.
 
-        Fetch positions for many public wallet addresses concurrently.
+        Optimized for Strategy-3's 100+ wallet tracking with concurrent requests.
 
         Args:
             wallet_addresses: List of wallet addresses
@@ -2823,9 +2360,13 @@ class PolymarketClient:
                 logger.warning(f"Failed to get positions for {address}: {e}")
                 return (address, [])
 
-        results_list = await asyncio.gather(*[fetch_positions(addr) for addr in wallet_addresses])
+        results_list = await asyncio.gather(
+            *[fetch_positions(addr) for addr in wallet_addresses]
+        )
         results = {address: positions for address, positions in results_list}
-        logger.info(f"Fetched positions for {len(results)}/{len(wallet_addresses)} wallets")
+        logger.info(
+            f"Fetched positions for {len(results)}/{len(wallet_addresses)} wallets"
+        )
         return results
 
     async def get_trades_batch(
@@ -2852,7 +2393,9 @@ class PolymarketClient:
                 return (address, [])
 
         # Run all requests concurrently
-        results_list = await asyncio.gather(*[fetch_trades(addr) for addr in wallet_addresses])
+        results_list = await asyncio.gather(
+            *[fetch_trades(addr) for addr in wallet_addresses]
+        )
 
         # Convert to dict
         results = {address: trades for address, trades in results_list}
@@ -2882,7 +2425,9 @@ class PolymarketClient:
                 return (address, [])
 
         # Run all requests concurrently
-        results_list = await asyncio.gather(*[fetch_activity(addr) for addr in wallet_addresses])
+        results_list = await asyncio.gather(
+            *[fetch_activity(addr) for addr in wallet_addresses]
+        )
 
         # Convert to dict
         results = {address: activities for address, activities in results_list}
@@ -2921,7 +2466,7 @@ class PolymarketClient:
         """
         Detect consensus signals from multiple wallets.
 
-        Find markets where at least N wallets agree.
+        Strategy-3 specific: Find markets where N+ wallets agree.
 
         Args:
             wallet_addresses: List of wallet addresses to track
@@ -2966,26 +2511,23 @@ class PolymarketClient:
 
     async def health_check(self) -> Dict[str, Any]:
         """
-        Health check for Docker/K8s probes.
+        Check public CLOB connectivity and local transport metrics.
 
         Returns:
-            Dict with status, circuit breaker state, and connectivity
+            Connectivity and rate-limiter state.
         """
         try:
             # Check CLOB connectivity
             clob_health = await self.market_clob.health_check()
 
-            # Check circuit breaker
-            cb_state = self.get_circuit_breaker_state() or "disabled"
-
             # Check rate limiter
             rate_stats = self.get_rate_limiter_stats()
 
             return {
-                "status": "healthy" if clob_health["status"] == "healthy" else "degraded",
+                "status": "healthy"
+                if clob_health["status"] == "healthy"
+                else "degraded",
                 "clob": clob_health,
-                "circuit_breaker": cb_state,
-                "data_circuit_breakers": self.get_data_circuit_breaker_states(),
                 "rate_limiter": rate_stats,
                 "inflight_orders": len(self._inflight_orders),
                 "timestamp": time.time(),
@@ -3015,7 +2557,9 @@ class PolymarketClient:
         with self._ws_lock:
             transport = self._ws
             if transport is None:
-                raise RuntimeError("CLOB WebSocket client was detached during registration")
+                raise RuntimeError(
+                    "CLOB WebSocket client was detached during registration"
+                )
 
             # Callback delivery already takes the transport lock before invoking
             # this registry. Preserve that order during registration to avoid an
@@ -3059,7 +2603,10 @@ class PolymarketClient:
                         raise
 
     def subscribe_orderbook(
-        self, token_id: str, callback: Callable[[OrderBook], None], wallet_id: Optional[str] = None
+        self,
+        token_id: str,
+        callback: Callable[[OrderBook], None],
+        wallet_id: Optional[str] = None,
     ) -> None:
         """
         Subscribe to real-time orderbook updates via WebSocket.
@@ -3085,8 +2632,14 @@ class PolymarketClient:
                     return
 
                 # Convert WebSocket orderbook to client OrderBook model
-                bids = [(Decimal(level.price), Decimal(level.size)) for level in message.buys]
-                asks = [(Decimal(level.price), Decimal(level.size)) for level in message.sells]
+                bids = [
+                    (Decimal(level.price), Decimal(level.size))
+                    for level in message.buys
+                ]
+                asks = [
+                    (Decimal(level.price), Decimal(level.size))
+                    for level in message.sells
+                ]
 
                 book = OrderBook(token_id=token_id, bids=bids, asks=asks)
                 callback(book)
@@ -3183,10 +2736,7 @@ class PolymarketClient:
         # completing. Only report readiness for the transport still owned by
         # this facade.
         with self._ws_lock:
-            return (
-                self._ws is transport
-                and transport.telemetry_snapshot_v1().connected
-            )
+            return self._ws is transport and transport.telemetry_snapshot_v1().connected
 
     def unsubscribe_all(self) -> None:
         """
@@ -3294,9 +2844,7 @@ class PolymarketClient:
         # Thread-safe initialization
         with self._ws_lock:
             if self._ws is not None:
-                existing_channel = getattr(
-                    self, "_ws_channel_type", None
-                )
+                existing_channel = getattr(self, "_ws_channel_type", None)
                 if existing_channel != selected_channel:
                     raise RuntimeError(
                         "MARKET and USER subscriptions require separate "
@@ -3322,9 +2870,7 @@ class PolymarketClient:
                     self._ws.on_failure_callback = on_failure_callback
                 return
 
-            selected_wallet_id = (
-                wallet_id if selected_channel == "USER" else None
-            )
+            selected_wallet_id = wallet_id if selected_channel == "USER" else None
             if selected_channel == "USER" and selected_wallet_id is None:
                 selected_wallet_id = self.key_manager.get_default_wallet()
                 if selected_wallet_id is None:
@@ -3354,7 +2900,9 @@ class PolymarketClient:
             self._ws_wallet_id = selected_wallet_id
             self._ws_channel_type = selected_channel
             # Connection deferred until first subscription (lazy connect pattern)
-            logger.info("WebSocket client initialized (will connect on first subscription)")
+            logger.info(
+                "WebSocket client initialized (will connect on first subscription)"
+            )
 
     def _ensure_rtds(self) -> "RealTimeDataClient":
         """
@@ -3475,7 +3023,9 @@ class PolymarketClient:
                 return
             handlers[id(callback)] = callback
 
-    def _dispatch_rtds_message(self, client: "RealTimeDataClient", message: "Message") -> None:
+    def _dispatch_rtds_message(
+        self, client: "RealTimeDataClient", message: "Message"
+    ) -> None:
         """
         Route an RTDS message to every handler registered for its (topic, type),
         any (topic, "*") wildcard handlers, and any (topic, "prefix_*") handlers
@@ -3484,9 +3034,13 @@ class PolymarketClient:
         cannot break the others or the RTDS thread.
         """
         with self._rtds_handlers_lock:
-            handlers = list(self._rtds_handlers.get((message.topic, message.type), {}).values())
+            handlers = list(
+                self._rtds_handlers.get((message.topic, message.type), {}).values()
+            )
             if message.type != "*":
-                handlers += list(self._rtds_handlers.get((message.topic, "*"), {}).values())
+                handlers += list(
+                    self._rtds_handlers.get((message.topic, "*"), {}).values()
+                )
             # Prefix arm: keys like ("rfq", "request_*") are server-side filter
             # patterns; messages arrive with concrete types ("request_created"),
             # so match registry keys whose type ends with "*" by prefix.
@@ -3506,11 +3060,15 @@ class PolymarketClient:
             try:
                 handler(message)
             except Exception as e:
-                logger.error(f"RTDS handler error for {message.topic}/{message.type}: {e}")
+                logger.error(
+                    f"RTDS handler error for {message.topic}/{message.type}: {e}"
+                )
 
     def get_rtds_stats(self) -> Optional[Dict[str, Any]]:
         """Transport stats for monitoring (None when RTDS not initialized)."""
-        rtds = self._rtds  # snapshot: a concurrent close() may null between check and call
+        rtds = (
+            self._rtds
+        )  # snapshot: a concurrent close() may null between check and call
         return rtds.stats() if rtds else None
 
     def _on_rtds_connect(self, client: RealTimeDataClient) -> None:
@@ -3524,7 +3082,8 @@ class PolymarketClient:
         """
         try:
             logger.info(
-                "RTDS connected successfully", extra={"host": client.host, "status": "connected"}
+                "RTDS connected successfully",
+                extra={"host": client.host, "status": "connected"},
             )
             # Future: Re-subscribe to streams after reconnect
         except Exception as e:
@@ -3543,17 +3102,9 @@ class PolymarketClient:
             status: New connection status
         """
         try:
-            logger.info(f"RTDS status changed: {status.value}", extra={"status": status.value})
-
-            # Emit metrics if enabled
-            if self.metrics:
-                status_map = {
-                    ConnectionStatus.CONNECTING: 0,
-                    ConnectionStatus.CONNECTED: 1,
-                    ConnectionStatus.DISCONNECTED: 2,
-                }
-                # Record status change event
-                # Note: metrics.record_rtds_status() would go here if implemented
+            logger.info(
+                f"RTDS status changed: {status.value}", extra={"status": status.value}
+            )
 
         except Exception as e:
             logger.error(f"Error in RTDS status change callback: {e}", exc_info=True)
@@ -3746,9 +3297,13 @@ class PolymarketClient:
         # never this lock, so a blocked send cannot stall dispatch.
         with self._rtds_price_change_reg_lock:
             self._register_rtds_handler("clob_market", "price_change", callback)
-            rtds.subscribe(topic="clob_market", type="price_change", filters=json.dumps(token_ids))
+            rtds.subscribe(
+                topic="clob_market", type="price_change", filters=json.dumps(token_ids)
+            )
 
-        logger.info("Subscribed to price_changes", extra={"token_count": len(token_ids)})
+        logger.info(
+            "Subscribed to price_changes", extra={"token_count": len(token_ids)}
+        )
 
     def unsubscribe_market_price_changes(self, token_ids: List[str]) -> None:
         """
@@ -3769,7 +3324,9 @@ class PolymarketClient:
         # the None check and the transport calls below
         rtds = self._rtds
         if rtds is None:
-            logger.debug("RTDS client not initialized; no price_changes subscription to remove")
+            logger.debug(
+                "RTDS client not initialized; no price_changes subscription to remove"
+            )
             return
 
         # The registration lock makes [wire unsubscribe -> remaining-check ->
@@ -3798,7 +3355,9 @@ class PolymarketClient:
                 with self._rtds_handlers_lock:
                     self._rtds_handlers.pop(("clob_market", "price_change"), None)
 
-        logger.info("Unsubscribed from price_changes", extra={"token_count": len(token_ids)})
+        logger.info(
+            "Unsubscribed from price_changes", extra={"token_count": len(token_ids)}
+        )
 
     def subscribe_market_orderbook_rtds(
         self, callback: Callable[[Message], None], token_ids: List[str]
@@ -3839,9 +3398,13 @@ class PolymarketClient:
         rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "agg_orderbook", callback)
-        rtds.subscribe(topic="clob_market", type="agg_orderbook", filters=json.dumps(token_ids))
+        rtds.subscribe(
+            topic="clob_market", type="agg_orderbook", filters=json.dumps(token_ids)
+        )
 
-        logger.info("Subscribed to orderbook_rtds", extra={"token_count": len(token_ids)})
+        logger.info(
+            "Subscribed to orderbook_rtds", extra={"token_count": len(token_ids)}
+        )
 
     def subscribe_comments(
         self,
@@ -3878,16 +3441,25 @@ class PolymarketClient:
         filters = None
         if parent_entity_id is not None:
             filters = json.dumps(
-                {"parentEntityID": parent_entity_id, "parentEntityType": parent_entity_type}
+                {
+                    "parentEntityID": parent_entity_id,
+                    "parentEntityType": parent_entity_type,
+                }
             )
 
         self._register_rtds_handler("comments", "*", callback)
-        rtds.subscribe(topic="comments", type="*", filters=filters)  # All comment events
+        rtds.subscribe(
+            topic="comments", type="*", filters=filters
+        )  # All comment events
 
-        logger.info("Subscribed to comments", extra={"parent_entity_id": parent_entity_id})
+        logger.info(
+            "Subscribed to comments", extra={"parent_entity_id": parent_entity_id}
+        )
 
     def subscribe_reactions(
-        self, callback: Callable[[Message], None], parent_entity_id: Optional[int] = None
+        self,
+        callback: Callable[[Message], None],
+        parent_entity_id: Optional[int] = None,
     ) -> None:
         """
         Subscribe to comment reaction events.
@@ -3913,12 +3485,20 @@ class PolymarketClient:
 
         rtds = self._ensure_rtds()
 
-        filters = json.dumps({"parentEntityID": parent_entity_id}) if parent_entity_id else None
+        filters = (
+            json.dumps({"parentEntityID": parent_entity_id})
+            if parent_entity_id
+            else None
+        )
 
         self._register_rtds_handler("comments", "reaction_*", callback)
-        rtds.subscribe(topic="comments", type="reaction_*", filters=filters)  # All reaction events
+        rtds.subscribe(
+            topic="comments", type="reaction_*", filters=filters
+        )  # All reaction events
 
-        logger.info("Subscribed to reactions", extra={"parent_entity_id": parent_entity_id})
+        logger.info(
+            "Subscribed to reactions", extra={"parent_entity_id": parent_entity_id}
+        )
 
     def subscribe_rfq_requests(
         self, callback: Callable[[Message], None], market: Optional[str] = None
@@ -3950,7 +3530,9 @@ class PolymarketClient:
         filters = json.dumps({"market": market}) if market else None
 
         self._register_rtds_handler("rfq", "request_*", callback)
-        rtds.subscribe(topic="rfq", type="request_*", filters=filters)  # All request events
+        rtds.subscribe(
+            topic="rfq", type="request_*", filters=filters
+        )  # All request events
 
         logger.info("Subscribed to rfq_requests", extra={"market": market})
 
@@ -4019,13 +3601,17 @@ class PolymarketClient:
         symbol_lower = symbol.lower()
 
         if symbol_lower not in valid_symbols:
-            raise ValueError(f"Invalid symbol: {symbol}. Must be one of {valid_symbols}")
+            raise ValueError(
+                f"Invalid symbol: {symbol}. Must be one of {valid_symbols}"
+            )
 
         rtds = self._ensure_rtds()
 
         self._register_rtds_handler("crypto_prices", "update", callback)
         rtds.subscribe(
-            topic="crypto_prices", type="update", filters=json.dumps({"symbol": symbol_lower})
+            topic="crypto_prices",
+            type="update",
+            filters=json.dumps({"symbol": symbol_lower}),
         )
 
         logger.info("Subscribed to crypto_prices", extra={"symbol": symbol})
@@ -4063,7 +3649,9 @@ class PolymarketClient:
         symbol_lower = symbol.lower()
 
         if symbol_lower not in valid_symbols:
-            raise ValueError(f"Invalid symbol: {symbol}. Must be one of {valid_symbols}")
+            raise ValueError(
+                f"Invalid symbol: {symbol}. Must be one of {valid_symbols}"
+            )
 
         rtds = self._ensure_rtds()
 
@@ -4112,9 +3700,13 @@ class PolymarketClient:
         rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "last_trade_price", callback)
-        rtds.subscribe(topic="clob_market", type="last_trade_price", filters=json.dumps(token_ids))
+        rtds.subscribe(
+            topic="clob_market", type="last_trade_price", filters=json.dumps(token_ids)
+        )
 
-        logger.info("Subscribed to last_trade_price", extra={"token_count": len(token_ids)})
+        logger.info(
+            "Subscribed to last_trade_price", extra={"token_count": len(token_ids)}
+        )
 
     def subscribe_market_tick_size_change(
         self, callback: Callable[[Message], None], token_ids: List[str]
@@ -4154,9 +3746,13 @@ class PolymarketClient:
         rtds = self._ensure_rtds()
 
         self._register_rtds_handler("clob_market", "tick_size_change", callback)
-        rtds.subscribe(topic="clob_market", type="tick_size_change", filters=json.dumps(token_ids))
+        rtds.subscribe(
+            topic="clob_market", type="tick_size_change", filters=json.dumps(token_ids)
+        )
 
-        logger.info("Subscribed to tick_size_change", extra={"token_count": len(token_ids)})
+        logger.info(
+            "Subscribed to tick_size_change", extra={"token_count": len(token_ids)}
+        )
 
     def unsubscribe_rtds_all(self) -> None:
         """

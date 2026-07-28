@@ -30,19 +30,31 @@ class PolymarketSettings(BaseSettings):
     )
 
     # API URLs
-    clob_url: str = Field(default="https://clob.polymarket.com", description="CLOB API URL")
-    gamma_url: str = Field(default="https://gamma-api.polymarket.com", description="Gamma API URL")
+    clob_url: str = Field(
+        default="https://clob.polymarket.com", description="CLOB API URL"
+    )
+    gamma_url: str = Field(
+        default="https://gamma-api.polymarket.com", description="Gamma API URL"
+    )
 
     # Chain configuration
     chain_id: int = Field(default=137, description="Polygon chain ID")
     rpc_url: str = Field(DEFAULT_POLYGON_RPC_URL, description="Polygon RPC URL")
 
     # Timeouts and retries
-    request_timeout: float = Field(default=30.0, ge=1.0, description="Request timeout (seconds)")
-    connect_timeout: float = Field(default=10.0, ge=1.0, description="Connection timeout (seconds)")
+    request_timeout: float = Field(
+        default=30.0, ge=1.0, description="Request timeout (seconds)"
+    )
+    connect_timeout: float = Field(
+        default=10.0, ge=1.0, description="Connection timeout (seconds)"
+    )
     max_retries: int = Field(default=3, ge=0, le=10, description="Max retry attempts")
-    retry_backoff_base: float = Field(default=2.0, ge=1.0, description="Backoff multiplier")
-    retry_backoff_max: float = Field(default=60.0, ge=1.0, description="Max backoff delay")
+    retry_backoff_base: float = Field(
+        default=2.0, ge=1.0, description="Backoff multiplier"
+    )
+    retry_backoff_max: float = Field(
+        default=60.0, ge=1.0, description="Max backoff delay"
+    )
 
     # Rate limiting
     enable_rate_limiting: bool = Field(default=True, description="Enable rate limiting")
@@ -50,31 +62,36 @@ class PolymarketSettings(BaseSettings):
         default=0.8, ge=0.1, le=1.0, description="Use 80% of rate limits"
     )
 
-    # Circuit breaker
-    circuit_breaker_threshold: int = Field(default=5, ge=1, description="Failures before opening")
-    circuit_breaker_timeout: float = Field(default=60.0, ge=1.0, description="Reset timeout")
-
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
     log_requests: bool = Field(default=False, description="Log all HTTP requests")
 
     # Metrics
     enable_metrics: bool = Field(default=True, description="Enable Prometheus metrics")
-    metrics_port: int = Field(default=9090, ge=1024, le=65535, description="Metrics server port")
+    metrics_port: int = Field(
+        default=9090, ge=1024, le=65535, description="Metrics server port"
+    )
 
     # WebSocket (CLOB orderbook and user orders)
     ws_url: str = Field(
-        default="wss://ws-subscriptions-clob.polymarket.com/ws", description="WebSocket URL"
+        default="wss://ws-subscriptions-clob.polymarket.com/ws",
+        description="WebSocket URL",
     )
-    ws_reconnect_delay: float = Field(default=5.0, ge=1.0, description="WS reconnect delay")
-    ws_max_reconnects: int = Field(default=10, ge=0, description="Max WS reconnect attempts")
+    ws_reconnect_delay: float = Field(
+        default=5.0, ge=1.0, description="WS reconnect delay"
+    )
+    ws_max_reconnects: int = Field(
+        default=10, ge=0, description="Max WS reconnect attempts"
+    )
 
     # Real-Time Data Service (RTDS) - Live event streams
     rtds_url: str = Field(
         default="wss://ws-live-data.polymarket.com",
         description="RTDS WebSocket URL for real-time event streams",
     )
-    rtds_auto_reconnect: bool = Field(default=True, description="Auto-reconnect RTDS on disconnect")
+    rtds_auto_reconnect: bool = Field(
+        default=True, description="Auto-reconnect RTDS on disconnect"
+    )
     rtds_ping_interval: float = Field(
         default=5.0, ge=1.0, description="RTDS ping interval (seconds)"
     )
@@ -87,15 +104,21 @@ class PolymarketSettings(BaseSettings):
         description="Max seconds without RTDS pong/message before forced reconnect",
     )
     rtds_max_message_size: int = Field(
-        default=1024 * 1024, ge=1024, description="Max RTDS message size (bytes)"  # 1MB
+        default=1024 * 1024,
+        ge=1024,
+        description="Max RTDS message size (bytes)",  # 1MB
     )
-    enable_rtds: bool = Field(default=True, description="Enable RTDS real-time event streams")
+    enable_rtds: bool = Field(
+        default=True, description="Enable RTDS real-time event streams"
+    )
 
     # Connection pooling (CRITICAL for multi-wallet performance)
     pool_connections: int = Field(
         default=50, ge=10, le=200, description="HTTP connection pool size"
     )
-    pool_maxsize: int = Field(default=100, ge=20, le=500, description="Max connections per pool")
+    pool_maxsize: int = Field(
+        default=100, ge=20, le=500, description="Max connections per pool"
+    )
 
     # Batch operations (PERFORMANCE OPTIMIZATION: Increased from 10 to 20)
     # Higher worker count improves parallel I/O-bound operations (market fetches, orderbooks)
@@ -105,9 +128,13 @@ class PolymarketSettings(BaseSettings):
     )
 
     # Validation
-    validate_orders: bool = Field(default=True, description="Validate orders before sending")
+    validate_orders: bool = Field(
+        default=True, description="Validate orders before sending"
+    )
     min_order_size: float = Field(
-        default=0.01, ge=0.01, description="Minimum order size (tokens, actual min is per-market)"
+        default=0.01,
+        ge=0.01,
+        description="Minimum order size (tokens, actual min is per-market)",
     )
 
     def __repr__(self) -> str:

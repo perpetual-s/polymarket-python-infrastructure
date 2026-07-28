@@ -179,7 +179,9 @@ async def test_closed_positions_rejects_an_undocumented_sort_field():
     with pytest.raises(ValueError, match="sort_by must be one of"):
         await api.get_closed_positions("0xabc", sort_by="RECENT")
     with pytest.raises(ValueError, match="sort_direction must be one of"):
-        await api.get_closed_positions("0xabc", sort_by="TIMESTAMP", sort_direction="UP")
+        await api.get_closed_positions(
+            "0xabc", sort_by="TIMESTAMP", sort_direction="UP"
+        )
     api.get.assert_not_awaited()
 
 
@@ -253,19 +255,4 @@ async def test_activity_rate_limit_logs_warning_not_error(caplog):
         with pytest.raises(RateLimitError):
             await api.get_activity(user="0x" + "ab" * 20)
     records = [r for r in caplog.records if "Failed to get activity" in r.message]
-    assert records and all(r.levelno == logging.WARNING for r in records)
-
-
-@pytest.mark.asyncio
-async def test_positions_circuit_breaker_logs_warning_not_error(caplog):
-    import logging
-
-    from polymarket.exceptions import CircuitBreakerError
-
-    api = object.__new__(DataAPI)
-    api.get = AsyncMock(side_effect=CircuitBreakerError("polymarket-data is OPEN"))
-    with caplog.at_level(logging.WARNING, logger="polymarket.api.data_api"):
-        with pytest.raises(CircuitBreakerError):
-            await api.get_positions(user="0x" + "ab" * 20)
-    records = [r for r in caplog.records if "Failed to get positions" in r.message]
     assert records and all(r.levelno == logging.WARNING for r in records)

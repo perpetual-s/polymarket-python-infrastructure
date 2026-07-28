@@ -1,4 +1,4 @@
-"""CLOB V2 order signing — known-answer contract tests (core-loop Task B2).
+"""CLOB V2 order-signing known-answer contracts.
 
 Ground truth pinned 2026-07-18 from:
 - https://docs.polymarket.com/v2-migration (struct semantics, domain version)
@@ -113,9 +113,7 @@ def test_type_string_is_pinned():
 
 def test_type_string_matches_struct_list():
     derived = (
-        "Order("
-        + ",".join(f"{f['type']} {f['name']}" for f in ORDER_STRUCT)
-        + ")"
+        "Order(" + ",".join(f"{f['type']} {f['name']}" for f in ORDER_STRUCT) + ")"
     )
     assert derived == ORDER_TYPE_STRING
 
@@ -290,9 +288,7 @@ def test_idempotency_key_keeps_creation_timestamp_on_wall_clock(monkeypatch):
     signed = _build_retry_identity("copy-command-123")
 
     assert signed["timestamp"] == "1800000000001"
-    assert signed["salt"] == OrderBuilder().generate_salt_from_key(
-        "copy-command-123"
-    )
+    assert signed["salt"] == OrderBuilder().generate_salt_from_key("copy-command-123")
 
 
 def test_explicit_timestamp_is_used_with_idempotency_key():

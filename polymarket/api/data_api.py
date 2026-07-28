@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 from ..config import PolymarketSettings
 from ..exceptions import (
     APIError,
-    CircuitBreakerError,
     RateLimitError,
     TimeoutError,
     ValidationError,
@@ -36,7 +35,6 @@ from ..models import (
     Trade,
 )
 from ..utils.rate_limiter import RateLimiter
-from ..utils.retry import CircuitBreaker
 from .base import BaseAPIClient
 
 logger = logging.getLogger(__name__)
@@ -100,7 +98,9 @@ async def _get_with_request_evidence(
         rate_limit_error_count=rate_limit_error_count,
         rate_limit_key=rate_limit_key,
         retry_enabled=retry_strategy is not None,
-        max_retries=(int(retry_strategy.max_retries) if retry_strategy is not None else 0),
+        max_retries=(
+            int(retry_strategy.max_retries) if retry_strategy is not None else 0
+        ),
         local_limiter_enabled=limiter_enabled,
         local_limiter_applied=limiter_enabled and attempt_count > 0,
     )
@@ -123,7 +123,6 @@ class DataAPI(BaseAPIClient):
         self,
         settings: Optional[PolymarketSettings] = None,
         rate_limiter: Optional[RateLimiter] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize Data API client.
@@ -131,7 +130,6 @@ class DataAPI(BaseAPIClient):
         Args:
             settings: Optional settings (uses defaults if not provided)
             rate_limiter: Optional rate limiter
-            circuit_breaker: Optional circuit breaker
         """
         # Create settings if not provided
         if settings is None:
@@ -147,7 +145,6 @@ class DataAPI(BaseAPIClient):
             base_url=data_api_url,
             settings=settings,
             rate_limiter=rate_limiter,
-            circuit_breaker=circuit_breaker,
         )
 
     # ========== Positions ==========
@@ -223,7 +220,9 @@ class DataAPI(BaseAPIClient):
 
             # Parse positions
             if not isinstance(response, list):
-                logger.warning(f"Unexpected positions response format: {type(response)}")
+                logger.warning(
+                    f"Unexpected positions response format: {type(response)}"
+                )
                 if strict_parse:
                     raise APIError(
                         "Unexpected positions response format; complete observation unavailable"
@@ -276,7 +275,7 @@ class DataAPI(BaseAPIClient):
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to parse positions response for {user}: {e}")
             raise
-        except (RateLimitError, CircuitBreakerError) as e:
+        except RateLimitError as e:
             # Retriable/transient: same WARNING-grade treatment as activity.
             logger.warning(f"Failed to get positions for {user}: {e}")
             raise
@@ -740,7 +739,7 @@ class DataAPI(BaseAPIClient):
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to parse activity response for {user}: {e}")
             raise
-        except (RateLimitError, CircuitBreakerError) as e:
+        except RateLimitError as e:
             # Retriable/transient by design: the limiter backs off and the
             # backup position poller covers the gap — WARNING-grade noise,
             # not an operator-actionable ERROR.
@@ -852,7 +851,9 @@ class DataAPI(BaseAPIClient):
 
     # ========== Portfolio Value ==========
 
-    async def get_portfolio_value(self, user: str, market: Optional[str] = None) -> PortfolioValue:
+    async def get_portfolio_value(
+        self, user: str, market: Optional[str] = None
+    ) -> PortfolioValue:
         """
         Get total USD value of user's positions with detailed breakdown.
 
@@ -901,7 +902,9 @@ class DataAPI(BaseAPIClient):
 
                 # Legacy field - if value not present, calculate from equity_total
                 if "value" not in response:
-                    response["value"] = response.get("equityTotal", response.get("equity_total", 0))
+                    response["value"] = response.get(
+                        "equityTotal", response.get("equity_total", 0)
+                    )
 
                 portfolio = PortfolioValue(**response)
             elif isinstance(response, (int, float)):
@@ -1046,7 +1049,9 @@ class DataAPI(BaseAPIClient):
             )
 
             if not isinstance(response, list):
-                logger.warning(f"Unexpected leaderboard response format: {type(response)}")
+                logger.warning(
+                    f"Unexpected leaderboard response format: {type(response)}"
+                )
                 return []
 
             traders = []

@@ -9,27 +9,23 @@ Tests verify:
 - Connection pooling
 - Timeout handling
 - Rate limiting integration
-- Circuit breaker integration
 - Request deduplication
 - Error handling
 """
 
 import asyncio
-from decimal import Decimal
-from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
 import pytest_asyncio
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientSession
 
 from polymarket.api.base import BaseAPIClient
 from polymarket.config import PolymarketSettings
 from polymarket.exceptions import APIError, AuthenticationError, RateLimitError
 from polymarket.exceptions import TimeoutError as PolymarketTimeoutError
 from polymarket.utils.rate_limiter import RateLimiter
-from polymarket.utils.retry import CircuitBreaker, RetryStrategy
 
 
 @pytest.fixture
@@ -46,7 +42,6 @@ def settings():
         retry_backoff_base=2.0,
         retry_backoff_max=60.0,
         enable_rate_limiting=True,
-        enable_circuit_breaker=True,
     )
 
 
@@ -56,20 +51,13 @@ def rate_limiter():
     return RateLimiter(enabled=True, margin=0.8)
 
 
-@pytest.fixture
-def circuit_breaker():
-    """Create test circuit breaker."""
-    return CircuitBreaker(failure_threshold=5, timeout=60.0, name="test_circuit")
-
-
 @pytest_asyncio.fixture
-async def base_client(settings, rate_limiter, circuit_breaker):
+async def base_client(settings, rate_limiter):
     """Create async BaseAPIClient for testing."""
     client = BaseAPIClient(
         base_url="https://clob.polymarket.com",
         settings=settings,
         rate_limiter=rate_limiter,
-        circuit_breaker=circuit_breaker,
     )
     yield client
     # Cleanup
@@ -83,19 +71,21 @@ class TestAsyncClientSession:
     async def test_client_has_async_session(self, base_client):
         """Verify BaseAPIClient has aiohttp.ClientSession."""
         assert hasattr(base_client, "session"), "Client should have session attribute"
-        assert isinstance(
-            base_client.session, ClientSession
-        ), f"Session should be aiohttp.ClientSession, got {type(base_client.session)}"
+        assert isinstance(base_client.session, ClientSession), (
+            f"Session should be aiohttp.ClientSession, got {type(base_client.session)}"
+        )
 
     @pytest.mark.asyncio
     async def test_session_timeout_configured(self, base_client, settings):
         """Verify session timeout is configured correctly."""
-        assert base_client.session.timeout.total is not None, "Timeout should be configured"
+        assert base_client.session.timeout.total is not None, (
+            "Timeout should be configured"
+        )
         # aiohttp uses ClientTimeout object
         expected_total = settings.connect_timeout + settings.request_timeout
-        assert (
-            base_client.session.timeout.total == expected_total
-        ), f"Total timeout should be {expected_total}s"
+        assert base_client.session.timeout.total == expected_total, (
+            f"Total timeout should be {expected_total}s"
+        )
 
     @pytest.mark.asyncio
     async def test_session_connection_limit_configured(self, base_client):
@@ -104,7 +94,9 @@ class TestAsyncClientSession:
         connector = base_client.session.connector
         assert connector is not None, "Session should have connector"
         assert connector.limit > 0, "Connector should have connection limit"
-        assert connector.limit >= 100, "Should support at least 100 concurrent connections"
+        assert connector.limit >= 100, (
+            "Should support at least 100 concurrent connections"
+        )
 
 
 class TestAsyncHTTPMethods:
@@ -146,7 +138,9 @@ class TestAsyncHTTPMethods:
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
             # POST with JSON body
-            result = await base_client._make_request("POST", "/orders", json_data={"size": 100})
+            result = await base_client._make_request(
+                "POST", "/orders", json_data={"size": 100}
+            )
             assert result == {"created": True}
 
             # Verify request was called with json parameter
@@ -209,14 +203,18 @@ class TestAsyncErrorHandling:
             mock_request.return_value.__aenter__ = raise_timeout
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            caplog.set_level(stdlib_logging.WARNING, logger="polymarket.api.base")
+            caplog.set_level(
+                stdlib_logging.WARNING, logger="polymarket.api.base"
+            )
             with pytest.raises(PolymarketTimeoutError):
                 await base_client._make_request("GET", "/test")
 
-        timeout_records = [r for r in caplog.records if "Request timeout" in r.getMessage()]
-        assert (
-            timeout_records
-        ), f"expected a Request timeout log; got {[r.getMessage() for r in caplog.records]}"
+        timeout_records = [
+            r for r in caplog.records if "Request timeout" in r.getMessage()
+        ]
+        assert timeout_records, (
+            f"expected a Request timeout log; got {[r.getMessage() for r in caplog.records]}"
+        )
         for r in timeout_records:
             assert r.levelno == stdlib_logging.WARNING, (
                 f"Request timeout logged at {r.levelname}; must be WARNING "
@@ -243,7 +241,9 @@ class TestAsyncErrorHandling:
             )
 
     @pytest.mark.asyncio
-    async def test_connection_error_logs_at_warning_not_error(self, base_client, caplog):
+    async def test_connection_error_logs_at_warning_not_error(
+        self, base_client, caplog
+    ):
         """Transient aiohttp connection errors must log at WARNING, not ERROR.
 
         Same rationale as test_timeout_logs_at_warning_not_error: retriable
@@ -259,14 +259,18 @@ class TestAsyncErrorHandling:
             mock_request.return_value.__aenter__ = raise_client_error
             mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            caplog.set_level(stdlib_logging.WARNING, logger="polymarket.api.base")
+            caplog.set_level(
+                stdlib_logging.WARNING, logger="polymarket.api.base"
+            )
             with pytest.raises(APIError):
                 await base_client._make_request("GET", "/test")
 
-        conn_records = [r for r in caplog.records if "Connection error" in r.getMessage()]
-        assert (
-            conn_records
-        ), f"expected a Connection error log; got {[r.getMessage() for r in caplog.records]}"
+        conn_records = [
+            r for r in caplog.records if "Connection error" in r.getMessage()
+        ]
+        assert conn_records, (
+            f"expected a Connection error log; got {[r.getMessage() for r in caplog.records]}"
+        )
         for r in conn_records:
             assert r.levelno == stdlib_logging.WARNING, (
                 f"Connection error logged at {r.levelname}; must be WARNING "
@@ -317,116 +321,15 @@ class TestAsyncRateLimiting:
             base_client.rate_limiter, "acquire_async", new_callable=AsyncMock
         ) as mock_acquire:
             with patch.object(base_client.session, "request") as mock_request:
-                mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+                mock_request.return_value.__aenter__ = AsyncMock(
+                    return_value=mock_response
+                )
                 mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
 
                 await base_client._make_request("GET", "/test", rate_limit_key="test")
 
                 # Verify acquire was called
                 mock_acquire.assert_called_once()
-
-
-class TestAsyncCircuitBreaker:
-    """Test circuit breaker integration with async."""
-
-    @pytest.mark.asyncio
-    async def test_circuit_breaker_tracks_failures(self, base_client):
-        """Verify circuit breaker tracks failures via retry strategy."""
-        with patch.object(base_client.session, "request") as mock_request:
-            # Make the context manager itself raise the error
-            async def raise_client_error(*args, **kwargs):
-                raise aiohttp.ClientError("Simulated failure")
-
-            mock_request.return_value.__aenter__ = raise_client_error
-            mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            # First call through retry strategy should fail and increment circuit breaker
-            try:
-                await base_client.get("/test", retry=True)
-            except APIError:
-                pass
-
-            # Circuit breaker should have tracked the failure
-            assert base_client.circuit_breaker._failures > 0
-
-    @pytest.mark.asyncio
-    async def test_circuit_breaker_ignores_non_transient_4xx(self, base_client):
-        """Non-transient caller/data errors must not poison API health state."""
-        mock_response = AsyncMock()
-        mock_response.status = 404
-        mock_response.read = AsyncMock(
-            return_value=b'{"error": "No orderbook exists for the requested token id"}'
-        )
-        mock_response.headers = {}
-
-        with patch.object(base_client.retry_strategy, "_calculate_delay", return_value=0):
-            with patch.object(base_client.session, "request") as mock_request:
-                mock_request.return_value.__aenter__ = AsyncMock(return_value=mock_response)
-                mock_request.return_value.__aexit__ = AsyncMock(return_value=None)
-
-                with pytest.raises(APIError) as exc_info:
-                    await base_client.get(
-                        "/midpoint",
-                        params={"token_id": "stale-token"},
-                        retry=True,
-                    )
-
-        assert exc_info.value.status_code == 404
-        assert mock_request.call_count == 1
-        assert base_client.circuit_breaker.state == "CLOSED"
-        assert base_client.circuit_breaker.failures == 0
-
-
-class TestCircuitBreakerRecovery:
-    """Successful calls separate isolated failures into distinct incidents."""
-
-    def test_direct_breaker_alternating_failure_and_success_never_opens(self):
-        breaker = CircuitBreaker(failure_threshold=3, timeout=60.0, name="direct")
-
-        def fail():
-            raise APIError("isolated upstream failure", status_code=500)
-
-        for _ in range(5):
-            with pytest.raises(APIError):
-                breaker.call(fail)
-
-            assert breaker.call(lambda: "healthy") == "healthy"
-            assert breaker.state == "CLOSED"
-            assert breaker.failures == 0
-
-    def test_sync_retry_alternating_failure_and_success_never_opens(self):
-        breaker = CircuitBreaker(failure_threshold=3, timeout=60.0, name="sync")
-        strategy = RetryStrategy(max_retries=0, jitter=False, circuit_breaker=breaker)
-
-        def fail():
-            raise APIError("isolated upstream failure", status_code=500)
-
-        for _ in range(5):
-            with pytest.raises(APIError):
-                strategy.execute(fail)
-
-            assert strategy.execute(lambda: "healthy") == "healthy"
-            assert breaker.state == "CLOSED"
-            assert breaker.failures == 0
-
-    @pytest.mark.asyncio
-    async def test_async_retry_alternating_failure_and_success_never_opens(self):
-        breaker = CircuitBreaker(failure_threshold=3, timeout=60.0, name="async")
-        strategy = RetryStrategy(max_retries=0, jitter=False, circuit_breaker=breaker)
-
-        async def fail():
-            raise APIError("isolated upstream failure", status_code=500)
-
-        async def succeed():
-            return "healthy"
-
-        for _ in range(5):
-            with pytest.raises(APIError):
-                await strategy.execute_async(fail)
-
-            assert await strategy.execute_async(succeed) == "healthy"
-            assert breaker.state == "CLOSED"
-            assert breaker.failures == 0
 
 
 class TestRequestDeduplication:
@@ -459,7 +362,9 @@ class TestRequestDeduplication:
         def request(*args, **kwargs):
             return self._blocking_response(kwargs["headers"], entered, release)
 
-        with patch.object(base_client.session, "request", side_effect=request) as mock_request:
+        with patch.object(
+            base_client.session, "request", side_effect=request
+        ) as mock_request:
             wallet_a = asyncio.create_task(
                 base_client._make_request(
                     "GET",
@@ -501,7 +406,9 @@ class TestRequestDeduplication:
         def request(*args, **kwargs):
             return self._blocking_response(kwargs["headers"], entered, release)
 
-        with patch.object(base_client.session, "request", side_effect=request) as mock_request:
+        with patch.object(
+            base_client.session, "request", side_effect=request
+        ) as mock_request:
             first = asyncio.create_task(
                 base_client._make_request("GET", "/markets", params={"limit": 25})
             )
@@ -525,7 +432,9 @@ class TestSessionLifecycle:
     @pytest.mark.asyncio
     async def test_session_cleanup_on_close(self, settings):
         """Verify session is properly closed."""
-        client = BaseAPIClient(base_url="https://clob.polymarket.com", settings=settings)
+        client = BaseAPIClient(
+            base_url="https://clob.polymarket.com", settings=settings
+        )
 
         # Session should exist
         assert client.session is not None
@@ -540,7 +449,9 @@ class TestSessionLifecycle:
     @pytest.mark.asyncio
     async def test_multiple_close_calls_safe(self, settings):
         """Verify multiple close() calls don't raise errors."""
-        client = BaseAPIClient(base_url="https://clob.polymarket.com", settings=settings)
+        client = BaseAPIClient(
+            base_url="https://clob.polymarket.com", settings=settings
+        )
 
         await client.close()
         # Should not raise

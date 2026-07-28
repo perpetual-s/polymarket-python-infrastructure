@@ -27,8 +27,8 @@ The client includes:
 - Typed public-flow result objects for trades, price history, and market trade
   events, with request evidence and explicit completeness limits.
 - CLOB WebSocket and RTDS subscription lifecycle handling.
-- Per-endpoint rate limiting, circuit breakers, retries, caching, Prometheus
-  metrics, and credential-redacting logs and exceptions.
+- Per-endpoint rate limiting, bounded retries, caching, Prometheus metrics,
+  and credential-redacting logs and exceptions.
 
 The package is async-first. Network and wallet methods must be awaited; local
 subscription registration and state-inspection helpers are synchronous.
@@ -144,8 +144,6 @@ identity truth.
   proof by itself. Use exact order lookup plus authenticated trade history.
 - Makers currently have zero platform fee; taker estimates use the market's
   economic fee schedule.
-- Batch order placement supports at most 15 orders and accepts a
-  `pre_submit` callback for crash-durable order identity.
 
 ## Typed result surfaces
 

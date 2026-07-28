@@ -2,8 +2,7 @@
 
 Both Polymarket WebSocket surfaces use ``websocket-client`` under the hood. Its
 recoverable remote-close events can arrive through either our callbacks or the
-library's own logger, so keep the marker-evidence severity contract in one
-place.
+library's own logger, so keep transient-disconnect severity in one place.
 """
 
 from __future__ import annotations

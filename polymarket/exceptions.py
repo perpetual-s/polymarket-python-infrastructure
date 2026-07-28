@@ -63,12 +63,6 @@ class TimeoutError(PolymarketError):
     pass
 
 
-class CircuitBreakerError(PolymarketError):
-    """Circuit breaker is open, requests blocked."""
-
-    pass
-
-
 # Trading-specific exceptions
 class TradingError(PolymarketError):
     """Base exception for trading operations."""

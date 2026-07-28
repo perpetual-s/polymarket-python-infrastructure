@@ -331,19 +331,24 @@ async def test_clob_batch_orderbook_rejects_invalid_level_instead_of_partial_boo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("metadata", ["tick", "fee", "neg_risk"])
-async def test_order_metadata_transport_failure_is_not_cached_as_default(metadata: str) -> None:
+async def test_order_metadata_transport_failure_is_not_cached_as_default(
+    metadata: str,
+) -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     token_id = "token-transport-failure"
     if metadata == "tick":
-        client.market_clob.get_tick_size = AsyncMock(side_effect=TradingError("tick unavailable"))
+        client.market_clob.get_tick_size = AsyncMock(
+            side_effect=TradingError("tick unavailable")
+        )
         resolver = client._resolve_tick_size
         cache_getter = client.metadata_cache.get_tick_size
     elif metadata == "fee":
-        client.market_clob.get_fee_rate_bps = AsyncMock(side_effect=TradingError("fee unavailable"))
+        client.market_clob.get_fee_rate_bps = AsyncMock(
+            side_effect=TradingError("fee unavailable")
+        )
         resolver = client._resolve_fee_rate
         cache_getter = client.metadata_cache.get_fee_rate
     else:
@@ -365,7 +370,6 @@ async def test_order_metadata_transport_failure_is_not_cached_as_default(metadat
 async def test_order_tick_refresh_overrides_stale_cached_tick_change() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     client.metadata_cache.set_tick_size("token-1", Decimal("0.01"))
@@ -378,7 +382,9 @@ async def test_order_tick_refresh_overrides_stale_cached_tick_change() -> None:
 
 
 @pytest.mark.parametrize("price", ["0.002", "0.936", "0.998"])
-def test_order_request_accepts_any_price_strictly_between_zero_and_one(price: str) -> None:
+def test_order_request_accepts_any_price_strictly_between_zero_and_one(
+    price: str,
+) -> None:
     order = OrderRequest(
         token_id="123",
         price=Decimal(price),
@@ -550,16 +556,16 @@ def test_request_preserves_sub_tick_precision_until_directional_alignment(
         side=side,
     )
     assert order.price == price
-    assert PolymarketClient._normalize_order_for_tick(
-        order, Decimal("0.0001")
-    ).price == expected
+    assert (
+        PolymarketClient._normalize_order_for_tick(order, Decimal("0.0001")).price
+        == expected
+    )
 
 
 @pytest.mark.asyncio
 async def test_position_balance_propagates_incomplete_observation() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     client.key_manager.get_wallet = MagicMock(
@@ -582,7 +588,6 @@ async def test_position_balance_propagates_incomplete_observation() -> None:
 async def test_position_balance_complete_absence_is_authoritative_zero() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     funder = "0x" + "2" * 40
@@ -596,10 +601,9 @@ async def test_position_balance_complete_absence_is_authoritative_zero() -> None
         return_value=[SimpleNamespace(asset="other-token", size=Decimal("0.5"))]
     )
     try:
-        assert (
-            await client.get_position_balance("token-1", wallet_id="WALLET_TEST")
-            == Decimal("0")
-        )
+        assert await client.get_position_balance(
+            "token-1", wallet_id="WALLET_TEST"
+        ) == Decimal("0")
         client.data.get_positions_complete.assert_awaited_once_with(
             user=funder,
             size_threshold=0,
@@ -615,24 +619,24 @@ async def test_gamma_parses_fee_schedule_exponent_and_rate() -> None:
     try:
         market = api._parse_market_payload(
             {
-            "id": "market-1",
-            "question": "Question?",
-            "slug": "question",
-            "conditionId": "condition-1",
-            "category": "crypto",
-            "outcomes": ["Yes", "No"],
-            "outcomePrices": ["0.5", "0.5"],
-            "clobTokenIds": ["token-1", "token-2"],
-            "active": True,
-            "closed": False,
-            "feesEnabled": True,
-            "takerBaseFee": 1000,
-            "feeSchedule": {
-                "rate": 0.05,
-                "exponent": 2,
-                "takerOnly": True,
-                "rebateRate": 0.25,
-            },
+                "id": "market-1",
+                "question": "Question?",
+                "slug": "question",
+                "conditionId": "condition-1",
+                "category": "crypto",
+                "outcomes": ["Yes", "No"],
+                "outcomePrices": ["0.5", "0.5"],
+                "clobTokenIds": ["token-1", "token-2"],
+                "active": True,
+                "closed": False,
+                "feesEnabled": True,
+                "takerBaseFee": 1000,
+                "feeSchedule": {
+                    "rate": 0.05,
+                    "exponent": 2,
+                    "takerOnly": True,
+                    "rebateRate": 0.25,
+                },
             }
         )
 
@@ -649,7 +653,6 @@ async def test_gamma_parses_fee_schedule_exponent_and_rate() -> None:
 async def test_client_fee_info_uses_clob_fd_schedule_not_raw_base_fee() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     client.market_clob.get_fee_rate_bps = AsyncMock(return_value=1000)
@@ -673,10 +676,11 @@ async def test_client_fee_info_uses_clob_fd_schedule_not_raw_base_fee() -> None:
 
 
 @pytest.mark.asyncio
-async def test_client_treats_missing_clob_fd_as_fee_free_only_with_zero_base_fee() -> None:
+async def test_client_treats_missing_clob_fd_as_fee_free_only_with_zero_base_fee() -> (
+    None
+):
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     client.market_clob.get_fee_rate_bps = AsyncMock(return_value=0)
@@ -694,7 +698,6 @@ async def test_client_treats_missing_clob_fd_as_fee_free_only_with_zero_base_fee
 async def test_client_rejects_missing_clob_fd_when_base_fee_is_nonzero() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     client.market_clob.get_fee_rate_bps = AsyncMock(return_value=1000)
@@ -710,7 +713,6 @@ async def test_client_rejects_missing_clob_fd_when_base_fee_is_nonzero() -> None
 async def test_buy_preflight_reserves_fee_aware_collateral() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     order = OrderRequest(
@@ -738,10 +740,11 @@ async def test_buy_preflight_reserves_fee_aware_collateral() -> None:
 
 
 @pytest.mark.asyncio
-async def test_buy_preflight_metadata_failure_happens_before_balance_or_reservation() -> None:
+async def test_buy_preflight_metadata_failure_happens_before_balance_or_reservation() -> (
+    None
+):
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     order = OrderRequest(
@@ -750,7 +753,9 @@ async def test_buy_preflight_metadata_failure_happens_before_balance_or_reservat
         size=Decimal("10"),
         side=Side.BUY,
     )
-    client.get_fee_info = AsyncMock(side_effect=TradingError("fee metadata unavailable"))
+    client.get_fee_info = AsyncMock(
+        side_effect=TradingError("fee metadata unavailable")
+    )
     client.get_balances = AsyncMock()
     try:
         with pytest.raises(TradingError, match="metadata unavailable"):
@@ -762,10 +767,11 @@ async def test_buy_preflight_metadata_failure_happens_before_balance_or_reservat
 
 
 @pytest.mark.asyncio
-async def test_place_order_uses_one_normalized_price_for_reservation_and_signature() -> None:
+async def test_place_order_uses_one_normalized_price_for_reservation_and_signature() -> (
+    None
+):
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     wallet = SimpleNamespace(
@@ -779,9 +785,7 @@ async def test_place_order_uses_one_normalized_price_for_reservation_and_signatu
     )
     client.key_manager.get_wallet = MagicMock(return_value=wallet)
     client.key_manager.has_api_credentials = MagicMock(return_value=True)
-    client.get_fee_info = AsyncMock(
-        return_value=FeeInfo(base_fee_bps=0, rate_bps=0)
-    )
+    client.get_fee_info = AsyncMock(return_value=FeeInfo(base_fee_bps=0, rate_bps=0))
     client.get_balances = AsyncMock(
         return_value=SimpleNamespace(collateral=Decimal("100"), tokens={})
     )
@@ -816,9 +820,7 @@ async def test_place_order_uses_one_normalized_price_for_reservation_and_signatu
 
         signed_order = client.clob.post_order.await_args.kwargs["signed_order"]
         assert signed_order["signedPrice"] == "0.936"
-        assert await client.get_reserved_balance("WALLET_TEST") == Decimal(
-            "9.360000"
-        )
+        assert await client.get_reserved_balance("WALLET_TEST") == Decimal("9.360000")
         assert client.order_builder.build_order.call_args.kwargs[
             "order"
         ].price == Decimal("0.936")
@@ -830,7 +832,6 @@ async def test_place_order_uses_one_normalized_price_for_reservation_and_signatu
 async def test_sell_fee_metadata_failure_suppresses_single_submission() -> None:
     client = PolymarketClient(
         enable_rate_limiting=False,
-        enable_circuit_breaker=False,
         enable_metrics=False,
     )
     client.key_manager.get_wallet = MagicMock(return_value=SimpleNamespace())
@@ -855,42 +856,5 @@ async def test_sell_fee_metadata_failure_suppresses_single_submission() -> None:
             )
         client._build_signed_order.assert_not_awaited()
         client.clob.post_order.assert_not_awaited()
-    finally:
-        await client.close()
-
-
-@pytest.mark.asyncio
-async def test_sell_fee_metadata_failure_suppresses_all_sell_batch() -> None:
-    client = PolymarketClient(
-        enable_rate_limiting=False,
-        enable_circuit_breaker=False,
-        enable_metrics=False,
-    )
-    client.key_manager.get_wallet = MagicMock(return_value=SimpleNamespace())
-    client.key_manager.has_api_credentials = MagicMock(return_value=True)
-    client._resolve_tick_size = AsyncMock(return_value=Decimal("0.01"))
-    client.get_fee_info = AsyncMock(
-        side_effect=TradingError("fee metadata unavailable")
-    )
-    client._build_signed_order = AsyncMock()
-    client.clob.post_orders_batch = AsyncMock()
-    orders = [
-        OrderRequest(
-            token_id=str(12345 + index),
-            price=Decimal("0.50"),
-            size=Decimal("10"),
-            side=Side.SELL,
-        )
-        for index in range(2)
-    ]
-    try:
-        with pytest.raises(TradingError, match="fee metadata unavailable"):
-            await client.place_orders_batch(
-                orders,
-                wallet_id="WALLET_TEST",
-                skip_balance_check=True,
-            )
-        client._build_signed_order.assert_not_awaited()
-        client.clob.post_orders_batch.assert_not_awaited()
     finally:
         await client.close()

@@ -41,7 +41,6 @@ does not require a wallet, API credentials, or Web3.
 | `06_real_time_streams.py` | RTDS streams and callbacks | Read-only |
 | `01_simple_trading.py` | Build and inspect a limit-order request | Preview only |
 | `10_production_safe_trading.py` | Explicitly gated authenticated submission | Can submit a real order |
-| `03_batch_orders.py` | Authenticated batch-order mechanics | Can submit real orders |
 | `11_ctf_neg_risk_features.py` | Fee utilities and optional CTF adapter overview | On-chain methods can move assets |
 | `02_multi_wallet.py` | Multi-wallet data aggregation | Depends on configured wallets |
 | `08_phase4_5_6_features.py` | Metrics, health, and resilience surfaces | Review before running |

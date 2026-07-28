@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # Try to import prometheus_client, but don't fail if not installed
 try:
     from prometheus_client import Counter, Histogram, Gauge, start_http_server
+
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
@@ -28,7 +29,6 @@ class Metrics:
     - API request latency
     - Order placement success/failure
     - Rate limiter queue depth
-    - Circuit breaker state
     - Balance levels
     """
 
@@ -47,98 +47,86 @@ class Metrics:
 
         # API metrics
         self.api_requests = Counter(
-            'polymarket_api_requests_total',
-            'Total API requests',
-            ['method', 'endpoint', 'status']
+            "polymarket_api_requests_total",
+            "Total API requests",
+            ["method", "endpoint", "status"],
         )
 
         self.api_latency = Histogram(
-            'polymarket_api_latency_seconds',
-            'API request latency',
-            ['method', 'endpoint']
+            "polymarket_api_latency_seconds",
+            "API request latency",
+            ["method", "endpoint"],
         )
 
         # Trading metrics
         self.orders_placed = Counter(
-            'polymarket_orders_placed_total',
-            'Total orders placed',
-            ['wallet', 'side', 'status']
+            "polymarket_orders_placed_total",
+            "Total orders placed",
+            ["wallet", "side", "status"],
         )
 
         self.order_latency = Histogram(
-            'polymarket_order_latency_seconds',
-            'Order placement latency',
-            ['wallet']
+            "polymarket_order_latency_seconds", "Order placement latency", ["wallet"]
         )
 
         # System metrics
         self.rate_limit_queue = Gauge(
-            'polymarket_rate_limit_queue_depth',
-            'Rate limiter queue depth',
-            ['endpoint']
+            "polymarket_rate_limit_queue_depth",
+            "Rate limiter queue depth",
+            ["endpoint"],
         )
 
-        self.circuit_breaker_state = Gauge(
-            'polymarket_circuit_breaker_state',
-            'Circuit breaker state (0=closed, 1=open, 2=half-open)',
-            ['name']
-        )
-
-        self.balance_usdc = Gauge(
-            'polymarket_balance_usdc',
-            'USDC balance',
-            ['wallet']
-        )
+        self.balance_usdc = Gauge("polymarket_balance_usdc", "USDC balance", ["wallet"])
 
         # WebSocket metrics (v3.2)
         self.websocket_messages = Counter(
-            'polymarket_websocket_messages_total',
-            'Total WebSocket messages received',
-            ['channel', 'event_type']
+            "polymarket_websocket_messages_total",
+            "Total WebSocket messages received",
+            ["channel", "event_type"],
         )
 
         self.websocket_connections = Gauge(
-            'polymarket_websocket_connections_active',
-            'Active WebSocket connections',
-            ['channel']
+            "polymarket_websocket_connections_active",
+            "Active WebSocket connections",
+            ["channel"],
         )
 
         self.websocket_reconnections = Counter(
-            'polymarket_websocket_reconnections_total',
-            'Total WebSocket reconnections',
-            ['channel']
+            "polymarket_websocket_reconnections_total",
+            "Total WebSocket reconnections",
+            ["channel"],
         )
 
         self.websocket_processing_time = Histogram(
-            'polymarket_websocket_processing_seconds',
-            'Time to process WebSocket message',
-            ['channel', 'event_type']
+            "polymarket_websocket_processing_seconds",
+            "Time to process WebSocket message",
+            ["channel", "event_type"],
         )
 
         self.websocket_uptime = Gauge(
-            'polymarket_websocket_uptime_seconds',
-            'WebSocket connection uptime',
-            ['channel']
+            "polymarket_websocket_uptime_seconds",
+            "WebSocket connection uptime",
+            ["channel"],
         )
 
         # WebSocket queue metrics (v3.3)
         self.websocket_queue_drops = Counter(
-            'polymarket_websocket_queue_drops_total',
-            'Total messages dropped due to full queue',
-            ['channel']
+            "polymarket_websocket_queue_drops_total",
+            "Total messages dropped due to full queue",
+            ["channel"],
         )
 
         self.websocket_queue_lag = Histogram(
-            'polymarket_websocket_queue_lag_seconds',
-            'Queue processing lag (time from enqueue to dequeue)',
-            ['channel']
+            "polymarket_websocket_queue_lag_seconds",
+            "Queue processing lag (time from enqueue to dequeue)",
+            ["channel"],
         )
 
         # WebSocket deduplication metrics (v3.5 - L2)
         self.websocket_duplicates = Counter(
-            'polymarket_websocket_duplicates_total',
-            'Total duplicate messages blocked by deduplication',
-            ['channel']
+            "polymarket_websocket_duplicates_total",
+            "Total duplicate messages blocked by deduplication",
+            ["channel"],
         )
 
         # Start metrics server
@@ -152,7 +140,9 @@ class Metrics:
     def track_api_request(self, method: str, endpoint: str, status: str) -> None:
         """Record API request."""
         if self.enabled:
-            self.api_requests.labels(method=method, endpoint=endpoint, status=status).inc()
+            self.api_requests.labels(
+                method=method, endpoint=endpoint, status=status
+            ).inc()
 
     def track_api_latency(self, method: str, endpoint: str, duration: float) -> None:
         """Record API latency."""
@@ -174,12 +164,6 @@ class Metrics:
         if self.enabled:
             self.rate_limit_queue.labels(endpoint=endpoint).set(depth)
 
-    def set_circuit_breaker_state(self, name: str, state: str) -> None:
-        """Set circuit breaker state."""
-        if self.enabled:
-            state_map = {"CLOSED": 0, "OPEN": 1, "HALF_OPEN": 2}
-            self.circuit_breaker_state.labels(name=name).set(state_map.get(state, 0))
-
     def set_balance(self, wallet: str, usdc: float) -> None:
         """Set USDC balance."""
         if self.enabled:
@@ -192,15 +176,21 @@ class Metrics:
         if self.enabled:
             self.websocket_messages.labels(channel=channel, event_type=event_type).inc()
 
-    def track_websocket_processing(self, channel: str, event_type: str, duration: float) -> None:
+    def track_websocket_processing(
+        self, channel: str, event_type: str, duration: float
+    ) -> None:
         """Record WebSocket message processing time."""
         if self.enabled:
-            self.websocket_processing_time.labels(channel=channel, event_type=event_type).observe(duration)
+            self.websocket_processing_time.labels(
+                channel=channel, event_type=event_type
+            ).observe(duration)
 
     def set_websocket_connection(self, channel: str, connected: bool) -> None:
         """Set WebSocket connection state."""
         if self.enabled:
-            self.websocket_connections.labels(channel=channel).set(1 if connected else 0)
+            self.websocket_connections.labels(channel=channel).set(
+                1 if connected else 0
+            )
 
     def track_websocket_duplicate(self, channel: str) -> None:
         """Record duplicate WebSocket message blocked (v3.5 - L2)."""
@@ -242,6 +232,7 @@ def get_metrics(enabled: bool = True, port: int = 9090) -> Metrics:
 
 def track_time(metric_name: str, **labels):
     """Decorator to track function execution time."""
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -258,12 +249,13 @@ def track_time(metric_name: str, **labels):
                     _metrics.track_api_latency(
                         labels.get("method", "unknown"),
                         labels.get("endpoint", "unknown"),
-                        duration
+                        duration,
                     )
                 elif metric_name == "order":
                     _metrics.track_order_latency(
-                        labels.get("wallet", "unknown"),
-                        duration
+                        labels.get("wallet", "unknown"), duration
                     )
+
         return wrapper
+
     return decorator

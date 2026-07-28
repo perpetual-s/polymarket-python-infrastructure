@@ -8,12 +8,11 @@ Tests:
 - L3: WebSocket compression
 """
 
-import asyncio
 import json
 import logging
 import threading
 import time
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -563,7 +562,10 @@ class TestTransientConnectionLogging:
 
         with caplog.at_level(logging.WARNING, logger="polymarket.api.websocket"):
             ws._on_error(
-                None, WebSocketConnectionClosedException("Connection to remote host was lost.")
+                None,
+                WebSocketConnectionClosedException(
+                    "Connection to remote host was lost."
+                ),
             )
 
         assert any(
@@ -573,7 +575,9 @@ class TestTransientConnectionLogging:
         )
         assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
-    def test_run_forever_remote_host_lost_logs_warning_not_error(self, monkeypatch, caplog):
+    def test_run_forever_remote_host_lost_logs_warning_not_error(
+        self, monkeypatch, caplog
+    ):
         """A recoverable run_forever disconnect is WARNING, not ERROR."""
         import websocket
 
@@ -616,7 +620,9 @@ class TestTransientConnectionLogging:
         )
 
         with caplog.at_level(logging.WARNING, logger="websocket"):
-            logging.getLogger("websocket").error("Connection to remote host was lost. - goodbye")
+            logging.getLogger("websocket").error(
+                "Connection to remote host was lost. - goodbye"
+            )
 
         assert any(
             record.name == "websocket"
@@ -640,7 +646,8 @@ class TestTransientConnectionLogging:
             ws._on_error(None, Exception("ping/pong timed out"))
 
         assert any(
-            record.levelno == logging.WARNING and "ping/pong timed out" in record.getMessage()
+            record.levelno == logging.WARNING
+            and "ping/pong timed out" in record.getMessage()
             for record in caplog.records
         )
         assert not any(record.levelno >= logging.ERROR for record in caplog.records)
@@ -656,7 +663,8 @@ class TestTransientConnectionLogging:
             ws._on_error(None, Exception("Connection timed out"))
 
         assert any(
-            record.levelno == logging.WARNING and "Connection timed out" in record.getMessage()
+            record.levelno == logging.WARNING
+            and "Connection timed out" in record.getMessage()
             for record in caplog.records
         )
         assert not any(record.levelno >= logging.ERROR for record in caplog.records)
@@ -708,7 +716,9 @@ class TestTransientConnectionLogging:
         )
 
         with caplog.at_level(logging.WARNING, logger="websocket"):
-            logging.getLogger("websocket").error("fin=1 opcode=8 data=b'\\x03\\xe9' - goodbye")
+            logging.getLogger("websocket").error(
+                "fin=1 opcode=8 data=b'\\x03\\xe9' - goodbye"
+            )
 
         assert any(
             record.name == "websocket"
@@ -732,7 +742,8 @@ class TestTransientConnectionLogging:
             ws._on_error(None, OSError(54, "Connection reset by peer"))
 
         assert any(
-            record.levelno == logging.WARNING and "Connection reset by peer" in record.getMessage()
+            record.levelno == logging.WARNING
+            and "Connection reset by peer" in record.getMessage()
             for record in caplog.records
         )
         assert not any(record.levelno >= logging.ERROR for record in caplog.records)
@@ -758,7 +769,8 @@ class TestTransientConnectionLogging:
             for record in caplog.records
         )
         assert not any(
-            record.name == "polymarket.api.websocket" and record.levelno >= logging.ERROR
+            record.name == "polymarket.api.websocket"
+            and record.levelno >= logging.ERROR
             for record in caplog.records
         )
 
@@ -875,8 +887,8 @@ class TestConfigurablePingIntervals:
         assert ws.ping_timeout == 20
 
 
-class TestQueueDropCircuitBreaker:
-    """Test queue drop circuit breaker (M2)."""
+class TestQueueDropThreshold:
+    """Test the configurable queue drop threshold."""
 
     def test_default_queue_drop_threshold(self):
         """Test default queue drop threshold."""

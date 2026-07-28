@@ -22,7 +22,7 @@ import orjson  # Fast JSON parser (30-50% faster than stdlib, releases GIL)
 from ..config import PolymarketSettings
 from ..exceptions import APIError, AuthenticationError, RateLimitError, TimeoutError
 from ..utils.rate_limiter import RateLimiter
-from ..utils.retry import CircuitBreaker, RetryStrategy
+from ..utils.retry import RetryStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ class BaseAPIClient:
         base_url: str,
         settings: PolymarketSettings,
         rate_limiter: Optional[RateLimiter] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize base API client.
@@ -48,12 +47,10 @@ class BaseAPIClient:
             base_url: API base URL
             settings: Client settings
             rate_limiter: Optional rate limiter
-            circuit_breaker: Optional circuit breaker
         """
         self.base_url = base_url
         self.settings = settings
         self.rate_limiter = rate_limiter
-        self.circuit_breaker = circuit_breaker
 
         # Create retry strategy
         self.retry_strategy = RetryStrategy(
@@ -61,7 +58,6 @@ class BaseAPIClient:
             base_delay=1.0,
             max_delay=settings.retry_backoff_max,
             exponential_base=settings.retry_backoff_base,
-            circuit_breaker=circuit_breaker,
         )
 
         # Create aiohttp session with optimized connection pooling
@@ -110,14 +106,19 @@ class BaseAPIClient:
             return orjson.dumps(converted).decode("utf-8")
 
         self.session = aiohttp.ClientSession(
-            connector=connector, timeout=timeout, headers=headers, json_serialize=serialize_json
+            connector=connector,
+            timeout=timeout,
+            headers=headers,
+            json_serialize=serialize_json,
         )
 
         # Request ID tracking
         self._request_counter = 0
 
         # Request deduplication (prevents redundant concurrent API calls)
-        self._inflight_requests: Dict[str, Tuple[asyncio.Event, Any, Optional[Exception]]] = {}
+        self._inflight_requests: Dict[
+            str, Tuple[asyncio.Event, Any, Optional[Exception]]
+        ] = {}
         self._inflight_lock = asyncio.Lock()
 
         # Cleanup task for request deduplication
@@ -148,18 +149,24 @@ class BaseAPIClient:
         if params:
             # Sort params for deterministic ordering
             # orjson.dumps() returns bytes, decode to str for cache key
-            sorted_params = orjson.dumps(params, option=orjson.OPT_SORT_KEYS).decode("utf-8")
+            sorted_params = orjson.dumps(params, option=orjson.OPT_SORT_KEYS).decode(
+                "utf-8"
+            )
             key_parts.append(sorted_params)
 
         if json_data:
             # Sort json_data for deterministic ordering
             # orjson.dumps() returns bytes, decode to str for cache key
-            sorted_json = orjson.dumps(json_data, option=orjson.OPT_SORT_KEYS).decode("utf-8")
+            sorted_json = orjson.dumps(json_data, option=orjson.OPT_SORT_KEYS).decode(
+                "utf-8"
+            )
             key_parts.append(sorted_json)
 
         # Hash for efficiency (instead of storing full string)
         key_str = "|".join(key_parts)
-        return hashlib.sha256(key_str.encode()).hexdigest()[:16]  # First 16 chars sufficient
+        return hashlib.sha256(key_str.encode()).hexdigest()[
+            :16
+        ]  # First 16 chars sufficient
 
     async def _cleanup_inflight_request(self, request_key: str) -> None:
         """
@@ -257,7 +264,9 @@ class BaseAPIClient:
 
             # If we get here, the request failed or timed out
             # Fall through to make the request ourselves
-            logger.warning(f"Deduplication wait timed out for {method} {path}, retrying")
+            logger.warning(
+                f"Deduplication wait timed out for {method} {path}, retrying"
+            )
 
         url = urljoin(self.base_url, path)
 
@@ -348,10 +357,9 @@ class BaseAPIClient:
 
         except asyncio.TimeoutError as e:
             # Transient: classified as retriable by RetryStrategy. The exception
-            # still propagates to the caller (which decides to retry or skip);
-            # the inner log is operator evidence noise unless it's terminal.
-            # Marker contract refuses ERROR; downgrade to WARNING (same pattern
-            # as Phase 2's WebSocket transient-close fix in 06bf0898/bf0645be).
+            # still propagates to the caller (which decides to retry or skip).
+            # Log the retriable inner failure at WARNING; the terminal caller
+            # owns any ERROR.
             logger.warning(f"Request timeout: {method} {url}")
             error = TimeoutError(f"Request timeout: {e}")
             raise error
@@ -386,7 +394,9 @@ class BaseAPIClient:
                         event.set()
 
                 # Schedule cleanup task
-                cleanup_task = asyncio.create_task(self._cleanup_inflight_request(request_key))
+                cleanup_task = asyncio.create_task(
+                    self._cleanup_inflight_request(request_key)
+                )
                 self._cleanup_tasks[request_key] = cleanup_task
 
     async def get(
@@ -421,7 +431,11 @@ class BaseAPIClient:
             )
         else:
             return await self._make_request(
-                "GET", path, headers=headers, params=params, rate_limit_key=rate_limit_key
+                "GET",
+                path,
+                headers=headers,
+                params=params,
+                rate_limit_key=rate_limit_key,
             )
 
     async def post(
@@ -520,7 +534,7 @@ class BaseAPIClient:
         try:
             # Quick connectivity check (no auth required)
             start = time.time()
-            response = await self._make_request("GET", "/", rate_limit_key=None)
+            await self._make_request("GET", "/", rate_limit_key=None)
             latency = time.time() - start
 
             return {

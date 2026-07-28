@@ -2,7 +2,6 @@
 Test Polymarket public API (no authentication required).
 """
 
-import os
 import sys
 import asyncio
 from pathlib import Path
@@ -28,7 +27,6 @@ async def test_public_api():
     print("\n1. Initializing client...")
     client = PolymarketClient(
         enable_rate_limiting=True,
-        enable_circuit_breaker=True
     )
     print(f"✓ Client initialized (chain_id={client.settings.chain_id})")
 
@@ -44,8 +42,10 @@ async def test_public_api():
             for i, market in enumerate(markets[:5], 1):
                 print(f"{i}. {market.question}")
                 print(f"   Slug: {market.slug}")
-                print(f"   Outcomes: {len(market.outcomes) if hasattr(market, 'outcomes') and market.outcomes else 'N/A'}")
-                if hasattr(market, 'volume') and market.volume:
+                print(
+                    f"   Outcomes: {len(market.outcomes) if hasattr(market, 'outcomes') and market.outcomes else 'N/A'}"
+                )
+                if hasattr(market, "volume") and market.volume:
                     print(f"   Volume: ${market.volume:,.0f}")
                 print()
 
@@ -53,6 +53,7 @@ async def test_public_api():
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Test 2: Search markets
@@ -70,6 +71,7 @@ async def test_public_api():
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Test 3: Get market by slug
@@ -85,14 +87,15 @@ async def test_public_api():
             print(f"✓ Fetched market: {market.question}")
             print(f"  ID: {market.id if hasattr(market, 'id') else 'N/A'}")
             print(f"  Slug: {market.slug}")
-            if hasattr(market, 'tokens') and market.tokens:
+            if hasattr(market, "tokens") and market.tokens:
                 print(f"  Token IDs: {len(market.tokens)} tokens")
                 print(f"    - {market.tokens[0][:20]}...")
-            if hasattr(market, 'outcomes') and market.outcomes:
+            if hasattr(market, "outcomes") and market.outcomes:
                 print(f"  Outcomes: {', '.join(market.outcomes)}")
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Test 4: Get orderbook
@@ -101,7 +104,7 @@ async def test_public_api():
     print("=" * 60)
     try:
         markets = await client.get_markets(limit=1, active=True)
-        if markets and hasattr(markets[0], 'tokens') and markets[0].tokens:
+        if markets and hasattr(markets[0], "tokens") and markets[0].tokens:
             token_id = markets[0].tokens[0]
 
             print(f"Fetching orderbook for: {markets[0].question}")
@@ -109,37 +112,38 @@ async def test_public_api():
 
             orderbook = await client.get_orderbook(token_id)
 
-            print(f"✓ Orderbook fetched:")
+            print("✓ Orderbook fetched:")
             if orderbook.best_bid is not None:
                 print(f"  Best Bid:  ${orderbook.best_bid:.4f}")
             else:
-                print(f"  Best Bid:  No bids")
+                print("  Best Bid:  No bids")
 
             if orderbook.best_ask is not None:
                 print(f"  Best Ask:  ${orderbook.best_ask:.4f}")
             else:
-                print(f"  Best Ask:  No asks")
+                print("  Best Ask:  No asks")
 
             if orderbook.spread is not None:
                 print(f"  Spread:    ${orderbook.spread:.4f}")
 
-            print(f"  Order Book Depth:")
+            print("  Order Book Depth:")
             print(f"    Bids: {len(orderbook.bids)}")
             print(f"    Asks: {len(orderbook.asks)}")
 
             if orderbook.bids:
-                print(f"\n  Top 3 Bids:")
+                print("\n  Top 3 Bids:")
                 for i, (price, size) in enumerate(orderbook.bids[:3], 1):
                     print(f"    {i}. ${price:.4f} x {size:.2f} shares")
 
             if orderbook.asks:
-                print(f"\n  Top 3 Asks:")
+                print("\n  Top 3 Asks:")
                 for i, (price, size) in enumerate(orderbook.asks[:3], 1):
                     print(f"    {i}. ${price:.4f} x {size:.2f} shares")
 
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Test 5: Get midpoint
@@ -148,7 +152,7 @@ async def test_public_api():
     print("=" * 60)
     try:
         markets = await client.get_markets(limit=1, active=True)
-        if markets and hasattr(markets[0], 'tokens') and markets[0].tokens:
+        if markets and hasattr(markets[0], "tokens") and markets[0].tokens:
             token_id = markets[0].tokens[0]
 
             midpoint = await client.get_midpoint(token_id)
@@ -163,7 +167,12 @@ async def test_public_api():
     try:
         markets = await client.get_markets(limit=3, active=True)
         if markets:
-            token_ids = [token for m in markets if hasattr(m, 'tokens') and m.tokens for token in m.tokens[:1]]
+            token_ids = [
+                token
+                for m in markets
+                if hasattr(m, "tokens") and m.tokens
+                for token in m.tokens[:1]
+            ]
 
             if token_ids:
                 print(f"Fetching orderbooks for {len(token_ids)} tokens...\n")
@@ -173,11 +182,20 @@ async def test_public_api():
                 print(f"✓ Fetched {len(books)} orderbooks")
                 for i, (token_id, book) in enumerate(list(books.items())[:3], 1):
                     print(f"\n  {i}. Token: {token_id[:20]}...")
-                    print(f"     Best Bid: ${book.best_bid:.4f}" if book.best_bid else "     No bids")
-                    print(f"     Best Ask: ${book.best_ask:.4f}" if book.best_ask else "     No asks")
+                    print(
+                        f"     Best Bid: ${book.best_bid:.4f}"
+                        if book.best_bid
+                        else "     No bids"
+                    )
+                    print(
+                        f"     Best Ask: ${book.best_ask:.4f}"
+                        if book.best_ask
+                        else "     No asks"
+                    )
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
 
     print("\n" + "=" * 60)
@@ -197,6 +215,7 @@ async def test_public_api():
 if __name__ == "__main__":
     # Load .env
     from dotenv import load_dotenv
+
     load_dotenv()
 
     asyncio.run(test_public_api())

@@ -12,35 +12,29 @@ Adapted from Polymarket's official clients (MIT License):
 
 from .client import PolymarketClient
 
+# CTF (Conditional Token Framework) - Neg-Risk adapter
+from .ctf import (
+    CTF_ADDRESS,
+    NEG_RISK_ADAPTER,
+    NEG_RISK_EXCHANGE,
+    ConversionCalculator,
+    NegRiskAdapter,
+    is_safe_to_trade,
+)
 from .exceptions import (
     APIError,
     AuthenticationError,
-    BalanceTrackingError,
-    CircuitBreakerError,
-    FOKNotFilledError,
-    InsufficientAllowanceError,
     InsufficientBalanceError,
     InvalidOrderError,
-    MarketDataError,
-    MarketNotFoundError,
     MarketNotReadyError,
-    OrderBookError,
-    OrderDelayedError,
-    OrderExpiredError,
-    OrderNotFoundError,
     OrderRejectedError,
     PolymarketError,
     PriceUnavailableError,
     RateLimitError,
-    TickSizeError,
     TimeoutError,
     TradingError,
     ValidationError,
-    WebSocketConnectionError,
-    WebSocketDisconnectedError,
-    WebSocketError,
 )
-from .market_manager import MarketManager, MarketManagerConfig, MarketStats
 from .models import (
     Balance,
     ClosedPosition,
@@ -48,7 +42,6 @@ from .models import (
     FeeSchedule,
     LeaderboardTrader,
     Market,
-    MarketOrderRequest,
     Order,
     OrderBook,
     OrderRequest,
@@ -74,15 +67,10 @@ from .wallet_identity import (
 from .utils.fees import (
     calculate_net_cost,
     calculate_order_fee,
-    calculate_profit_after_fees,
-    compare_fees_buy_vs_sell,
-    estimate_breakeven_exit,
-    get_effective_spread,
 )
 
 # Order validation utilities
 from .utils.validation import (
-    check_order_profitability,
     validate_balance,
     validate_fee_rate,
     validate_neg_risk_market,
@@ -95,47 +83,15 @@ from .utils.validation import (
 
 __version__ = "3.7.0"
 
-_CTF_EXPORTS = frozenset(
-    {
-        "CTF_ADDRESS",
-        "NEG_RISK_ADAPTER",
-        "NEG_RISK_EXCHANGE",
-        "ConversionCalculator",
-        "NegRiskAdapter",
-        "is_safe_to_trade",
-    }
-)
-
-
-def __getattr__(name: str):
-    """Load optional on-chain CTF/Web3 support only when it is requested."""
-    if name not in _CTF_EXPORTS:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from . import ctf
-
-    value = getattr(ctf, name)
-    globals()[name] = value
-    return value
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | _CTF_EXPORTS)
-
-
 __all__ = [
     # Main client
     "PolymarketClient",
-    # Market manager
-    "MarketManager",
-    "MarketManagerConfig",
-    "MarketStats",
     # Types
     "Side",
     "OrderType",
     "OrderStatus",
     "SignatureType",
     "OrderRequest",
-    "MarketOrderRequest",
     "ClosedPosition",
     "OrderResponse",
     "Order",
@@ -161,26 +117,12 @@ __all__ = [
     "ValidationError",
     "RateLimitError",
     "TimeoutError",
-    "CircuitBreakerError",
     "TradingError",
-    "BalanceTrackingError",
-    "InsufficientAllowanceError",
     "InsufficientBalanceError",
-    "FOKNotFilledError",
-    "OrderDelayedError",
-    "OrderExpiredError",
-    "OrderNotFoundError",
     "OrderRejectedError",
     "MarketNotReadyError",
     "InvalidOrderError",
-    "TickSizeError",
-    "MarketDataError",
-    "MarketNotFoundError",
-    "OrderBookError",
     "PriceUnavailableError",
-    "WebSocketError",
-    "WebSocketConnectionError",
-    "WebSocketDisconnectedError",
     # CTF - Neg-Risk adapter
     "NegRiskAdapter",
     "ConversionCalculator",
@@ -191,10 +133,6 @@ __all__ = [
     # Fee utilities
     "calculate_order_fee",
     "calculate_net_cost",
-    "compare_fees_buy_vs_sell",
-    "estimate_breakeven_exit",
-    "calculate_profit_after_fees",
-    "get_effective_spread",
     # Validation utilities
     "validate_order",
     "validate_price_bounds",
@@ -204,5 +142,4 @@ __all__ = [
     "validate_neg_risk_market",
     "validate_balance",
     "validate_order_amounts",
-    "check_order_profitability",
 ]

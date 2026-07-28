@@ -28,7 +28,6 @@ def _build_client() -> PolymarketClient:
         client = PolymarketClient(
             settings=settings,
             enable_rate_limiting=False,
-            enable_circuit_breaker=False,
         )
 
     credentials = SimpleNamespace(
@@ -49,9 +48,7 @@ def _build_client() -> PolymarketClient:
         return_value={"order": "signed", "_orderHash": "order-1"}
     )
     client._resolve_tick_size = AsyncMock(return_value=Decimal("0.01"))
-    client.get_fee_info = AsyncMock(
-        return_value=FeeInfo(base_fee_bps=0, rate_bps=0)
-    )
+    client.get_fee_info = AsyncMock(return_value=FeeInfo(base_fee_bps=0, rate_bps=0))
     client.get_balances = AsyncMock(
         return_value=Balance(collateral=Decimal("100"), tokens={})
     )
@@ -84,11 +81,11 @@ async def test_default_alias_and_concrete_wallet_share_reservation_ledger() -> N
 
 
 @pytest.mark.asyncio
-async def test_place_order_pins_default_wallet_before_reserving_and_submitting() -> None:
+async def test_place_order_pins_default_wallet_before_reserving_and_submitting() -> (
+    None
+):
     client = _build_client()
-    client.key_manager.get_default_wallet = Mock(
-        side_effect=["wallet-a", "wallet-b"]
-    )
+    client.key_manager.get_default_wallet = Mock(side_effect=["wallet-a", "wallet-b"])
     client.clob.post_order = AsyncMock(
         return_value=OrderResponse(
             success=True,

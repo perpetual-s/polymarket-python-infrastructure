@@ -213,7 +213,7 @@ class WebSocketClient:
             queue_maxsize: Maximum queue size (default: 10000 messages)
             ping_interval: WebSocket ping interval in seconds (default: 20)
             ping_timeout: WebSocket ping timeout in seconds (default: 10)
-            queue_drop_threshold: Maximum queue drops before triggering circuit breaker (default: 1000)
+            queue_drop_threshold: Maximum queue drops before the failure callback (default: 1000)
             enable_compression: Enable permessage-deflate compression (default: True, 50-70% bandwidth reduction)
             on_failure_callback: Optional callback invoked on permanent failure (max reconnects exceeded or fatal error)
                                 Receives failure reason as string argument
@@ -257,7 +257,9 @@ class WebSocketClient:
         self._subscriptions: Dict[str, Callable] = {}
         self._lock = threading.RLock()
         self._reconnect_count = 0
-        self._channel_type: Optional[ChannelType] = None  # Channel type determined by subscriptions
+        self._channel_type: Optional[ChannelType] = (
+            None  # Channel type determined by subscriptions
+        )
 
         # Health monitoring (v3.2)
         self._message_count = 0
@@ -313,7 +315,9 @@ class WebSocketClient:
         # keep suppressing replays), while a fresh explicit session cannot be
         # poisoned by an undelivered hash from the prior session.
         self._seen_message_hashes: deque = deque(maxlen=10000)
-        self._seen_hash_timestamps: deque = deque(maxlen=10000)  # Corresponding timestamps
+        self._seen_hash_timestamps: deque = deque(
+            maxlen=10000
+        )  # Corresponding timestamps
         self._dedup_lock = threading.Lock()  # Protect dedup structures
         self._duplicate_count = 0  # Track duplicate messages blocked
 
@@ -482,7 +486,9 @@ class WebSocketClient:
 
         logger.info("WebSocket disconnected")
 
-    def subscribe_market(self, token_id: str, callback: Callable[[WebSocketMessage], None]) -> None:
+    def subscribe_market(
+        self, token_id: str, callback: Callable[[WebSocketMessage], None]
+    ) -> None:
         """
         Subscribe to market updates.
 
@@ -520,7 +526,9 @@ class WebSocketClient:
             callback: Function called on updates (receives typed message)
         """
         if not all((self.api_key, self.api_secret, self.api_passphrase)):
-            raise ValueError("API key, secret, and passphrase required for user channel")
+            raise ValueError(
+                "API key, secret, and passphrase required for user channel"
+            )
 
         with self._lock:
             if self._channel_type == ChannelType.MARKET:
@@ -626,7 +634,9 @@ class WebSocketClient:
                     error_msg = str(e)
                     logger.error(f"Failed to subscribe to {token_id}: {e}")
                     # Rollback: unsubscribe from all succeeded so far
-                    logger.warning(f"Rolling back {len(succeeded)} successful subscriptions")
+                    logger.warning(
+                        f"Rolling back {len(succeeded)} successful subscriptions"
+                    )
                     for success_token in succeeded:
                         try:
                             channel = f"{ChannelType.MARKET.value}:{success_token}"
@@ -636,16 +646,31 @@ class WebSocketClient:
                                 f"Error during rollback for {success_token}: {rollback_err}"
                             )
 
-                    return {"success": False, "succeeded": [], "failed": failed, "error": error_msg}
+                    return {
+                        "success": False,
+                        "succeeded": [],
+                        "failed": failed,
+                        "error": error_msg,
+                    }
 
             # All succeeded
             logger.info(f"Successfully subscribed to {len(succeeded)} markets")
-            return {"success": True, "succeeded": succeeded, "failed": [], "error": None}
+            return {
+                "success": True,
+                "succeeded": succeeded,
+                "failed": [],
+                "error": None,
+            }
 
         except Exception as e:
             error_msg = f"Batch subscription error: {e}"
             logger.error(error_msg, exc_info=True)
-            return {"success": False, "succeeded": [], "failed": token_ids, "error": error_msg}
+            return {
+                "success": False,
+                "succeeded": [],
+                "failed": token_ids,
+                "error": error_msg,
+            }
 
     def unsubscribe(self, channel: str) -> None:
         """Unsubscribe from channel."""
@@ -690,7 +715,9 @@ class WebSocketClient:
                         next_attempt = self._reconnect_count + 1
 
                     if exhausted:
-                        reason = f"Max reconnects exceeded ({self.max_reconnects} attempts)"
+                        reason = (
+                            f"Max reconnects exceeded ({self.max_reconnects} attempts)"
+                        )
                         logger.error(reason)
                         with self._lock:
                             self._reconnect_exhaustions += 1
@@ -713,7 +740,9 @@ class WebSocketClient:
 
                 # Construct full URL: base + "/" + channel
                 full_url = f"{self.ws_url}/{channel_type.value}"
-                logger.info(f"Connecting to {full_url} ({channel_type.value.upper()} channel)")
+                logger.info(
+                    f"Connecting to {full_url} ({channel_type.value.upper()} channel)"
+                )
 
                 ws = None
                 try:
@@ -810,7 +839,9 @@ class WebSocketClient:
             self._connected_event.set()
 
             if self._current_reconnect_silence is not None:
-                generation, started_at, started_monotonic = self._current_reconnect_silence
+                generation, started_at, started_monotonic = (
+                    self._current_reconnect_silence
+                )
                 duration_seconds = max(0.0, observed_monotonic - started_monotonic)
                 if duration_seconds >= self.reconnect_silence_threshold_seconds:
                     if (
@@ -866,7 +897,9 @@ class WebSocketClient:
                     logger.debug("Resubscribing to USER channel")
                     self._send_subscribe(ChannelType.USER, None)
 
-                logger.info(f"Resubscription complete: {subscription_count} channel(s) restored")
+                logger.info(
+                    f"Resubscription complete: {subscription_count} channel(s) restored"
+                )
 
     def _on_message(self, ws, message: str) -> None:
         """Handle incoming message."""
@@ -906,7 +939,9 @@ class WebSocketClient:
         else:
             with self._lock:
                 self._parse_failures += 1
-            logger.warning("WebSocket message root must be an object or array of objects")
+            logger.warning(
+                "WebSocket message root must be an object or array of objects"
+            )
             return
 
         # Initial Market Channel snapshots may arrive as one JSON array. Parse
@@ -991,7 +1026,10 @@ class WebSocketClient:
             queued_delivery = self._enable_queue and self._message_queue is not None
             if queued_delivery:
                 # Determine if message is from USER channel (critical: trade/order updates)
-                is_user_channel = event_type in [CLOBEventType.TRADE, CLOBEventType.ORDER]
+                is_user_channel = event_type in [
+                    CLOBEventType.TRADE,
+                    CLOBEventType.ORDER,
+                ]
 
                 # Enqueue message with metadata for consumer task
                 message_item = {
@@ -1003,7 +1041,9 @@ class WebSocketClient:
                     "lifecycle_generation": lifecycle_generation,
                     "dedup_hash": message_hash,
                 }
-                accepted = self._enqueue_message(message_item, is_user_channel, event_type)
+                accepted = self._enqueue_message(
+                    message_item, is_user_channel, event_type
+                )
             else:
                 # Direct callback invocation (legacy behavior)
                 accepted = self._invoke_callback(
@@ -1026,7 +1066,9 @@ class WebSocketClient:
             # Track processing time (for enqueue time, not callback time)
             if self._metrics and event_type:
                 duration = time.time() - processing_start
-                self._metrics.track_websocket_processing(channel_label, event_type, duration)
+                self._metrics.track_websocket_processing(
+                    channel_label, event_type, duration
+                )
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -1150,7 +1192,9 @@ class WebSocketClient:
         self._record_transport_disconnect(ws)
         logger.warning(f"WebSocket closed: {close_status_code} - {close_msg}")
 
-    def _send_subscribe(self, channel_type: ChannelType, asset_id: Optional[str]) -> None:
+    def _send_subscribe(
+        self, channel_type: ChannelType, asset_id: Optional[str]
+    ) -> None:
         """
         Send subscribe message using official Polymarket format (single asset).
 
@@ -1210,7 +1254,9 @@ class WebSocketClient:
             self._record_local_send_failure("subscribe")
             logger.error(f"Failed to send initial market subscribe: {e}")
 
-    def _send_subscribe_multi(self, channel_type: ChannelType, asset_ids: list[str]) -> None:
+    def _send_subscribe_multi(
+        self, channel_type: ChannelType, asset_ids: list[str]
+    ) -> None:
         """
         Send subscribe message for multiple assets in single message (v3.5 - L1).
 
@@ -1346,7 +1392,8 @@ class WebSocketClient:
             current_time = time.time()
             while (
                 self._seen_hash_timestamps
-                and current_time - self._seen_hash_timestamps[0] > self.dedup_window_seconds
+                and current_time - self._seen_hash_timestamps[0]
+                > self.dedup_window_seconds
             ):
                 self._seen_hash_timestamps.popleft()
                 self._seen_message_hashes.popleft()
@@ -1456,7 +1503,9 @@ class WebSocketClient:
                             callback(typed_message)
                         except Exception as e:
                             self._callback_failures += 1
-                            logger.error(f"Error in callback for {channel}: {e}", exc_info=True)
+                            logger.error(
+                                f"Error in callback for {channel}: {e}", exc_info=True
+                            )
                         finally:
                             self._last_callback_completed_time = time.time()
 
@@ -1470,13 +1519,17 @@ class WebSocketClient:
                         callback(typed_message)
                     except Exception as e:
                         self._callback_failures += 1
-                        logger.error(f"Error in callback for USER channel: {e}", exc_info=True)
+                        logger.error(
+                            f"Error in callback for USER channel: {e}", exc_info=True
+                        )
                     finally:
                         self._last_callback_completed_time = time.time()
 
             return callback_invoked
 
-    async def _consume_messages(self, lifecycle_generation: Optional[int] = None) -> None:
+    async def _consume_messages(
+        self, lifecycle_generation: Optional[int] = None
+    ) -> None:
         """
         Consumer task that processes messages from queue asynchronously.
 
@@ -1589,7 +1642,9 @@ class WebSocketClient:
             observed_discarded = self._observed_reconnect_silences_discarded
             current_silence_started_at = None
             if self._current_reconnect_silence is not None:
-                generation, started_at, started_monotonic = self._current_reconnect_silence
+                generation, started_at, started_monotonic = (
+                    self._current_reconnect_silence
+                )
                 current_silence_started_at = started_at
                 duration_seconds = max(0.0, captured_monotonic - started_monotonic)
                 if duration_seconds >= self.reconnect_silence_threshold_seconds:
