@@ -85,6 +85,7 @@ Use `wallet_identity.py` for env-based signer/funder resolution.
 | `get_markets_full(next_cursor="MA==")` | full CLOB page |
 | `get_market_by_condition(condition_id)` | market mapping |
 | `get_tick_size(token_id)` | `Decimal` |
+| `get_min_order_size(token_id)` | `Decimal` shares (CLOB `mos`) |
 | `get_fee_rate_bps(token_id)` | integer basis points |
 | `get_fee_info(token_id)` | `FeeInfo` |
 | `is_order_scoring(order_id)` | scoring boolean |
@@ -113,6 +114,12 @@ Address-explicit public reads:
 await client.get_address_activity(address, **filters)
 await client.get_address_positions(address, **filters)
 ```
+
+Bulk history acquisition can pass `strict_parse=True` so malformed rows fail
+the range instead of creating a false checkpoint, and `retry=True` for bounded
+transient retries. Low-latency activity callers retain the no-retry default.
+`get_closed_positions(..., strict_parse=True)` provides the same complete-page
+parse behavior.
 
 Wallet-aware reads resolve the configured funder address:
 

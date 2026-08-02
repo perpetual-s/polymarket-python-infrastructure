@@ -83,6 +83,10 @@ async def test_offset_ceiling_on_a_full_page_refuses_partial_history():
     with pytest.raises(APIError, match="offset ceiling"):
         await api.get_activity_since(user=USER, since_ts=BASE_TS)
 
+    offsets = [call.kwargs["params"]["offset"] for call in api.get.await_args_list]
+    assert offsets[-1] == 5_000
+    assert max(offsets) == 5_000
+
 
 @pytest.mark.asyncio
 async def test_malformed_activity_row_refuses_the_observation():

@@ -3,8 +3,8 @@
 An unofficial, async Python client for Polymarket market data, wallet-aware
 trading, and real-time streams.
 
-This repository is the standalone public version of the Polymarket boundary
-used by downstream project. It favors explicit result contracts, `Decimal` arithmetic,
+This repository provides a standalone Polymarket boundary for reusable Python
+applications. It favors explicit result contracts, `Decimal` arithmetic,
 typed errors, bounded retries, and fail-closed behavior when exchange state is
 incomplete.
 
@@ -18,12 +18,14 @@ The client includes:
 - In-repository CLOB v2 EIP-712 signing, including type-3 ERC-7739 wrapping.
 - Tick-aware order normalization using the market's current tick, including
   `0.001` markets.
+- Per-market minimum-order-size discovery from current CLOB `mos` metadata.
 - Fee-schedule parsing that keeps protocol `base_fee` metadata separate from
   the economic `fd` taker curve.
 - Exact order lookup, authenticated trade history, cancellation, and
   fee-inclusive BUY reservation accounting.
 - Complete position pagination and activity-frontier reads that do not turn
   transport or parsing failures into an empty portfolio.
+- Strict, retry-capable wallet-history reads for durable bulk acquisition.
 - Typed public-flow result objects for trades, price history, and market trade
   events, with request evidence and explicit completeness limits.
 - CLOB WebSocket and RTDS subscription lifecycle handling.

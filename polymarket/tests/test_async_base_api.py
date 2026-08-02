@@ -425,6 +425,38 @@ class TestRequestDeduplication:
         assert result_b == {"identity": "public"}
         assert mock_request.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_limiter_failure_signals_and_cleans_public_get(self, base_client):
+        failure = RateLimitError(
+            "local limiter timeout",
+            endpoint="GET:/activity",
+        )
+        key = base_client._get_request_key(
+            "GET",
+            "/activity",
+            {"user": "0xabc"},
+        )
+        with patch.object(
+            base_client.rate_limiter,
+            "acquire_async",
+            new_callable=AsyncMock,
+            side_effect=failure,
+        ):
+            with pytest.raises(RateLimitError, match="local limiter timeout"):
+                await base_client._make_request(
+                    "GET",
+                    "/activity",
+                    params={"user": "0xabc"},
+                    rate_limit_key="GET:/activity",
+                )
+
+        event, result, error = base_client._inflight_requests[key]
+        assert event.is_set()
+        assert result is None
+        assert error is failure
+        await asyncio.wait_for(base_client._cleanup_tasks[key], timeout=1.0)
+        assert key not in base_client._inflight_requests
+
 
 class TestSessionLifecycle:
     """Test session lifecycle management."""

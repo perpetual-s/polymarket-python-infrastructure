@@ -252,7 +252,8 @@ RATE_LIMITS = {
     "GET:/closed-positions": {"limit": 150, "window": 10},
     "GET:/trades": {"limit": 200, "window": 10},
     "GET:/v1/leaderboard": {"limit": 200, "window": 10},
-    "GET:/activity": {"limit": 1000, "window": 10},  # Data API default bucket
+    # Live-measured 2026-07-30; the global 0.8 margin yields 6 requests/10s.
+    "GET:/activity": {"limit": 8, "window": 10},
     "GET:/holders": {"limit": 1000, "window": 10},
     "GET:/value": {"limit": 1000, "window": 10},
     "DATA:default": {"limit": 1000, "window": 10},

@@ -76,27 +76,37 @@ class TestContractAddresses:
         )
 
     def test_allowance_checks_cover_all_v2_targets(self):
-        """The read path must iterate the actual V2 target list without a NameError."""
+        """The read path must use each token standard's approval method."""
 
         class Call:
+            def __init__(self, value):
+                self._value = value
+
             def call(self):
-                return 123
+                return self._value
 
-        class Functions:
+        class Erc20Functions:
             def allowance(self, _wallet, _spender):
-                return Call()
+                return Call(123)
 
-        class Token:
-            functions = Functions()
+        class Erc1155Functions:
+            def isApprovedForAll(self, _wallet, _operator):
+                return Call(True)
+
+        class Erc20Token:
+            functions = Erc20Functions()
+
+        class Erc1155Token:
+            functions = Erc1155Functions()
 
         manager = object.__new__(AllowanceManager)
-        manager.usdc = Token()
-        manager.ctf = Token()
+        manager.usdc = Erc20Token()
+        manager.ctf = Erc1155Token()
 
         result = manager.check_allowances("0x1111111111111111111111111111111111111111")
 
         assert result["USDC"] == {target: 123 for target in EXCHANGE_CONTRACTS_V2}
-        assert result["CTF"] == {target: 123 for target in EXCHANGE_CONTRACTS_V2}
+        assert result["CTF"] == {target: True for target in EXCHANGE_CONTRACTS_V2}
 
 
 class TestMarketFieldsAdded:

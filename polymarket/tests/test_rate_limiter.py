@@ -1,7 +1,7 @@
 """Tests for rate limiter."""
 
-import time
 import pytest
+from ..config import get_rate_limit
 from ..utils.rate_limiter import RateLimiter
 from ..exceptions import RateLimitError
 
@@ -39,6 +39,11 @@ def test_rate_limiter_disabled():
     # Should allow unlimited
     for _ in range(1000):
         limiter.acquire("test")
+
+
+def test_activity_uses_live_measured_conservative_limit():
+    assert get_rate_limit("GET:/activity") == {"limit": 8, "window": 10}
+    assert RateLimiter(enabled=True).get_remaining("GET:/activity") == 6
 
 
 def test_rate_limiter_handles_config_errors():

@@ -653,6 +653,7 @@ class DataAPI(BaseAPIClient):
         side: Optional[Side] = None,
         sort_by: str = "TIMESTAMP",
         strict_parse: bool = False,
+        retry: bool = False,
     ) -> List[Activity]:
         """
         Get onchain activity for a user.
@@ -667,6 +668,8 @@ class DataAPI(BaseAPIClient):
             end: Unix timestamp end
             side: BUY or SELL (trades only)
             sort_by: TIMESTAMP, TOKENS, or CASH
+            strict_parse: Raise instead of skipping malformed response rows
+            retry: Retry bounded transient failures such as HTTP 429
 
         Returns:
             List of activity records
@@ -689,16 +692,19 @@ class DataAPI(BaseAPIClient):
             params["market"] = market
         if activity_type:
             params["type"] = activity_type.value
-        if start:
+        if start is not None:
             params["start"] = start
-        if end:
+        if end is not None:
             params["end"] = end
         if side:
             params["side"] = side.value
 
         try:
             response = await self.get(
-                "/activity", params=params, rate_limit_key="GET:/activity", retry=False
+                "/activity",
+                params=params,
+                rate_limit_key="GET:/activity",
+                retry=retry,
             )
 
             if not isinstance(response, list):
@@ -773,7 +779,9 @@ class DataAPI(BaseAPIClient):
         retried on the next poll rather than merged.
         """
         page_size = 500
-        max_offset = 10_000
+        # Live endpoint contract (2026-07-30): offsets above 5,000 return 400,
+        # despite the published reference currently advertising 10,000.
+        max_offset = 5_000
         expected_wallet = user.lower()
 
         def row_identity(activity: Activity) -> tuple:
@@ -1081,6 +1089,7 @@ class DataAPI(BaseAPIClient):
         offset: int = 0,
         sort_by: Optional[str] = None,
         sort_direction: str = "DESC",
+        strict_parse: bool = False,
     ) -> List[ClosedPosition]:
         """
         Get a user's closed positions with realized PnL (`GET /closed-positions`).
@@ -1094,6 +1103,7 @@ class DataAPI(BaseAPIClient):
                 the result is the wallet's biggest winners rather than a sample
                 of its history. Pass ``TIMESTAMP`` for a chronological read.
             sort_direction: ``ASC`` or ``DESC``; only meaningful with ``sort_by``
+            strict_parse: Raise instead of returning a partial parsed page
 
         Returns:
             List of closed positions (``realized_pnl``/``total_bought`` populated)
@@ -1128,6 +1138,11 @@ class DataAPI(BaseAPIClient):
             )
 
             if not isinstance(response, list):
+                if strict_parse:
+                    raise APIError(
+                        "Unexpected closed-positions response format; "
+                        "complete observation unavailable"
+                    )
                 logger.warning(
                     f"Unexpected closed-positions response format: {type(response)}"
                 )
@@ -1137,7 +1152,12 @@ class DataAPI(BaseAPIClient):
             for item in response:
                 try:
                     positions.append(ClosedPosition(**item))
-                except (KeyError, ValueError, TypeError) as e:
+                except Exception as e:
+                    if strict_parse:
+                        raise APIError(
+                            f"Failed to parse closed-position row: {e}; "
+                            "complete observation unavailable"
+                        ) from e
                     logger.warning(f"Skipping unparseable closed position: {e}")
                     continue
 

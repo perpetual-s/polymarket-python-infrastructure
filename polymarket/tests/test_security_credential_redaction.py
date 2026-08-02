@@ -183,7 +183,7 @@ class TestCredentialRedactionFilter:
 
         class CredentialCarrier:
             def __str__(self):
-                return "postgresql://custom:object-password@localhost/downstream_project"
+                return "postgresql://custom:object-password@localhost/polymarket_test"
 
         logger = logging.getLogger("test_structured_fields")
         logger.setLevel(logging.DEBUG)
@@ -196,7 +196,7 @@ class TestCredentialRedactionFilter:
         logger.addHandler(handler)
 
         api_secret = "short-secret"
-        dsn = "postgresql://operator:hunter2@localhost:5432/downstream_project"
+        dsn = "postgresql://operator:hunter2@localhost:5432/polymarket_test"
         try:
             logger.error(
                 "Database request failed",
@@ -305,7 +305,7 @@ class TestCredentialRedactionFilter:
         private_key = "0x" + "d" * 64
         address = "0x" + "1" * 40
         condition_id = "0x" + "f" * 64
-        dsn = "postgresql://operator:hunter2@localhost:5432/downstream_project"
+        dsn = "postgresql://operator:hunter2@localhost:5432/polymarket_test"
         secrets = {
             "credentials": "tiny-secret",
             "api_credentials": "tiny-api-secret",
@@ -466,7 +466,7 @@ class TestExceptionSanitization:
             ('Exchange rejected api_passphrase="two words"', "two words"),
             (
                 "Database unavailable at "
-                "postgresql://operator:hunter2@localhost:5432/downstream_project",
+                "postgresql://operator:hunter2@localhost:5432/polymarket_test",
                 "hunter2",
             ),
         ],
@@ -483,7 +483,7 @@ class TestExceptionSanitization:
         """Nested response payloads redact secrets but retain public IDs."""
         private_key = "0x" + "a" * 64
         api_secret = "short-secret"
-        dsn = "postgresql://operator:hunter2@localhost:5432/downstream_project"
+        dsn = "postgresql://operator:hunter2@localhost:5432/polymarket_test"
         condition_id = "0x" + "f" * 64
         error = APIError(
             "Upstream authentication failed",
@@ -525,7 +525,7 @@ class TestExceptionSanitization:
                 return "opaque-tiny-secret"
 
         address = "0x" + "2" * 40
-        dsn = "postgresql://custom:object-password@localhost/downstream_project"
+        dsn = "postgresql://custom:object-password@localhost/polymarket_test"
         error = APIError(
             "bad response",
             response={

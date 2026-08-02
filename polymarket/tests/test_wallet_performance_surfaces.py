@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from polymarket.api.data_api import DataAPI
+from polymarket.exceptions import APIError
 from polymarket.models import ClosedPosition, LeaderboardTrader
 
 
@@ -231,14 +232,44 @@ async def test_closed_positions_skips_malformed_rows_without_raising():
 
 
 @pytest.mark.asyncio
+async def test_closed_positions_strict_parse_refuses_a_partial_page():
+    api = _api_returning([_live_verified_closed_position(), {"broken": 1}])
+
+    with pytest.raises(APIError, match="complete observation unavailable"):
+        await api.get_closed_positions("0xabc", strict_parse=True)
+
+
+@pytest.mark.asyncio
 async def test_closed_positions_non_list_response_returns_empty():
     api = _api_returning(None)
     assert await api.get_closed_positions("0xabc") == []
 
 
+@pytest.mark.asyncio
+async def test_closed_positions_strict_parse_refuses_a_non_list_response():
+    api = _api_returning(None)
+    with pytest.raises(APIError, match="complete observation unavailable"):
+        await api.get_closed_positions("0xabc", strict_parse=True)
+
+
 # ---------------------------------------------------------------------------
 # Transient-failure severity (429s during paper windows are WARNING, not ERROR)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_activity_retry_is_opt_in_for_bulk_history_reads():
+    api = _api_returning([])
+    await api.get_activity(user="0x" + "ab" * 20, retry=True)
+    assert api.get.await_args.kwargs["retry"] is True
+
+
+@pytest.mark.asyncio
+async def test_activity_preserves_zero_time_bounds():
+    api = _api_returning([])
+    await api.get_activity(user="0x" + "ab" * 20, start=0, end=0)
+    assert api.get.await_args.kwargs["params"]["start"] == 0
+    assert api.get.await_args.kwargs["params"]["end"] == 0
 
 
 @pytest.mark.asyncio

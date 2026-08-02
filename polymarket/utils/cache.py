@@ -417,6 +417,14 @@ class MarketMetadataCache:
         """Cache economic fee metadata for token."""
         self.cache.set(f"fee_info:{token_id}", fee_info)
 
+    def get_min_order_size(self, token_id: str) -> Optional[Any]:
+        """Get cached per-market minimum order size (shares) for token."""
+        return self.cache.get(f"min_order_size:{token_id}")
+
+    def set_min_order_size(self, token_id: str, min_order_size: Any) -> None:
+        """Cache per-market minimum order size (shares) for token."""
+        self.cache.set(f"min_order_size:{token_id}", min_order_size)
+
     def get_neg_risk(self, token_id: str) -> Optional[bool]:
         """Get cached negative risk flag for token."""
         return self.cache.get(f"neg_risk:{token_id}")

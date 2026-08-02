@@ -858,3 +858,39 @@ async def test_sell_fee_metadata_failure_suppresses_single_submission() -> None:
         client.clob.post_order.assert_not_awaited()
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_clob_parses_v2_minimum_order_size() -> None:
+    api = _clob_api()
+    api.get = AsyncMock(
+        side_effect=[
+            {"condition_id": "0x" + "1" * 64},
+            {"mos": 5, "mts": 0.01},
+        ]
+    )
+    try:
+        assert await api.get_minimum_order_size("token-1") == Decimal("5")
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"mos": None}, {"mos": 0}, {"mos": -1}, {"mos": "NaN"}],
+)
+async def test_clob_rejects_missing_or_invalid_minimum_order_size(payload) -> None:
+    """The minimum is order-facing market truth; absence is an error, not zero."""
+    api = _clob_api()
+    api.get = AsyncMock(
+        side_effect=[
+            {"condition_id": "0x" + "1" * 64},
+            payload,
+        ]
+    )
+    try:
+        with pytest.raises(TradingError):
+            await api.get_minimum_order_size("token-1")
+    finally:
+        await api.close()

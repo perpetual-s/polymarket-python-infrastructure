@@ -1,8 +1,8 @@
 # Repository guide for coding agents
 
-This repository is the standalone public Polymarket client extracted from
-downstream project. The public import namespace is always `polymarket`; do not add
-downstream project-specific `shared.polymarket` fallbacks or product policy.
+This repository is a standalone public Polymarket client. The public import
+namespace is always `polymarket`; do not add downstream vendored-path
+fallbacks or product-specific policy.
 
 ## Read first
 

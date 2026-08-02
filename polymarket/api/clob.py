@@ -1235,6 +1235,47 @@ class CLOBAPI(BaseAPIClient):
         except Exception as e:
             raise TradingError(f"Failed to get fee schedule for {token_id}: {e}") from e
 
+    async def get_minimum_order_size(self, token_id: str) -> Decimal:
+        """Return the CLOB V2 per-market minimum order size in shares.
+
+        Resolved like the ``fd`` fee curve: token -> condition, then the
+        compact ``mos`` field on ``/clob-markets/{condition_id}``. The minimum
+        is order-facing market truth, so a missing or invalid value is an
+        error, never zero.
+        """
+        try:
+            token_market = await self.get(
+                f"/markets-by-token/{token_id}",
+                rate_limit_key="GET:/markets-by-token/:token_id",
+                retry=True,
+            )
+            if not isinstance(token_market, dict):
+                raise TradingError("markets-by-token response must be an object")
+            condition_id = token_market.get("condition_id")
+            if not isinstance(condition_id, str) or not condition_id:
+                raise TradingError("markets-by-token response is missing condition_id")
+
+            market = await self.get(
+                f"/clob-markets/{condition_id}",
+                rate_limit_key="GET:/clob-markets/:condition_id",
+                retry=True,
+            )
+            if not isinstance(market, dict):
+                raise TradingError("clob-markets response must be an object")
+            raw_minimum = market.get("mos")
+            if raw_minimum is None:
+                raise TradingError("clob-markets response is missing mos")
+            minimum = Decimal(str(raw_minimum))
+            if not minimum.is_finite() or minimum <= 0:
+                raise TradingError(f"Invalid clob-markets mos: {raw_minimum}")
+            return minimum
+        except TradingError:
+            raise
+        except Exception as e:
+            raise TradingError(
+                f"Failed to get minimum order size for {token_id}: {e}"
+            ) from e
+
     async def is_order_scoring(self, order_id: str) -> bool:
         """
         Check if order earns maker rebates (2% on Polymarket).

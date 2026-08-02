@@ -7,7 +7,7 @@ This module provides utilities to check and set required allowances.
 """
 
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 from web3 import Web3
 from eth_account import Account
 
@@ -45,6 +45,30 @@ ERC20_ABI = [
     }
 ]
 
+# CTF is ERC-1155: operator approval is a boolean, not an ERC20 allowance.
+ERC1155_ABI = [
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "owner", "type": "address"},
+            {"name": "operator", "type": "address"},
+        ],
+        "name": "isApprovedForAll",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function",
+    },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "operator", "type": "address"},
+            {"name": "approved", "type": "bool"},
+        ],
+        "name": "setApprovalForAll",
+        "outputs": [],
+        "type": "function",
+    },
+]
+
 # Infinite approval amount (standard practice for trading)
 MAX_UINT256 = 2**256 - 1
 
@@ -69,14 +93,14 @@ class AllowanceManager:
         )
         self.ctf = self.web3.eth.contract(
             address=Web3.to_checksum_address(CTF_ADDRESS),
-            abi=ERC20_ABI
+            abi=ERC1155_ABI
         )
 
     def check_allowances(
         self,
         wallet_address: str,
         token_type: str = "both"
-    ) -> Dict[str, Dict[str, int]]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Check current allowances for all exchange contracts.
 
@@ -88,7 +112,7 @@ class AllowanceManager:
             Dict mapping contract addresses to allowance amounts:
             {
                 "USDC": {"0x4bF...": 1000000000, ...},  # legacy key; values are pUSD
-                "CTF": {"0x4bF...": 1000000000, ...}
+                "CTF": {"0x4bF...": True, ...}
             }
 
         Raises:
@@ -115,18 +139,18 @@ class AllowanceManager:
 
                 result["USDC"] = usdc_allowances
 
-            # Check CTF allowances
+            # Check CTF operator approvals (ERC-1155 booleans)
             if token_type in ("ctf", "both"):
-                ctf_allowances = {}
+                ctf_approvals = {}
                 for exchange in EXCHANGE_CONTRACTS_V2:
                     exchange_addr = Web3.to_checksum_address(exchange)
-                    allowance = self.ctf.functions.allowance(
+                    approved = self.ctf.functions.isApprovedForAll(
                         wallet,
                         exchange_addr
                     ).call()
-                    ctf_allowances[exchange] = allowance
+                    ctf_approvals[exchange] = approved
 
-                result["CTF"] = ctf_allowances
+                result["CTF"] = ctf_approvals
 
             return result
 
@@ -162,8 +186,8 @@ class AllowanceManager:
         )
 
         ctf_sufficient = all(
-            amount >= min_amount
-            for amount in allowances.get("CTF", {}).values()
+            bool(approved)
+            for approved in allowances.get("CTF", {}).values()
         )
 
         return {
@@ -242,15 +266,15 @@ class AllowanceManager:
 
                     nonce += 1
 
-            # Approve CTF
+            # Approve CTF operators (ERC-1155 setApprovalForAll)
             if token_type in ("ctf", "both"):
                 for exchange in EXCHANGE_CONTRACTS_V2:
                     exchange_addr = Web3.to_checksum_address(exchange)
 
                     # Build transaction
-                    tx = self.ctf.functions.approve(
+                    tx = self.ctf.functions.setApprovalForAll(
                         exchange_addr,
-                        amount
+                        True
                     ).build_transaction({
                         'from': wallet_address,
                         'nonce': nonce,

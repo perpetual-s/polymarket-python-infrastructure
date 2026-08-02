@@ -1029,6 +1029,15 @@ class PolymarketClient:
         self.metadata_cache.set_fee_info(token_id, fee_info)
         return fee_info
 
+    async def get_min_order_size(self, token_id: str) -> Decimal:
+        """Return the authoritative per-market minimum order size in shares."""
+        cached = self.metadata_cache.get_min_order_size(token_id)
+        if cached is not None:
+            return Decimal(str(cached))
+        minimum = await self.market_clob.get_minimum_order_size(token_id)
+        self.metadata_cache.set_min_order_size(token_id, minimum)
+        return minimum
+
     # ========== Trading Operations ==========
 
     async def place_order(
@@ -2307,6 +2316,7 @@ class PolymarketClient:
         offset: int = 0,
         sort_by: Optional[str] = None,
         sort_direction: str = "DESC",
+        strict_parse: bool = False,
     ) -> List["ClosedPosition"]:
         """
         Get a user's closed positions with realized PnL (`GET /closed-positions`).
@@ -2320,6 +2330,7 @@ class PolymarketClient:
                 ``REALIZEDPNL`` descending — biggest wins first, so any
                 truncated read is a winner-biased sample, not a history.
             sort_direction: ``ASC`` or ``DESC``
+            strict_parse: Raise instead of returning a partial parsed page
 
         Returns:
             List of closed positions (``realized_pnl``/``total_bought`` populated)
@@ -2330,6 +2341,7 @@ class PolymarketClient:
             offset=offset,
             sort_by=sort_by,
             sort_direction=sort_direction,
+            strict_parse=strict_parse,
         )
 
     # ========== Multi-Wallet Batch Operations (Strategy-3 Optimized) ==========

@@ -279,23 +279,24 @@ class BaseAPIClient:
         if headers:
             request_headers.update(headers)
 
-        # Apply rate limiting (async)
-        if self.rate_limiter and rate_limit_key:
-            try:
-                await self.rate_limiter.acquire_async(rate_limit_key, timeout=30.0)
-            except RateLimitError as e:
-                logger.warning(f"Rate limit hit for {rate_limit_key}: {e}")
-                raise
-
-        # Log request if enabled
-        if self.settings.log_requests:
-            logger.debug(f"[{request_id}] {method} {url} params={params}")
-
         # Execute request with deduplication cleanup
         result = None
         error = None
 
         try:
+            # Rate-limit acquisition must stay inside this try/finally. A local
+            # limiter timeout is still a completed in-flight request; leaving
+            # before cleanup strands identical retries on an unset event.
+            if self.rate_limiter and rate_limit_key:
+                try:
+                    await self.rate_limiter.acquire_async(rate_limit_key, timeout=30.0)
+                except RateLimitError as e:
+                    logger.warning(f"Rate limit hit for {rate_limit_key}: {e}")
+                    raise
+
+            if self.settings.log_requests:
+                logger.debug(f"[{request_id}] {method} {url} params={params}")
+
             # Use data parameter for raw body (large int support), json for auto-serialization
             request_kwargs = {
                 "method": method,

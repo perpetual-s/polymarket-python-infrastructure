@@ -98,11 +98,15 @@ Exact endpoint limits live in `config.py`. Unknown settings passed to
 `PolymarketClient` raise `TypeError`; unknown endpoint keys use the
 conservative default limiter.
 
+`get_min_order_size(token_id)` exposes the CLOB V2 minimum in shares. Bulk
+activity reads can opt into bounded retries, while strict activity and closed-
+position parsing refuses partial histories.
+
 ## Main facade groups
 
 - Gamma: markets, keyset pagination, events, search, slugs, and IDs.
 - public CLOB: books, midpoint, price, spread, last trade, server time, tick,
-  fee, and scoring reads.
+  minimum order size, fee, and scoring reads.
 - Data API: positions, closed positions, trades, activity, portfolio value,
   holders, and leaderboard.
 - authenticated CLOB: place/cancel orders, order/trade reads, balances, token
