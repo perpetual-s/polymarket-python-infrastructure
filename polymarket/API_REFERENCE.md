@@ -4,6 +4,9 @@ This is a maintained index of `PolymarketClient`. Exact arguments, types, and
 response models live in `client.py` and `models.py`; those files are the
 signature source of truth.
 
+Every model, exception, and helper named in this file is importable directly
+from `polymarket`; submodule paths are an implementation detail.
+
 ## Construction
 
 ```python
@@ -84,12 +87,31 @@ Use `wallet_identity.py` for env-based signer/funder resolution.
 | `get_simplified_markets(next_cursor="MA==")` | raw page |
 | `get_markets_full(next_cursor="MA==")` | full CLOB page |
 | `get_market_by_condition(condition_id)` | market mapping |
+| `get_resolution_payouts(condition_id)` | `ResolutionPayouts \| None` (raises `UnsupportedResolution`) |
 | `get_tick_size(token_id)` | `Decimal` |
 | `get_min_order_size(token_id)` | `Decimal` shares (CLOB `mos`) |
 | `get_fee_rate_bps(token_id)` | integer basis points |
 | `get_fee_info(token_id)` | `FeeInfo` |
 | `is_order_scoring(order_id)` | scoring boolean |
 | `are_orders_scoring(order_ids)` | order → boolean |
+
+`get_resolution_payouts` wraps `get_market` and adds no new HTTP surface. It
+validates the raw payload for an exact condition-id match, `closed is True`,
+unique token ids, and boolean winner flags. An ordinary binary market pays the
+winner 1.0 and the loser 0.0; `is_50_50_outcome` pays every token 0.5
+(`kind="fifty_fifty"`); a normal negRisk market resolves the same way as an
+ordinary binary one. Anything open, disputed, or malformed returns `None`
+rather than an inferred payout. A token id absent from the returned `.payouts`
+mapping means SKIP that token, never a 0.0 payout.
+
+Caveat on `UnsupportedResolution`: the raw CLOB per-condition payload has no
+confirmed field distinguishing an augmented neg-risk market (incomplete
+outcome universe) from a normal one, and no sampled live payload carried one,
+including a market added to an already-live negRisk group. The exception is
+raised defensively on this client's own `neg_risk_augmented` key (see
+`models.Market`, `ctf/utils.is_safe_to_trade`) in case a payload ever sets it,
+but that is an unconfirmed heuristic rather than verified detection of
+Polymarket's on-chain augmented-adapter flag.
 
 ## Public trade and price history
 
@@ -105,6 +127,22 @@ Use `wallet_identity.py` for env-based signer/funder resolution.
 
 The `*_result_v1` methods expose parse/completeness status rather than
 silently treating partial public data as complete.
+
+## Result models
+
+| Model | Produced by |
+|---|---|
+| `ResolutionPayouts` | `get_resolution_payouts` |
+| `DataTradesResultV1` (`DataTradeV1`, `DataTradesQueryV1`, `DataTradesCoverageV1`) | `get_market_trades_result_v1` |
+| `MarketTradeEventsResultV1` (`MarketTradeEventV1`) | `get_market_trades_events_result_v1` |
+| `PriceHistoryResultV1` (`PriceHistoryPointV1`, `PriceHistoryQueryV1`, `PriceHistoryCoverageV1`) | `get_prices_history_result_v1` |
+| `PublicRequestEvidenceV1`, `PublicDataStatus` | the `evidence`/`status` fields of every `*_result_v1` |
+
+Compatibility surfaces return the plain models instead: `Market`, `Event`,
+`OrderBook`, `PricePoint`, `Order`, `OrderResponse`, `Position`,
+`ClosedPosition`, `Trade`, `ClobTrade`, `ClobMakerTrade`, `Activity`,
+`Balance`, `FeeInfo`, `FeeSchedule`, `Holder`, `LeaderboardTrader`,
+`PortfolioValue`, `WebSocketMessage`.
 
 ## Data API
 
@@ -237,13 +275,49 @@ All client errors derive from `PolymarketError`.
 | request | `APIError`, `RateLimitError`, `TimeoutError` |
 | auth | `AuthenticationError` |
 | validation | `ValidationError`, `TickSizeError`, `OrderExpiredError` |
-| trading | `TradingError`, `InsufficientBalanceError`, `OrderRejectedError`, `MarketNotReadyError`, `InvalidOrderError` |
-| market data | `MarketDataError`, `PriceUnavailableError`, `OrderBookError`, `MarketNotFoundError` |
+| trading | `TradingError`, `InsufficientBalanceError`, `InsufficientAllowanceError`, `OrderRejectedError`, `OrderNotFoundError`, `OrderDelayedError`, `MarketNotReadyError`, `InvalidOrderError`, `FOKNotFilledError`, `BalanceTrackingError` |
+| market data | `MarketDataError`, `PriceUnavailableError`, `OrderBookError`, `MarketNotFoundError`, `UnsupportedResolution` |
 | streams | `WebSocketError`, `WebSocketConnectionError`, `WebSocketDisconnectedError` |
+
+`polymarket.TimeoutError` also derives from `builtins.TimeoutError`, so a
+plain `except TimeoutError:` catches it. `polymarket.ValidationError` is this
+package's own class and is unrelated to `pydantic.ValidationError`; import one
+of them under an alias when both are in scope.
 
 Use `is_definitive_order_rejection(error)` before releasing intent or retrying
 an order. Duplicate or ambiguous exchange outcomes require exact order/trade
 reconciliation.
+
+```python
+from polymarket import (
+    APIError,
+    InsufficientBalanceError,
+    OrderRejectedError,
+    PolymarketError,
+    RateLimitError,
+    TimeoutError,
+    is_definitive_order_rejection,
+)
+
+try:
+    response = await client.place_order(order, wallet_id="primary")
+except InsufficientBalanceError:
+    # Local preflight refused the order; nothing was submitted.
+    raise
+except (OrderRejectedError, APIError) as e:
+    if is_definitive_order_rejection(e):
+        # Proven non-submission: release the reservation and move on.
+        raise
+    # Ambiguous outcome: keep the reservation and reconcile with
+    # get_order()/get_clob_trades() before retrying anything.
+    raise
+except (RateLimitError, TimeoutError):
+    # Transient transport failure. Back off; do not create a new order identity.
+    raise
+except PolymarketError:
+    # Every client error derives from PolymarketError.
+    raise
+```
 
 ## Rules
 

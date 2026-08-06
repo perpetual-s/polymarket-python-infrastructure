@@ -1,12 +1,53 @@
 """
 Custom exceptions for Polymarket client.
 
-Provides typed exceptions for better error handling across all strategies.
+Provides typed exceptions so callers can branch on the failure instead of
+parsing error strings. Every name exported here is also importable directly
+from ``polymarket``.
 """
 
+import builtins
 from typing import Any, Optional
 
 from .redaction import redact_text, redact_value
+
+__all__ = [
+    # Base
+    "PolymarketError",
+    # Request and transport
+    "APIError",
+    "RateLimitError",
+    "TimeoutError",
+    # Auth
+    "AuthenticationError",
+    # Validation
+    "ValidationError",
+    "OrderExpiredError",
+    "TickSizeError",
+    # Trading
+    "TradingError",
+    "BalanceTrackingError",
+    "FOKNotFilledError",
+    "InsufficientAllowanceError",
+    "InsufficientBalanceError",
+    "InvalidOrderError",
+    "MarketNotReadyError",
+    "OrderDelayedError",
+    "OrderNotFoundError",
+    "OrderRejectedError",
+    # Market data
+    "MarketDataError",
+    "MarketNotFoundError",
+    "OrderBookError",
+    "PriceUnavailableError",
+    "UnsupportedResolution",
+    # Streams
+    "WebSocketError",
+    "WebSocketConnectionError",
+    "WebSocketDisconnectedError",
+    # Helpers
+    "is_definitive_order_rejection",
+]
 
 
 class PolymarketError(Exception):
@@ -57,8 +98,14 @@ class RateLimitError(PolymarketError):
         self.retry_after = self.details["retry_after"]
 
 
-class TimeoutError(PolymarketError):
-    """Request timed out."""
+class TimeoutError(PolymarketError, builtins.TimeoutError):
+    """Request timed out.
+
+    Also derives from :class:`builtins.TimeoutError` so a caller's plain
+    ``except TimeoutError:`` (and, on Python 3.11+, ``except
+    asyncio.TimeoutError:``) still catches a client timeout even when this
+    class is not imported.
+    """
 
     pass
 
@@ -234,6 +281,20 @@ class MarketNotFoundError(MarketDataError):
     def __init__(self, message: str, market_id: Optional[str] = None):
         super().__init__(message, {"market_id": market_id})
         self.market_id = self.details["market_id"]
+
+
+class UnsupportedResolution(MarketDataError):
+    """Resolution truth exists but this client will not compute its payout.
+
+    Raised by ``get_resolution_payouts`` for augmented neg-risk markets
+    (incomplete outcome universe -- see ``ctf/utils.py``'s
+    ``is_safe_to_trade``). Callers must skip the market with this reason
+    rather than infer a payout that the payload does not state.
+    """
+
+    def __init__(self, message: str, condition_id: Optional[str] = None):
+        super().__init__(message, {"condition_id": condition_id})
+        self.condition_id = self.details["condition_id"]
 
 
 # WebSocket exceptions

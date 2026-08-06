@@ -1,8 +1,8 @@
 """
 Main Polymarket client.
 
-Unified interface for all Polymarket operations across strategies.
-Thread-safe, multi-wallet, production-ready.
+Unified interface for all Polymarket operations. Multi-wallet, and safe for
+concurrent use from a single event loop.
 """
 
 import asyncio
@@ -51,6 +51,7 @@ from .models import (
     Position,
     PriceHistoryResultV1,
     PricePoint,
+    ResolutionPayouts,
     Side,
     Trade,
     WalletConfig,
@@ -72,17 +73,20 @@ class PolymarketClient:
     Main client for Polymarket operations.
 
     Features:
-    - Multi-wallet support (thread-safe)
+    - Multi-wallet support, safe for concurrent use from one event loop
     - Automatic rate limiting
     - Bounded retry logic
     - Typed exceptions
-    - Production-ready
+
+    Construction opens an aiohttp session, so it requires a running event
+    loop. Build the client inside async code and prefer ``async with`` so the
+    session always closes.
 
     Usage:
-        client = PolymarketClient()
-        await client.add_wallet(wallet_config, wallet_id="strategy1")
-        markets = await client.get_markets(active=True)
-        response = await client.place_order(order, wallet_id="strategy1")
+        async with PolymarketClient() as client:
+            await client.add_wallet(wallet_config, wallet_id="primary")
+            markets = await client.get_markets(active=True)
+            response = await client.place_order(order, wallet_id="primary")
     """
 
     def __init__(
@@ -790,6 +794,34 @@ class PolymarketClient:
         """
         return await self.public_clob.get_market(condition_id)
 
+    async def get_resolution_payouts(
+        self, condition_id: str
+    ) -> Optional[ResolutionPayouts]:
+        """
+        Get the validated terminal payout vector for a resolved market.
+
+        Public endpoint. Never a raw dict at the call site: it returns a
+        validated payout vector, or ``None`` for anything open, disputed, or
+        malformed. Nothing is inferred from an incomplete payload.
+
+        Args:
+            condition_id: Market condition ID (0x...)
+
+        Returns:
+            ``ResolutionPayouts`` (kind ``"winner"`` or ``"fifty_fifty"``) or
+            ``None``. A token id absent from the returned ``.payouts``
+            mapping means SKIP that token; absence is never a 0.0 payout,
+            because a held token missing from the mapping is not a confirmed
+            loser.
+
+        Raises:
+            MarketNotFoundError: Transport or lookup failure, which is
+                retryable and distinct from a malformed payload.
+            UnsupportedResolution: Augmented neg-risk market. See
+                `polymarket/API_REFERENCE.md` for the detection caveat.
+        """
+        return await self.public_clob.get_resolution_payouts(condition_id)
+
     async def get_market_trades_events(self, condition_id: str) -> List[Dict[str, Any]]:
         """
         Compatibility-only list facade for trade events.
@@ -966,7 +998,7 @@ class PolymarketClient:
 
     async def is_order_scoring(self, order_id: str) -> bool:
         """
-        Check if order earns maker rebates (Strategy-4 enhancement).
+        Check if order earns maker rebates.
 
         Returns True if order is earning 2% maker rebates on Polymarket.
         """
@@ -974,7 +1006,7 @@ class PolymarketClient:
 
     async def are_orders_scoring(self, order_ids: List[str]) -> Dict[str, bool]:
         """
-        Check if multiple orders earn maker rebates (Strategy-4 enhancement).
+        Check if multiple orders earn maker rebates.
 
         Batch version of is_order_scoring().
         Returns dict mapping order_id to scoring status.
@@ -1885,7 +1917,7 @@ class PolymarketClient:
         """
         Get orderbooks for multiple tokens simultaneously.
 
-        CRITICAL for Strategy-3: 10x faster than sequential fetches.
+        Roughly 10x faster than sequential fetches.
 
         Args:
             token_ids: List of token IDs
@@ -2027,7 +2059,7 @@ class PolymarketClient:
             # Get balance for selling
             balance = await client.get_token_balance(
                 token_id="15974786252393396629980467963784550802583781222733347534844974829144359265969",
-                wallet_id="WALLET_1"
+                wallet_id="primary"
             )
             # balance = Decimal("4.1") if you own 4.1 shares
         """
@@ -2083,7 +2115,7 @@ class PolymarketClient:
             # Get position balance for selling
             balance = await client.get_position_balance(
                 token_id="15974786252393396629980467963784550802583781222733347534844974829144359265969",
-                wallet_id="WALLET_1"
+                wallet_id="primary"
             )
             # balance = Decimal("1.02") if you own 1.02 shares
         """
@@ -2241,7 +2273,7 @@ class PolymarketClient:
             - equity_total: Total portfolio value (bets + cash)
 
         Example:
-            portfolio = await client.get_portfolio_value(wallet_id="strategy1")
+            portfolio = await client.get_portfolio_value(wallet_id="primary")
             print(f"Total value: ${portfolio.equity_total}")
             print(f"Bets: ${portfolio.bets}, Cash: ${portfolio.cash}")
         """
@@ -2344,7 +2376,7 @@ class PolymarketClient:
             strict_parse=strict_parse,
         )
 
-    # ========== Multi-Wallet Batch Operations (Strategy-3 Optimized) ==========
+    # ========== Multi-Wallet Batch Operations ==========
 
     async def get_positions_batch(
         self, wallet_addresses: List[str], **kwargs
@@ -2352,7 +2384,7 @@ class PolymarketClient:
         """
         Get positions for multiple wallets efficiently.
 
-        Optimized for Strategy-3's 100+ wallet tracking with concurrent requests.
+        Optimized for tracking 100+ wallets with concurrent requests.
 
         Args:
             wallet_addresses: List of wallet addresses
@@ -2478,7 +2510,7 @@ class PolymarketClient:
         """
         Detect consensus signals from multiple wallets.
 
-        Strategy-3 specific: Find markets where N+ wallets agree.
+        Find markets where N+ of the given wallets agree.
 
         Args:
             wallet_addresses: List of wallet addresses to track
@@ -2706,7 +2738,7 @@ class PolymarketClient:
             ...         print(f"Trade: {message.status} - {message.price}")
             ...     elif isinstance(message, OrderMessage):
             ...         print(f"Order: {message.type} - {message.id}")
-            >>> client.subscribe_user_orders(on_fill, wallet_id="strategy1")
+            >>> client.subscribe_user_orders(on_fill, wallet_id="primary")
         """
         from .api.websocket_models import WebSocketMessage
 

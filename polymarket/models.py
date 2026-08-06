@@ -13,6 +13,58 @@ from typing import Any, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+__all__ = [
+    # Enums
+    "ActivityType",
+    "OrderStatus",
+    "OrderType",
+    "PublicDataStatus",
+    "Side",
+    "SignatureType",
+    # Requests and filters
+    "MarketFilters",
+    "MarketOrderRequest",
+    "OrderFilters",
+    "OrderRequest",
+    "WalletConfig",
+    # Orders, trades, and positions
+    "ClobMakerTrade",
+    "ClobTrade",
+    "ClosedPosition",
+    "Order",
+    "OrderResponse",
+    "Position",
+    "Trade",
+    # Account and portfolio
+    "Activity",
+    "Balance",
+    "FeeInfo",
+    "FeeSchedule",
+    "Holder",
+    "LeaderboardTrader",
+    "PortfolioValue",
+    # Markets and prices
+    "Event",
+    "Market",
+    "OrderBook",
+    "PricePoint",
+    "ResolutionPayouts",
+    # Typed public-flow results
+    "DataTradeV1",
+    "DataTradesCoverageV1",
+    "DataTradesQueryV1",
+    "DataTradesResultV1",
+    "MarketTradeEventV1",
+    "MarketTradeEventsResultV1",
+    "PriceHistoryCoverageV1",
+    "PriceHistoryPointV1",
+    "PriceHistoryQueryV1",
+    "PriceHistoryResultV1",
+    "PublicRequestEvidenceV1",
+    # Streams
+    "WebSocketMessage",
+]
+
 
 class Side(str, Enum):
     """Order side."""
@@ -170,7 +222,7 @@ class SignatureType(int, Enum):
     GNOSIS_SAFE = 2  # Gnosis Safe wallet
     POLY_1271 = 3  # New deposit wallet
 
-    # Backward-compatible names used by older strategy configuration.
+    # Backward-compatible aliases retained for older configuration values.
     MAGIC = 1
     PROXY = 2
 
@@ -1213,7 +1265,7 @@ class Market(BaseModel):
         None, alias="volume1mo", description="1-month trading volume"
     )
 
-    # Server-computed price changes (Gamma; used by the market monitor sweep channel)
+    # Server-computed price changes (Gamma).
     one_hour_price_change: Optional[Decimal] = Field(
         None, alias="oneHourPriceChange", description="1-hour price change"
     )
@@ -1331,6 +1383,41 @@ class Market(BaseModel):
         return v
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class ResolutionPayouts(BaseModel):
+    """Validated terminal payout vector for a resolved CTF condition.
+
+    Returned only by :meth:`PolymarketClient.get_resolution_payouts` once the
+    raw CLOB market payload has passed every validation rule: exact
+    condition-id match, ``closed is True``, unique token ids, and boolean
+    winner flags. It is never built from an unvalidated payload -- callers
+    get either this (settled truth) or ``None`` (not yet known), never an
+    inferred payout.
+    """
+
+    condition_id: str = Field(..., min_length=1)
+    payouts: dict[str, Decimal]
+    kind: Literal["winner", "fifty_fifty"]
+
+    @model_validator(mode="after")
+    def _validate_payout_shape(self) -> "ResolutionPayouts":
+        """Reject any payout vector the documented resolution kinds cannot produce."""
+        if not self.payouts:
+            raise ValueError("resolution payouts must include at least one token")
+        if self.kind == "fifty_fifty":
+            if any(value != Decimal("0.5") for value in self.payouts.values()):
+                raise ValueError(
+                    "fifty_fifty resolutions must pay every token exactly 0.5"
+                )
+        else:
+            winners = sum(1 for value in self.payouts.values() if value == Decimal("1"))
+            losers = sum(1 for value in self.payouts.values() if value == Decimal("0"))
+            if winners != 1 or winners + losers != len(self.payouts):
+                raise ValueError(
+                    "winner resolutions must pay exactly one token 1.0 and the rest 0.0"
+                )
+        return self
 
 
 class Event(BaseModel):

@@ -32,6 +32,8 @@ import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ValidationError as PydanticValidationError
+
 from ..config import PolymarketSettings
 from ..exceptions import (
     APIError,
@@ -41,6 +43,7 @@ from ..exceptions import (
     PriceUnavailableError,
     RateLimitError,
     TradingError,
+    UnsupportedResolution,
 )
 from ..models import MarketTradeEventV1, MarketTradeEventsResultV1
 from ..models import OrderBook as OrderBookType
@@ -52,6 +55,7 @@ from ..models import (
 )
 from ..models import PricePoint
 from ..models import PublicDataStatus, PublicRequestEvidenceV1
+from ..models import ResolutionPayouts
 from ..utils.numeric import to_decimal
 from ..utils.rate_limiter import RateLimiter
 from .base import BaseAPIClient
@@ -122,6 +126,168 @@ def _parse_health_response(response: Any) -> bool:
         if isinstance(status, bool):
             return status
     raise ValueError(f"unexpected health response: {response!r}")
+
+
+def _parse_resolution_payouts(
+    condition_id: str, raw: Any
+) -> Optional[ResolutionPayouts]:
+    """Validate a raw CLOB market payload into a resolution payout vector.
+
+    Pure function (no I/O) so the validation matrix stays hermetic. See
+    ``PublicCLOBAPI.get_resolution_payouts`` for the contract. Every
+    rejection is logged: ``debug`` for the ordinary not-yet-resolved states
+    (still open, or closed but awaiting a winner flag) so routine polling
+    does not generate warning noise, and ``warning`` with the condition id
+    and the specific failing rule for anything contradictory or malformed,
+    because those payloads would otherwise be indistinguishable from a
+    market that simply has not resolved yet.
+    """
+    if not isinstance(raw, dict):
+        logger.warning(
+            "resolution payload for %s failed validation: payload is not a dict (got %s)",
+            condition_id,
+            type(raw).__name__,
+        )
+        return None
+
+    payload_condition_id = raw.get("condition_id")
+    if payload_condition_id != condition_id:
+        logger.warning(
+            "resolution payload for %s failed validation: condition_id mismatch (payload had %r)",
+            condition_id,
+            payload_condition_id,
+        )
+        return None
+
+    closed = raw.get("closed")
+    if closed is False:
+        logger.debug("resolution payload for %s not yet resolved: closed=false", condition_id)
+        return None
+    if closed is not True:
+        logger.warning(
+            "resolution payload for %s failed validation: closed field is %r, expected boolean",
+            condition_id,
+            closed,
+        )
+        return None
+
+    # No CLOB per-condition payload observed to date carries a signal
+    # distinguishing augmented (incomplete outcome universe) neg-risk markets
+    # from normal ones -- see API_REFERENCE.md. Check defensively under this
+    # client's established name for the concept in case a future payload ever
+    # sets it.
+    if raw.get("neg_risk_augmented"):
+        logger.warning(
+            "resolution payload for %s flags augmented neg-risk; skipping as unsupported",
+            condition_id,
+        )
+        raise UnsupportedResolution(
+            "augmented neg-risk markets are not supported for payout resolution",
+            condition_id=condition_id,
+        )
+
+    tokens = raw.get("tokens")
+    if not isinstance(tokens, list) or not tokens:
+        logger.warning(
+            "resolution payload for %s failed validation: tokens list is missing or empty",
+            condition_id,
+        )
+        return None
+
+    token_ids: List[str] = []
+    winner_flags: List[bool] = []
+    for index, token in enumerate(tokens):
+        if not isinstance(token, dict):
+            logger.warning(
+                "resolution payload for %s failed validation: tokens[%d] is not a dict",
+                condition_id,
+                index,
+            )
+            return None
+        token_id = token.get("token_id")
+        winner = token.get("winner")
+        if not isinstance(token_id, str) or not token_id:
+            logger.warning(
+                "resolution payload for %s failed validation: tokens[%d] has a missing or "
+                "non-string token_id (got %r)",
+                condition_id,
+                index,
+                token_id,
+            )
+            return None
+        if not isinstance(winner, bool):
+            logger.warning(
+                "resolution payload for %s failed validation: tokens[%d] winner flag is %r, "
+                "expected boolean",
+                condition_id,
+                index,
+                winner,
+            )
+            return None
+        token_ids.append(token_id)
+        winner_flags.append(winner)
+
+    if len(set(token_ids)) != len(token_ids):
+        logger.warning(
+            "resolution payload for %s failed validation: duplicate token ids",
+            condition_id,
+        )
+        return None
+
+    is_fifty_fifty = raw.get("is_50_50_outcome", False)
+    if not isinstance(is_fifty_fifty, bool):
+        logger.warning(
+            "resolution payload for %s failed validation: is_50_50_outcome is %r, expected boolean",
+            condition_id,
+            is_fifty_fifty,
+        )
+        return None
+
+    winner_count = sum(1 for won in winner_flags if won)
+
+    if is_fifty_fifty:
+        if winner_count != 0:
+            logger.warning(
+                "resolution payload for %s failed validation: fifty_fifty outcome also "
+                "flags %d winner(s) (contradictory)",
+                condition_id,
+                winner_count,
+            )
+            return None
+        payouts = {token_id: Decimal("0.5") for token_id in token_ids}
+        kind = "fifty_fifty"
+    else:
+        if winner_count == 0:
+            logger.debug(
+                "resolution payload for %s not yet resolved: closed but no winner flag set",
+                condition_id,
+            )
+            return None
+        if winner_count != 1:
+            logger.warning(
+                "resolution payload for %s failed validation: expected exactly one winner, "
+                "found %d (contradictory)",
+                condition_id,
+                winner_count,
+            )
+            return None
+        payouts = {
+            token_id: (Decimal("1") if won else Decimal("0"))
+            for token_id, won in zip(token_ids, winner_flags)
+        }
+        kind = "winner"
+
+    try:
+        return ResolutionPayouts(
+            condition_id=condition_id, payouts=payouts, kind=kind
+        )
+    except PydanticValidationError as error:
+        logger.warning(
+            "resolution payload for %s failed model validation unexpectedly: %s",
+            condition_id,
+            error,
+        )
+        return None
 
 
 async def _get_with_request_evidence(
@@ -1110,6 +1276,43 @@ class PublicCLOBAPI(BaseAPIClient):
         except Exception as e:
             logger.error(f"Error fetching market {condition_id}: {e}")
             raise MarketNotFoundError(f"Market not found: {condition_id}")
+
+    async def get_resolution_payouts(
+        self, condition_id: str
+    ) -> Optional[ResolutionPayouts]:
+        """
+        Get the validated terminal payout vector for a resolved market.
+
+        Wraps :meth:`get_market`, so it adds no new HTTP surface, and
+        validates the raw CLOB payload: exact condition-id match,
+        ``closed is True``, unique token ids, and boolean winner flags.
+        Ordinary binary markets pay the winner 1.0 and the loser 0.0;
+        markets with an explicit ``is_50_50_outcome`` flag pay every token
+        0.5. Nothing is inferred -- anything open, ambiguous, or malformed
+        returns ``None``, and callers typically retry on the next poll.
+
+        Rate limit: 50 req/10s (inherited from :meth:`get_market`)
+
+        Args:
+            condition_id: Market condition ID (0x...)
+
+        Returns:
+            ``ResolutionPayouts`` if the market resolved unambiguously, or
+            ``None`` if it is open, disputed, or the payload is malformed.
+            A token id absent from the returned payouts mapping means SKIP
+            that token; absence is never a 0.0 payout.
+
+        Raises:
+            MarketNotFoundError: Propagated from :meth:`get_market` on a
+                transport or lookup failure, which is retryable and distinct
+                from a malformed-but-received payload.
+            UnsupportedResolution: The payload flags an augmented neg-risk
+                market (incomplete outcome universe). The raw CLOB
+                per-condition payload carries no confirmed signal for this;
+                see API_REFERENCE.md for the caveat on this check.
+        """
+        raw = await self.get_market(condition_id)
+        return _parse_resolution_payouts(condition_id, raw)
 
     async def get_market_trades_events(self, condition_id: str) -> List[Dict[str, Any]]:
         """
