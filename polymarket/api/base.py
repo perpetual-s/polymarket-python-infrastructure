@@ -1,10 +1,11 @@
 """
 Base HTTP client with robust error handling.
 
-Thread-safe, with timeouts, retries, and rate limiting.
+Safe for concurrent use from a single event loop, with timeouts, retries, and
+rate limiting.
 
 PERFORMANCE OPTIMIZATION: Request deduplication prevents redundant API calls
-when multiple threads request the same data concurrently (2-10x reduction).
+when concurrent tasks request the same data (2-10x reduction).
 
 PERFORMANCE OPTIMIZATION: orjson for JSON parsing (30-50% faster, releases GIL)
 """
@@ -31,7 +32,9 @@ class BaseAPIClient:
     """
     Base HTTP client with error handling, retries, and rate limiting.
 
-    Thread-safe for concurrent use across strategies.
+    Safe for concurrent use from a single event loop. The aiohttp session and
+    the coordination primitives below are asyncio objects, so construct and
+    use one instance on one loop.
     """
 
     def __init__(

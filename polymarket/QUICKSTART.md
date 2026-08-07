@@ -168,6 +168,54 @@ async def main():
 asyncio.run(main())
 ```
 
+## 6. Handle Errors
+
+Every failure raised by the client derives from `PolymarketError`, so you can
+catch the specific case you can act on and let the base class cover the rest.
+All of these import directly from `polymarket`.
+
+```python
+import asyncio
+
+from polymarket import (
+    APIError,
+    MarketNotFoundError,
+    PolymarketError,
+    PolymarketClient,
+    PriceUnavailableError,
+    RateLimitError,
+    TimeoutError,
+)
+
+
+async def main():
+    async with PolymarketClient() as client:
+        try:
+            midpoint = await client.get_midpoint("TOKEN_ID")
+        except PriceUnavailableError as e:
+            print("no price for", e.token_id)
+        except MarketNotFoundError as e:
+            print("unknown market", e.market_id)
+        except RateLimitError as e:
+            print("throttled on", e.endpoint, "retry after", e.retry_after)
+        except TimeoutError:
+            print("request timed out; back off and retry")
+        except APIError as e:
+            print("upstream returned", e.status_code)
+        except PolymarketError as e:
+            print("client error:", e.message)
+        else:
+            print("midpoint:", midpoint)
+
+
+asyncio.run(main())
+```
+
+Messages and `details` are credential-redacted before the exception is raised.
+For order submission specifically, use `is_definitive_order_rejection(error)`
+to tell a proven non-submission from an ambiguous outcome that still needs
+reconciliation; see [API_REFERENCE.md](./API_REFERENCE.md).
+
 ## Recommended Reading
 
 - [Project overview](../README.md)

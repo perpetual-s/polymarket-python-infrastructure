@@ -1,4 +1,4 @@
-"""CLOB /prices-history wrapper (monitor M0)."""
+"""CLOB /prices-history wrapper."""
 
 from decimal import Decimal
 from unittest.mock import AsyncMock

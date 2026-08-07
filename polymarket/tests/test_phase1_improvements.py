@@ -239,7 +239,23 @@ class TestMarketFieldsAdded:
         assert market.archived is False
 
 
-@pytest.mark.skip(reason="Event.markets now requires Market objects, not strings - tests need update")
+def _sample_market(market_id: str) -> Market:
+    """Minimal valid Market for Event membership assertions."""
+    return Market(
+        id=market_id,
+        question=f"Question {market_id}",
+        slug=f"market-{market_id}",
+        condition_id=f"cond{market_id}",
+        category="test",
+        outcomes=["YES", "NO"],
+        outcome_prices=[0.5, 0.5],
+        volume=100,
+        liquidity=50,
+        active=True,
+        closed=False,
+    )
+
+
 class TestEventModelAdded:
     """Test that Event model was added successfully."""
 
@@ -262,15 +278,16 @@ class TestEventModelAdded:
             new=True,
             featured=False,
             restricted=False,
-            markets=["market1", "market2"],
+            markets=[_sample_market("1"), _sample_market("2")],
             neg_risk=False
         )
         assert event.id == "1"
         assert event.title == "Test Event"
         assert len(event.markets) == 2
+        assert [m.id for m in event.markets] == ["1", "2"]
 
-    def test_event_markets_parsing_from_comma_string(self):
-        """Test Event parses comma-separated market string."""
+    def test_event_markets_default_to_empty(self):
+        """Test Event without markets yields an empty list, not None."""
         event = Event(
             id="1",
             slug="test",
@@ -278,22 +295,23 @@ class TestEventModelAdded:
             active=True,
             closed=False,
             archived=False,
-            markets="market1, market2, market3"
         )
-        assert event.markets == ["market1", "market2", "market3"]
+        assert event.markets == []
 
-    def test_event_markets_parsing_from_list(self):
-        """Test Event accepts list of markets."""
-        event = Event(
-            id="1",
-            slug="test",
-            title="Test",
-            active=True,
-            closed=False,
-            archived=False,
-            markets=["m1", "m2"]
-        )
-        assert event.markets == ["m1", "m2"]
+    def test_event_markets_reject_bare_ids(self):
+        """Test Event.markets holds full Market objects, never bare IDs."""
+        from pydantic import ValidationError as PydanticValidationError
+
+        with pytest.raises(PydanticValidationError):
+            Event(
+                id="1",
+                slug="test",
+                title="Test",
+                active=True,
+                closed=False,
+                archived=False,
+                markets=["market1", "market2", "market3"],
+            )
 
 
 class TestGammaAPIHelperMethods:
@@ -319,12 +337,13 @@ class TestGammaAPIHelperMethods:
         from polymarket.api.gamma import GammaAPI
         assert hasattr(GammaAPI, 'get_all_tradeable_events')
 
-    @pytest.mark.skip(reason="GammaAPI creates aiohttp session requiring event loop - needs async test context")
-    def test_filter_events_for_trading_logic(self):
+    async def test_filter_events_for_trading_logic(self):
         """Test filter_events_for_trading filters correctly."""
         from polymarket.api.gamma import GammaAPI
         from polymarket.config import get_settings
 
+        # GammaAPI opens an aiohttp session on construction, so this test must
+        # run inside a live event loop and must close the session afterwards.
         gamma = GammaAPI(settings=get_settings())
 
         # Create test events
@@ -341,7 +360,10 @@ class TestGammaAPIHelperMethods:
                   active=False, closed=False, archived=False, restricted=False),
         ]
 
-        tradeable = gamma.filter_events_for_trading(events)
+        try:
+            tradeable = gamma.filter_events_for_trading(events)
+        finally:
+            await gamma.close()
 
         # Only the first event should pass all filters
         assert len(tradeable) == 1

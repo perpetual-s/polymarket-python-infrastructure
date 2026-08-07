@@ -15,21 +15,28 @@ def test_rate_limiter_allows_within_limit():
     assert limiter.get_remaining("test") >= 0
 
 
-@pytest.mark.skip(reason="Timing-sensitive test - rate limiter behavior depends on actual timing")
 def test_rate_limiter_blocks_over_limit():
-    """Test requests over limit are blocked."""
-    limiter = RateLimiter(enabled=True, margin=0.001)  # Very low limit
+    """Test requests over limit are blocked.
 
-    # Fill up quota
-    for _ in range(3):
-        try:
-            limiter.acquire("test", timeout=0.1)
-        except RateLimitError:
-            break
+    Uses a configured endpoint at full margin so the quota is exact, and a
+    zero timeout so the assertion is about the limit rather than about wall
+    clock behavior.
+    """
+    endpoint = "GET:/activity"
+    quota = get_rate_limit(endpoint)["limit"]
 
-    # Next request should timeout
+    limiter = RateLimiter(enabled=True, margin=1.0)
+
+    # Fill the whole window quota; every one of these must be admitted.
+    for _ in range(quota):
+        limiter.acquire(endpoint, timeout=0.0)
+
+    assert limiter.get_remaining(endpoint) == 0
+
+    # The next request is over the limit and cannot be admitted by waiting
+    # zero seconds.
     with pytest.raises(RateLimitError):
-        limiter.acquire("test", timeout=0.1)
+        limiter.acquire(endpoint, timeout=0.0)
 
 
 def test_rate_limiter_disabled():

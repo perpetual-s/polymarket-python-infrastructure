@@ -2,14 +2,9 @@
 Test Polymarket public API (no authentication required).
 """
 
-import sys
 import asyncio
-from pathlib import Path
 
 import pytest
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from polymarket import PolymarketClient
 
