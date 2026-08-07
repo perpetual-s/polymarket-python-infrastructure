@@ -146,26 +146,6 @@ The primary motivation for building this. Supports:
 - Calculate win rates, top performers, market exposure
 - Portfolio-level metrics and dashboards
 
-### Performance
-
-Measured against py-clob-client 0.28.0 on 2026-08-07: 10 tokens with live
-orderbooks, 7 interleaved repetitions, median reported. Both libraries call the
-same public CLOB endpoints from the same machine.
-
-| Operation | py-clob-client | This library | Ratio |
-|-----------|---------------|--------------|-------|
-| Batch orderbooks (10 tokens, one `POST /books`) | 258 ms | 175 ms | **1.5x** |
-| Sequential orderbooks (10 × `GET /book`) | 2668 ms | 1775 ms | **1.5x** |
-
-The gap comes from connection reuse and async I/O, not from a different
-endpoint. These numbers are network-bound and will vary with your location.
-
-Batching is worth roughly 10x over sequential reads—but that is a property of
-the API, not of this library: py-clob-client exposes the same `/books` endpoint
-and gains the same 10x. What differs is the handling. When `/books` returns
-fewer books than requested, py-clob-client returns the short list silently;
-this library raises rather than hand back a partial result that looks complete.
-
 ### Financial Precision
 
 **Decimal Everywhere**
@@ -219,6 +199,52 @@ Decimal("0.1") + Decimal("0.2")    # 0.3 (exact)
 <tr><td>WebSocket reconnect</td><td>❌</td><td>✅ Exponential backoff</td></tr>
 <tr><td>Consensus detection</td><td>❌</td><td>✅ Multi-wallet analytics</td></tr>
 </table>
+
+## Measured Against the Official Client
+
+Everything below was run against py-clob-client 0.28.0 on 2026-08-07 over
+read-only public endpoints, same machine and network. Reproduce it yourself—
+nothing here is claimed without a check.
+
+### Failure modes
+
+The gap that matters isn't speed. It's what each client does when the exchange
+returns something incomplete.
+
+| Scenario | py-clob-client | This library |
+|---|---|---|
+| `/books` returns fewer books than requested | Returns the short list, **no error** | Raises, naming the missing tokens |
+| Response `asset_id` doesn't match the requested token | Not checked | Rejected before the book is returned |
+| Duplicate concurrent requests for the same book | N separate HTTP calls | Coalesced into one |
+| Burst past an endpoint quota | No client-side limiter | Per-endpoint limiter paces under the quota |
+| Live orderbook streaming | No WebSocket support at all | CLOB WebSocket + RTDS, auto-reconnect |
+| Error taxonomy | 2 exception types | 26 typed exceptions carrying context |
+| Price/size type on the public API | `float` | `Decimal` |
+
+The first row is the one to care about. Ask for five books, get four, and no
+exception is raised—so a strategy proceeds on a market view it believes is
+complete. Verified live: requesting 4 real tokens plus 1 nonexistent one
+returned 4 books silently. This library treats a short batch as a failure,
+because a partial result that looks whole is worse than no result.
+
+That principle runs throughout: `get_positions_complete()` raises on a timeout,
+malformed page, or page ceiling rather than return a portfolio that looks
+empty, and an ambiguous order submission keeps its reservation for exact
+reconciliation instead of being guessed terminal.
+
+### Speed
+
+10 tokens with live orderbooks, 7 interleaved repetitions, median reported:
+
+| Operation | py-clob-client | This library | Ratio |
+|---|---|---|---|
+| Batch orderbooks (one `POST /books`) | 258 ms | 175 ms | **1.5x** |
+| Sequential orderbooks (10 × `GET /book`) | 2668 ms | 1775 ms | **1.5x** |
+
+The gap is connection reuse and async I/O, not a different endpoint. Batching
+is worth roughly 10x over sequential reads, but that belongs to the API rather
+than to this library—py-clob-client exposes the same `/books` endpoint and
+gains the same 10x. These numbers are network-bound and vary with location.
 
 ## Installation
 
