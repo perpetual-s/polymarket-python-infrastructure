@@ -1,4 +1,4 @@
-"""Market price-change fields parsed from Gamma payloads (monitor M0)."""
+"""Market price-change fields parsed from Gamma payloads."""
 
 from decimal import Decimal
 

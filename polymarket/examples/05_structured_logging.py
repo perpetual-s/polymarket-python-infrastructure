@@ -68,7 +68,7 @@ async def main():
     print("--- End Credential Redaction Demo ---\n")
 
     # 2. Get structured logger
-    logger = get_logger("strategy1.trading")
+    logger = get_logger("trading")
 
     # 3. Set correlation ID (useful for tracing requests)
     correlation_id = set_correlation_id()  # Generates unique ID
@@ -89,13 +89,13 @@ async def main():
 
     await client.add_wallet(
         WalletConfig(private_key=private_key),
-        wallet_id="strategy1"
+        wallet_id="primary"
     )
 
     logger.info(
         "wallet_added",
         "Wallet initialized successfully",
-        wallet_id="strategy1"
+        wallet_id="primary"
     )
 
     # 6. Place order with structured logging
@@ -118,10 +118,10 @@ async def main():
             side=order.side.value,
             price=order.price,
             size=order.size,
-            wallet="strategy1"
+            wallet="primary"
         )
 
-        response = await client.place_order(order, wallet_id="strategy1")
+        response = await client.place_order(order, wallet_id="primary")
 
         if response.success:
             # Log success
@@ -133,7 +133,7 @@ async def main():
                 token_id=order.token_id,
                 price=order.price,
                 size=order.size,
-                wallet="strategy1"
+                wallet="primary"
             )
         else:
             # Log failure
@@ -143,7 +143,7 @@ async def main():
                 order_id=response.order_id,
                 error_msg=response.error_msg,
                 token_id=order.token_id,
-                wallet="strategy1"
+                wallet="primary"
             )
 
     except Exception:
@@ -151,7 +151,7 @@ async def main():
         logger.exception(
             "order_exception",
             "Unexpected error during order placement",
-            wallet="strategy1",
+            wallet="primary",
             token_id="123456"
         )
 
@@ -163,7 +163,7 @@ These JSON logs can be:
 - Sent to Elasticsearch for aggregation
 - Parsed by log aggregators (Datadog, Splunk)
 - Filtered by correlation_id for request tracing
-- Queried by field: event="order_rejected" AND wallet="strategy1"
+- Queried by field: event="order_rejected" AND wallet="primary"
 """)
 
     # 7. Example PostgreSQL integration
@@ -178,7 +178,7 @@ log_entry = json.loads(log_line)
 # Store in database
 conn = psycopg2.connect(...)
 cursor.execute(\"\"\"
-    INSERT INTO strategy1_logs
+    INSERT INTO order_logs
     (timestamp, level, event, correlation_id, data)
     VALUES (%s, %s, %s, %s, %s)
 \"\"\", (
@@ -191,7 +191,7 @@ cursor.execute(\"\"\"
 
 # Later: Query logs
 cursor.execute(\"\"\"
-    SELECT * FROM strategy1_logs
+    SELECT * FROM order_logs
     WHERE correlation_id = %s
     ORDER BY timestamp
 \"\"\", (correlation_id,))

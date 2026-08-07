@@ -168,12 +168,12 @@ def test_user_order_subscription_routes_wallet_and_failure_callback_through_faca
 
     client.subscribe_user_orders(
         callback,
-        wallet_id="strategy-3",
+        wallet_id="primary",
         on_failure_callback=failure_callback,
     )
 
     client._ensure_websocket.assert_called_once_with(
-        "strategy-3",
+        "primary",
         on_failure_callback=failure_callback,
         channel_type="USER",
     )
@@ -190,13 +190,13 @@ def test_user_order_subscription_resolves_default_wallet_before_transport_auth()
     client._ws_lock = threading.Lock()
     client._ensure_websocket = Mock()
     client.key_manager = Mock()
-    client.key_manager.get_default_wallet.return_value = "strategy-default"
+    client.key_manager.get_default_wallet.return_value = "default"
 
     client.subscribe_user_orders(Mock())
 
     client.key_manager.get_default_wallet.assert_called_once_with()
     client._ensure_websocket.assert_called_once_with(
-        "strategy-default",
+        "default",
         on_failure_callback=None,
         channel_type="USER",
     )
@@ -225,7 +225,7 @@ def test_user_order_facade_constructs_transport_with_wallet_credentials_and_fail
         transport = websocket_class.return_value
         client.subscribe_user_orders(
             callback,
-            wallet_id="strategy-3",
+            wallet_id="primary",
             on_failure_callback=failure_callback,
         )
 
@@ -260,7 +260,7 @@ def test_market_first_transport_rejects_user_endpoint_mixing():
         api_passphrase="api-passphrase",
     )
     client.key_manager = Mock()
-    client.key_manager.get_default_wallet.return_value = "strategy-default"
+    client.key_manager.get_default_wallet.return_value = "default"
     client.key_manager.get_wallet.return_value = credentials
 
     with patch("polymarket.client.WebSocketClient") as websocket_class:
@@ -305,7 +305,7 @@ def test_unauthenticated_market_transport_cannot_silently_upgrade_to_user_channe
 
     with patch("polymarket.client.WebSocketClient"):
         client._ensure_websocket()
-        client.key_manager.get_default_wallet.return_value = "strategy-default"
+        client.key_manager.get_default_wallet.return_value = "default"
 
         with pytest.raises(
             RuntimeError,

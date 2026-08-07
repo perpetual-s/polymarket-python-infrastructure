@@ -1,10 +1,8 @@
 # Archive
 
-Outdated documentation superseded by completed implementations.
+Planning documents are kept here once they are superseded by a shipped
+implementation.
 
-## Archived Files
-
-**WEBSOCKET_ENHANCEMENTS.md** (2025-11-13)
-- Planning roadmap for WebSocket v3.x features
-- Superseded by: WEBSOCKET_AUDIT_PLAN.md (v3.5 complete)
-- All planned features implemented and tested
+Nothing is currently archived: the WebSocket v3.x planning notes were
+superseded by the shipped v3.5 WebSocket implementation and now live only in
+the repository history.

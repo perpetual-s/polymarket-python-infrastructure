@@ -30,7 +30,8 @@ async with PolymarketClient() as client:
     midpoint = await client.get_midpoint(token_id)
 ```
 
-There is no `polymarket.types` module.
+`PolymarketClient()` opens an aiohttp session on construction, so build it
+inside a running event loop.
 
 ## Public and authenticated clients
 
@@ -54,7 +55,7 @@ wallet = WalletConfig(
 async with PolymarketClient(db=db) as client:
     wallet_id = await client.add_wallet(
         wallet,
-        wallet_id="WALLET_2",
+        wallet_id="primary",
         set_default=True,
     )
     response = await client.place_order(
@@ -142,7 +143,7 @@ callbacks run on transport threads. Connection and close operations remain
 owned by the client.
 
 ```python
-client.subscribe_user_orders(callback, wallet_id="WALLET_2")
+client.subscribe_user_orders(callback, wallet_id="primary")
 connected = client.wait_until_websocket_connected(timeout=5)
 client.unsubscribe_all()
 await client.close()
@@ -166,6 +167,9 @@ All facade failures derive from `PolymarketError`. Common classes:
 - `MarketNotReadyError`
 - `InvalidOrderError`
 - `PriceUnavailableError`
+
+The complete taxonomy is in `API_REFERENCE.md`; every class in it imports from
+`polymarket` directly.
 
 `is_definitive_order_rejection()` distinguishes a proven non-submission from
 an ambiguous exchange outcome. Do not turn an ambiguous order error into a

@@ -747,8 +747,7 @@ class DataAPI(BaseAPIClient):
             raise
         except RateLimitError as e:
             # Retriable/transient by design: the limiter backs off and the
-            # backup position poller covers the gap — WARNING-grade noise,
-            # not an operator-actionable ERROR.
+            # caller retries — WARNING-grade noise, not an actionable ERROR.
             logger.warning(f"Failed to get activity for {user}: {e}")
             raise
         except Exception as e:
@@ -768,14 +767,14 @@ class DataAPI(BaseAPIClient):
         The caller's durable frontier decides when to stop: pages are read
         newest-first until one reaches behind `since_ts` or history ends. A
         malformed row, a non-list response, a foreign wallet, or the offset
-        ceiling on a full page raises instead of returning a short history —
-        for copy trading a truncated page is a missed source trade.
+        ceiling on a full page raises instead of returning a partial history —
+        a truncated page is a missed trade, not a short one.
 
         Offset paging is only safe while the collection holds still. New trades
         land at offset 0 and slide everything else to higher offsets, so a
         multi-page read can hand back the same row twice. The caller identifies
         an otherwise-identical repeat by its ordinal, which would turn that
-        re-read into a fabricated source trade — so a shift is refused and
+        re-read into a fabricated duplicate trade — so a shift is refused and
         retried on the next poll rather than merged.
         """
         page_size = 500

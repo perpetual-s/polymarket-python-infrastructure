@@ -2,8 +2,7 @@
 
 A brief local network outage surfaces as a getaddrinfo failure on the
 WebSocket. The socket recovers when connectivity returns, so these must be
-treated as transient (WARNING), not marker-blocking ERROR — the inactivity
-watchdog and API-polling fallback still catch a sustained outage.
+treated as transient (WARNING), not ERROR.
 """
 
 from polymarket.api.websocket_logging import is_transient_websocket_disconnect

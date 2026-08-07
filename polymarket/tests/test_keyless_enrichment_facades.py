@@ -1,4 +1,4 @@
-"""Keyless market-trades / address-activity facades (monitor M0)."""
+"""Keyless market-trades / address-activity facades."""
 
 from unittest.mock import AsyncMock
 

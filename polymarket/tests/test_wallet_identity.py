@@ -1,9 +1,8 @@
 """Pure wallet identity resolution: derived, never trusted.
 
-`KeyManager.add_wallet` and the registry sync both route through this module,
-so a defect here mislabels every downstream row. The signer is always derived
-from the private key; a configured address is only ever a claim to check
-against it.
+`KeyManager.add_wallet` routes through this module, so a defect here mislabels
+every wallet the caller records. The signer is always derived from the private
+key; a configured address is only ever a claim to check against it.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ UNRELATED = "0x" + "9" * 40
     [
         (None, "<none>"),
         ("", "<none>"),
-        ("WALLET_2", "WALLET_2"),
+        ("primary", "primary"),
         (SIGNER, "0x1563915e…5508"),
     ],
 )

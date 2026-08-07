@@ -25,7 +25,7 @@ async def main():
     print("✓ Client initialized for 100+ wallets")
 
     # 2. Load wallet addresses (from your database)
-    # In production: SELECT address FROM wallets WHERE strategy_id = 3
+    # In production: SELECT address FROM tracked_wallets WHERE enabled
     wallet_addresses = [
         "0x1234567890abcdef1234567890abcdef12345678",
         "0xabcdef1234567890abcdef1234567890abcdef12",
@@ -119,7 +119,7 @@ async def main():
     for wallet, positions in positions_by_wallet.items():
         for pos in positions:
             cursor.execute(\"\"\"
-                INSERT INTO strategy3_positions
+                INSERT INTO wallet_positions
                 (wallet, market, size, pnl, timestamp)
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (wallet, market) DO UPDATE

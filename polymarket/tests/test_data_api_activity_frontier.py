@@ -1,8 +1,9 @@
 """Activity intake must reach a durable frontier or say it could not.
 
-Copy trading reacts to source trades, so a truncated activity page is a missed
-trade, not a small one. `get_activity_since` pages back until the caller's
-durable frontier is covered and raises rather than returning a partial history.
+A consumer that reacts to another wallet's trades treats a truncated activity
+page as a missed trade, not a small one. `get_activity_since` pages back until
+the caller's durable frontier is covered and raises rather than returning a
+partial history.
 """
 
 from unittest.mock import AsyncMock

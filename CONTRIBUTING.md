@@ -19,8 +19,11 @@ Web3 support. For the smallest public-data installation, use
 
 ## Make a change
 
-- Keep the public namespace standalone: import from `polymarket`, never a
-  downstream vendored path.
+- Keep the public namespace standalone: always import from `polymarket`.
+- Export policy: anything named in `polymarket/API_REFERENCE.md` must be
+  importable from the package root, so a new public model, exception, or
+  helper belongs in its module's `__all__`, in `polymarket/__init__.py`, and
+  in the reference in the same change.
 - Add or update tests for behavioral changes.
 - Update `README.md`, `polymarket/QUICKSTART.md`, or
   `polymarket/API_REFERENCE.md` when a public contract changes.
@@ -36,9 +39,10 @@ python -m pytest -q polymarket/tests
 git diff --check
 ```
 
-Live-network, testnet, benchmark, and manual-operator tests are opt-in and may
-require separate credentials or services. A green hermetic suite does not
-prove that a wallet is funded or entitled to trade.
+Live-network, testnet, and manual-operator tests are opt-in and may require
+separate credentials or services. Set `POLYMARKET_RUN_LIVE_TESTS=1` or
+`POLYMARKET_RUN_TESTNET_TESTS=1` to include them. A green hermetic suite does
+not prove that a wallet is funded or entitled to trade.
 
 ## Commits and pull requests
 

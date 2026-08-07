@@ -35,7 +35,7 @@ async def main():
     print("=" * 80)
 
     # Add wallet for portfolio queries
-    private_key = os.getenv("WALLET_0_PRIVATE_KEY")
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     if private_key and not private_key.startswith("0x"):
         private_key = f"0x{private_key}"
 
@@ -57,7 +57,7 @@ async def main():
             allocation_pct = (portfolio.bets / portfolio.equity_total) * 100
             print(f"  Allocation:     {allocation_pct:.1f}% deployed")
     else:
-        print("\nSkipping portfolio demo (WALLET_0_PRIVATE_KEY not set)")
+        print("\nSkipping portfolio demo (POLYMARKET_PRIVATE_KEY not set)")
 
     # ========== Whale Discovery ==========
 

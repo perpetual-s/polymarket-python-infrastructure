@@ -559,7 +559,7 @@ class TestErrorHandling:
         )
 
     def test_non_transient_websocket_error_stays_error(self, caplog):
-        """Unknown RTDS WebSocket errors still poison marker evidence."""
+        """Unknown RTDS WebSocket errors still log at ERROR."""
         client = RealTimeDataClient(auto_reconnect=False)
 
         with caplog.at_level(logging.ERROR, logger="polymarket.api.real_time_data"):

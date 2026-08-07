@@ -191,7 +191,7 @@ class TestAsyncErrorHandling:
         A 1-second network blip on `data-api.polymarket.com/activity` is
         retriable by design; logging it as ERROR would page the operator
         for self-healing noise. Same pattern as the WebSocket
-        transient-close downgrade in Phase 2 (06bf0898).
+        transient-close downgrade.
         """
         import logging as stdlib_logging
 
@@ -218,7 +218,7 @@ class TestAsyncErrorHandling:
         for r in timeout_records:
             assert r.levelno == stdlib_logging.WARNING, (
                 f"Request timeout logged at {r.levelname}; must be WARNING "
-                "(blocks marker eligibility otherwise)"
+                "(must not surface as an ERROR)"
             )
 
     @pytest.mark.asyncio
@@ -274,7 +274,7 @@ class TestAsyncErrorHandling:
         for r in conn_records:
             assert r.levelno == stdlib_logging.WARNING, (
                 f"Connection error logged at {r.levelname}; must be WARNING "
-                "(blocks marker eligibility otherwise)"
+                "(must not surface as an ERROR)"
             )
 
     @pytest.mark.asyncio

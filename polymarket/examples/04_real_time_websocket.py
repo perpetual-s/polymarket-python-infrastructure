@@ -1,5 +1,5 @@
 """
-Example 4: Real-Time WebSocket for Both Strategies
+Example 4: Real-Time WebSocket
 
 Shows how to use WebSocket for instant market updates and order fills.
 Critical for HFT and real-time dashboards.
@@ -33,7 +33,7 @@ async def main():
     # 2. Add wallet
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     if private_key:
-        await client.add_wallet(WalletConfig(private_key=private_key), wallet_id="strategy1")
+        await client.add_wallet(WalletConfig(private_key=private_key), wallet_id="primary")
 
     # 3. Get market to track
     print("\nFinding market...")
@@ -122,7 +122,7 @@ async def main():
                     print(f"   Original Size: {message.original_size}")
                     print(f"   Matched: {message.size_matched}\n")
 
-            client.subscribe_user_orders(on_order_update, wallet_id="strategy1")
+            client.subscribe_user_orders(on_order_update, wallet_id="primary")
 
         # Keep running
         print("\n✓ WebSocket connected - receiving real-time updates")

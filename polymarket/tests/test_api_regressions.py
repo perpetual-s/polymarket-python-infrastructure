@@ -110,7 +110,7 @@ async def test_get_activity_returns_empty_on_404_without_retry():
 
 @pytest.mark.asyncio
 async def test_get_activity_polymarket_timeout_does_not_log_error(caplog):
-    """Activity poller timeouts should propagate without marker-blocking logs."""
+    """Activity poller timeouts should propagate without logging at ERROR."""
     api = DataAPI(PolymarketSettings())
     api.get = AsyncMock(
         side_effect=PolymarketTimeoutError("Request timeout: Timeout on reading data from socket")
@@ -197,7 +197,7 @@ async def test_get_midpoint_returns_none_on_no_orderbook_404():
 
 @pytest.mark.asyncio
 async def test_public_get_best_bid_ask_returns_none_on_no_orderbook_404_without_error_log(caplog):
-    """No-orderbook /book misses should not emit marker-blocking public CLOB errors."""
+    """No-orderbook /book misses should not emit public CLOB ERROR logs."""
     api = PublicCLOBAPI(PolymarketSettings())
     api.get = AsyncMock(
         side_effect=APIError(

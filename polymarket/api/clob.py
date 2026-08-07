@@ -958,7 +958,6 @@ class CLOBAPI(BaseAPIClient):
         Get orderbooks for multiple tokens using native batch endpoint.
 
         Uses POST /books for 10x performance vs concurrent individual fetches.
-        CRITICAL for Strategy-1 (spread farming) and Strategy-3 (copy trading).
 
         Args:
             token_ids: List of token IDs
@@ -1280,7 +1279,8 @@ class CLOBAPI(BaseAPIClient):
         """
         Check if order earns maker rebates (2% on Polymarket).
 
-        CRITICAL for Strategy-4 (Liquidity Mining): Know which orders earn rewards.
+        Scoring status determines whether an order is currently earning maker
+        rewards.
 
         Args:
             order_id: Order ID to check
@@ -1317,7 +1317,7 @@ class CLOBAPI(BaseAPIClient):
         """
         Check if multiple orders earn maker rebates (batch endpoint).
 
-        CRITICAL for Strategy-4: Batch check which orders earn 2% rewards.
+        Batch check which orders are currently earning maker rewards.
 
         Args:
             order_ids: List of order IDs to check

@@ -44,7 +44,7 @@ does not require a wallet, API credentials, or Web3.
 | `11_ctf_neg_risk_features.py` | Fee utilities and optional CTF adapter overview | On-chain methods can move assets |
 | `02_multi_wallet.py` | Multi-wallet data aggregation | Depends on configured wallets |
 | `08_phase4_5_6_features.py` | Metrics, health, and resilience surfaces | Review before running |
-| `09_strategy4_order_scoring.py` | Illustrative local scoring | Local/read-only |
+| `09_order_scoring.py` | Illustrative local scoring | Local/read-only |
 | `check_all_wallets.py` | Authenticated balance inspection | Read-only account access |
 | `rtds_live_monitoring.py` | Live RTDS monitoring | Read-only |
 

@@ -29,7 +29,7 @@ class ResolvedWalletIdentity:
 
     @property
     def wallet_type(self) -> str:
-        """Registry wallet type corresponding to the CLOB signature type."""
+        """Coarse wallet type corresponding to the CLOB signature type."""
         return (
             "eoa"
             if self.signature_type is SignatureType.EOA
@@ -198,8 +198,6 @@ def resolve_wallet_routing_from_env(
     signature_name = f"{wallet_id}_SIGNATURE_TYPE"
 
     explicit_signature = _nonempty(environ.get(signature_name))
-    if explicit_signature is None:
-        explicit_signature = _nonempty(environ.get("COPY_WALLET_SIGNATURE_TYPE"))
 
     legacy_proxy = _nonempty(environ.get(proxy_name))
     configured_funder = _nonempty(environ.get(funder_name)) or legacy_proxy

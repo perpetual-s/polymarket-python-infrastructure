@@ -1,7 +1,7 @@
 """
 Real-time market data manager with WebSocket streaming.
 
-Replaces stale database-first market discovery with:
+Provides real-time market discovery via:
 - Bootstrap from CLOB API (real-time market data)
 - WebSocket streaming (market_created, market_resolved events)
 - In-memory cache for fast queries (<10ms vs ~200ms DB)

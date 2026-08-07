@@ -6,13 +6,8 @@ SAFE: Only reads data, does NOT place orders.
 
 import asyncio
 import os
-import sys
-from pathlib import Path
 
 import pytest
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from polymarket import PolymarketClient, WalletConfig
 
@@ -171,7 +166,7 @@ async def test_production_api():
     print("\n✓ All read-only tests completed successfully")
     print("✓ Library is working with production Polymarket API")
     print("\nNext Steps:")
-    print("  - Library is ready for Strategy-1 and Strategy-3 to use")
+    print("  - Library is ready for application use")
     print("  - Add more wallets with client.add_wallet()")
     print("  - Use batch operations for multi-wallet tracking")
     print("  - Enable WebSocket for real-time updates")
