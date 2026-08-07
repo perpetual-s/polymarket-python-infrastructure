@@ -10,15 +10,29 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Chaeho Shin" }]
+keywords = [
+    "polymarket",
+    "prediction-markets",
+    "clob",
+    "trading",
+    "async",
+    "websocket",
+    "market-data",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: MIT License",
+    "Framework :: AsyncIO",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 dependencies = [
     "aiohttp>=3.10.0",
@@ -26,16 +40,14 @@ dependencies = [
     "eth-utils>=5.3.1",
     "orjson>=3.10.0",
     "poly_eip712_structs==0.0.1",
-    "prometheus-client>=0.23.1",
     "pydantic>=2.12.3",
     "pydantic-settings>=2.7.0",
-    "py_order_utils==0.3.2",
     "python-json-logger>=4.0.0",
-    "requests>=2.32.3",
     "websocket-client>=1.8.0",
 ]
 
 [project.optional-dependencies]
+metrics = ["prometheus-client>=0.23.1"]
 onchain = ["web3>=7.14.0"]
 test = [
     "pytest>=8.3.4",
@@ -47,6 +59,7 @@ examples = [
 ]
 dev = [
     "loguru>=0.7.0",
+    "prometheus-client>=0.23.1",
     "python-dotenv>=1.0.0",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.24.0",
@@ -58,5 +71,15 @@ Homepage = "https://github.com/perpetual-s/polymarket-python-infrastructure"
 Issues = "https://github.com/perpetual-s/polymarket-python-infrastructure/issues"
 Source = "https://github.com/perpetual-s/polymarket-python-infrastructure"
 
+[tool.setuptools]
+# Ship only what is declared below. Without this, a stale local
+# *.egg-info/SOURCES.txt can pull tests, examples, and docs back into the
+# wheel even though packages.find excludes them.
+include-package-data = false
+
 [tool.setuptools.packages.find]
 include = ["polymarket*"]
+exclude = ["polymarket.tests*", "polymarket.examples*"]
+
+[tool.setuptools.package-data]
+polymarket = ["py.typed"]
