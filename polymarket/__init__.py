@@ -1,8 +1,12 @@
 """
 Polymarket Client Library
 
-Future-proof, thread-safe client for Polymarket trading.
-Supports multiple wallets across multiple strategies.
+Async client for Polymarket market data, wallet-aware trading, and streams.
+Safe for concurrent use from a single event loop; supports multiple wallets
+in one client.
+
+Every public model, exception, and helper named in ``API_REFERENCE.md`` is
+importable directly from this package.
 
 Adapted from Polymarket's official clients (MIT License):
 - https://github.com/Polymarket/py-clob-client
@@ -15,35 +19,75 @@ from .client import PolymarketClient
 from .exceptions import (
     APIError,
     AuthenticationError,
+    BalanceTrackingError,
+    FOKNotFilledError,
+    InsufficientAllowanceError,
     InsufficientBalanceError,
     InvalidOrderError,
+    MarketDataError,
+    MarketNotFoundError,
     MarketNotReadyError,
+    OrderBookError,
+    OrderDelayedError,
+    OrderExpiredError,
+    OrderNotFoundError,
     OrderRejectedError,
     PolymarketError,
     PriceUnavailableError,
     RateLimitError,
+    TickSizeError,
     TimeoutError,
     TradingError,
+    UnsupportedResolution,
     ValidationError,
+    WebSocketConnectionError,
+    WebSocketDisconnectedError,
+    WebSocketError,
+    is_definitive_order_rejection,
 )
 from .models import (
+    Activity,
+    ActivityType,
     Balance,
+    ClobMakerTrade,
+    ClobTrade,
     ClosedPosition,
+    DataTradeV1,
+    DataTradesCoverageV1,
+    DataTradesQueryV1,
+    DataTradesResultV1,
+    Event,
     FeeInfo,
     FeeSchedule,
+    Holder,
     LeaderboardTrader,
     Market,
+    MarketFilters,
+    MarketOrderRequest,
+    MarketTradeEventV1,
+    MarketTradeEventsResultV1,
     Order,
     OrderBook,
+    OrderFilters,
     OrderRequest,
     OrderResponse,
     OrderStatus,
     OrderType,
+    PortfolioValue,
     Position,
+    PriceHistoryCoverageV1,
+    PriceHistoryPointV1,
+    PriceHistoryQueryV1,
+    PriceHistoryResultV1,
     PricePoint,
+    PublicDataStatus,
+    PublicRequestEvidenceV1,
+    ResolutionPayouts,
     Side,
     SignatureType,
+    Trade,
     WalletConfig,
+    WebSocketMessage,
 )
 from .wallet_identity import (
     ResolvedWalletIdentity,
@@ -104,60 +148,114 @@ def __dir__() -> list[str]:
 __all__ = [
     # Main client
     "PolymarketClient",
-    # Types
-    "Side",
-    "OrderType",
+    # Enums
+    "ActivityType",
     "OrderStatus",
+    "OrderType",
+    "PublicDataStatus",
+    "Side",
     "SignatureType",
+    # Requests and filters
+    "MarketFilters",
+    "MarketOrderRequest",
+    "OrderFilters",
     "OrderRequest",
+    "WalletConfig",
+    # Orders, trades, and positions
+    "ClobMakerTrade",
+    "ClobTrade",
     "ClosedPosition",
-    "OrderResponse",
     "Order",
+    "OrderResponse",
     "Position",
+    "Trade",
+    # Account and portfolio
+    "Activity",
     "Balance",
     "FeeInfo",
     "FeeSchedule",
+    "Holder",
+    "LeaderboardTrader",
+    "PortfolioValue",
+    # Markets and prices
+    "Event",
     "Market",
     "OrderBook",
     "PricePoint",
-    "WalletConfig",
+    "ResolutionPayouts",
+    # Typed public-flow results
+    "DataTradeV1",
+    "DataTradesCoverageV1",
+    "DataTradesQueryV1",
+    "DataTradesResultV1",
+    "MarketTradeEventV1",
+    "MarketTradeEventsResultV1",
+    "PriceHistoryCoverageV1",
+    "PriceHistoryPointV1",
+    "PriceHistoryQueryV1",
+    "PriceHistoryResultV1",
+    "PublicRequestEvidenceV1",
+    # Streams
+    "WebSocketMessage",
+    # Wallet identity
     "ResolvedWalletIdentity",
     "ResolvedWalletRouting",
     "abbreviate_address",
     "resolve_wallet_config",
     "resolve_wallet_identity_from_env",
     "resolve_wallet_routing_from_env",
-    "LeaderboardTrader",
-    # Exceptions
+    # Exceptions - base
     "PolymarketError",
+    # Exceptions - request and transport
     "APIError",
-    "AuthenticationError",
-    "ValidationError",
     "RateLimitError",
     "TimeoutError",
-    "TradingError",
+    # Exceptions - auth
+    "AuthenticationError",
+    # Exceptions - validation
+    "OrderExpiredError",
+    "TickSizeError",
+    "ValidationError",
+    # Exceptions - trading
+    "BalanceTrackingError",
+    "FOKNotFilledError",
+    "InsufficientAllowanceError",
     "InsufficientBalanceError",
-    "OrderRejectedError",
-    "MarketNotReadyError",
     "InvalidOrderError",
+    "MarketNotReadyError",
+    "OrderDelayedError",
+    "OrderNotFoundError",
+    "OrderRejectedError",
+    "TradingError",
+    # Exceptions - market data
+    "MarketDataError",
+    "MarketNotFoundError",
+    "OrderBookError",
     "PriceUnavailableError",
+    "UnsupportedResolution",
+    # Exceptions - streams
+    "WebSocketConnectionError",
+    "WebSocketDisconnectedError",
+    "WebSocketError",
+    # Error classification
+    "is_definitive_order_rejection",
     # CTF - Neg-Risk adapter
-    "NegRiskAdapter",
+    "CTF_ADDRESS",
     "ConversionCalculator",
-    "is_safe_to_trade",
     "NEG_RISK_ADAPTER",
     "NEG_RISK_EXCHANGE",
-    "CTF_ADDRESS",
+    "NegRiskAdapter",
+    "is_safe_to_trade",
     # Fee utilities
-    "calculate_order_fee",
     "calculate_net_cost",
+    "calculate_order_fee",
     # Validation utilities
+    "validate_balance",
+    "validate_fee_rate",
+    "validate_neg_risk_market",
     "validate_order",
+    "validate_order_amounts",
     "validate_price_bounds",
     "validate_size",
-    "validate_fee_rate",
     "validate_token_complementarity",
-    "validate_neg_risk_market",
-    "validate_balance",
-    "validate_order_amounts",
 ]
